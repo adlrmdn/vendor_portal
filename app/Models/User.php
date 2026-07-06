@@ -12,7 +12,9 @@ class User extends Authenticatable
     use HasApiTokens, HasFactory, Notifiable;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
+
     protected $primaryKey = 'id';
 
     protected $fillable = [
@@ -20,7 +22,7 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
-        'vendor_id'
+        'vendor_id',
     ];
 
     protected $hidden = [
@@ -31,7 +33,7 @@ class User extends Authenticatable
     protected $casts = [
         'id' => 'string',
         'email_verified_at' => 'datetime',
-        'vendor_id' => 'string'
+        'vendor_id' => 'string',
     ];
 
     public function vendor()

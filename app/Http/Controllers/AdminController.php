@@ -2,11 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\PoItem;
 use App\Models\PurchaseOrder;
 use App\Models\Vendor;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth; // Add this import
 use Illuminate\Support\Facades\DB;
+use Maatwebsite\Excel\Facades\Excel;
+use Smalot\PdfParser\Parser as PdfParser;
 
 class AdminController extends Controller
 {
@@ -15,9 +18,10 @@ class AdminController extends Controller
         $this->middleware('auth');
 
         $this->middleware(function ($request, $next) {
-            if (!in_array(Auth::user()->role, ['admin', 'fabric_admin'])) {
+            if (! in_array(Auth::user()->role, ['admin', 'fabric_admin'])) {
                 abort(403, 'Unauthorized access.');
             }
+
             return $next($request);
         });
     }
@@ -39,8 +43,8 @@ class AdminController extends Controller
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                          ->select(DB::raw('count(distinct(item_number))'));
-                }
+                        ->select(DB::raw('count(distinct(item_number))'));
+                },
             ])
             ->with('items:id,po_id,status')
             ->orderBy('created_at', 'desc')
@@ -64,15 +68,17 @@ class AdminController extends Controller
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                          ->select(DB::raw('count(distinct(item_number))'));
-                }
+                        ->select(DB::raw('count(distinct(item_number))'));
+                },
             ])
             ->with('items:id,po_id,status'); // Eager load for button logic
 
         if ($search) {
-            $query->where(function($q) use ($search) {
-                $q->where('po_number', 'like', '%' . $search . '%')
-                  ->orWhere('reference', 'like', '%' . $search . '%');
+            $query->where(function ($q) use ($search) {
+                $q->where('po_number', 'like', '%'.$search.'%')
+                    ->orWhereHas('items', function ($iq) use ($search) {
+                        $iq->where('plm_number', 'like', '%'.$search.'%');
+                    });
             });
         }
 
@@ -85,7 +91,7 @@ class AdminController extends Controller
         }
 
         $perPage = (int) $request->get('per_page', 25);
-        if (!in_array($perPage, [10, 25, 50])) {
+        if (! in_array($perPage, [10, 25, 50])) {
             $perPage = 25;
         }
 
@@ -103,7 +109,7 @@ class AdminController extends Controller
             'vendor',
             'items' => function ($query) {
                 $query->with(['rolls']);
-            }
+            },
         ])->findOrFail($id);
 
         return view('admin.purchase-order-view', compact('purchaseOrder'));
@@ -123,7 +129,7 @@ class AdminController extends Controller
         $vendor = Vendor::with([
             'purchaseOrders' => function ($query) {
                 $query->orderBy('created_at', 'desc');
-            }
+            },
         ])->findOrFail($id);
 
         return view('admin.vendor-detail', compact('vendor'));
@@ -180,7 +186,7 @@ class AdminController extends Controller
 
         $request->validate([
             'name' => 'required|string|max:255',
-            'vendor_code' => 'required|string|max:50|unique:vendors,vendor_code,' . $id,
+            'vendor_code' => 'required|string|max:50|unique:vendors,vendor_code,'.$id,
             'contact_person' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255',
             'phone' => 'nullable|string|max:50',
@@ -212,7 +218,7 @@ class AdminController extends Controller
             'purchaseOrder',
             'rolls' => function ($query) {
                 $query->orderBy('roll_number');
-            }
+            },
         ])->findOrFail($itemId);
 
         // Admin can access any item
@@ -232,13 +238,14 @@ class AdminController extends Controller
         $validator->after(function ($validator) use ($request) {
             $rolls = $request->input('rolls', []);
             foreach ($rolls as $key => $roll) {
-                if (isset($roll['delete']) && $roll['delete'] == '1')
+                if (isset($roll['delete']) && $roll['delete'] == '1') {
                     continue;
-                if (!isset($roll['quantity']) || !is_numeric($roll['quantity']) || $roll['quantity'] < 0.01) {
-                    $validator->errors()->add("rolls.$key.quantity", "Quantity for roll " . ($key + 1) . " must be valid.");
                 }
-                if (!isset($roll['unit']) || !in_array($roll['unit'], ['YD', 'M', 'KG'])) {
-                    $validator->errors()->add("rolls.$key.unit", "Invalid unit for roll " . ($key + 1));
+                if (! isset($roll['quantity']) || ! is_numeric($roll['quantity']) || $roll['quantity'] < 0.01) {
+                    $validator->errors()->add("rolls.$key.quantity", 'Quantity for roll '.($key + 1).' must be valid.');
+                }
+                if (! isset($roll['unit']) || ! in_array($roll['unit'], ['YD', 'M', 'KG'])) {
+                    $validator->errors()->add("rolls.$key.unit", 'Invalid unit for roll '.($key + 1));
                 }
             }
         });
@@ -275,12 +282,13 @@ class AdminController extends Controller
 
             $inputMap = [];
             foreach ($rollsData as $data) {
-                if (isset($data['delete']) && $data['delete'] == '1')
+                if (isset($data['delete']) && $data['delete'] == '1') {
                     continue;
+                }
                 if (isset($data['id'])) {
                     $inputMap[$data['id']] = $data;
                 } else {
-                    $inputMap['new_' . $nextSequence . '_' . uniqid()] = $data;
+                    $inputMap['new_'.$nextSequence.'_'.uniqid()] = $data;
                 }
             }
 
@@ -295,14 +303,22 @@ class AdminController extends Controller
                         'internal_id' => $data['internal_id'] ?? null,
                     ];
 
-                    if ($data['unit'] == 'YD')
+                    if ($data['unit'] == 'YD') {
                         $updateData['length_yd'] = $data['quantity'];
-                    elseif ($data['unit'] == 'M')
+                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
+                        $updateData['weight'] = 0;
+                    } elseif ($data['unit'] == 'M') {
                         $updateData['length_m'] = $data['quantity'];
-                    else
+                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
+                        $updateData['weight'] = 0;
+                    } else {
+                        // KG or PCS
                         $updateData['weight'] = $data['quantity'];
+                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
+                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
+                    }
 
-                    $rollNumber = sprintf("%s-%s-%03d", $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
+                    $rollNumber = sprintf('%s-%s-%03d', $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
                     $updateData['roll_number'] = $rollNumber;
 
                     $existingRoll->update($updateData);
@@ -313,8 +329,9 @@ class AdminController extends Controller
 
             // B. Create New
             foreach ($rollsData as $data) {
-                if ((isset($data['delete']) && $data['delete'] == '1') || isset($data['id']))
+                if ((isset($data['delete']) && $data['delete'] == '1') || isset($data['id'])) {
                     continue;
+                }
 
                 $createData = [
                     'item_id' => $item->id,
@@ -326,17 +343,22 @@ class AdminController extends Controller
                     'notes' => '',
                     'length_yd' => 0,
                     'length_m' => 0,
-                    'weight' => 0
+                    'weight' => 0,
                 ];
 
-                if ($data['unit'] == 'YD')
+                if ($data['unit'] == 'YD') {
                     $createData['length_yd'] = $data['quantity'];
-                elseif ($data['unit'] == 'M')
+                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
+                } elseif ($data['unit'] == 'M') {
                     $createData['length_m'] = $data['quantity'];
-                else
+                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
+                } else {
                     $createData['weight'] = $data['quantity'];
+                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
+                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
+                }
 
-                $rollNumber = sprintf("%s-%s-%03d", $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
+                $rollNumber = sprintf('%s-%s-%03d', $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
                 $createData['roll_number'] = $rollNumber;
 
                 $roll = \App\Models\Roll::create($createData);
@@ -361,7 +383,8 @@ class AdminController extends Controller
 
         } catch (\Exception $e) {
             DB::rollBack();
-            return redirect()->back()->with('error', 'Error: ' . $e->getMessage());
+
+            return redirect()->back()->with('error', 'Error: '.$e->getMessage());
         }
     }
 
@@ -383,9 +406,10 @@ class AdminController extends Controller
     {
         $item = \App\Models\PoItem::findOrFail($itemId);
         $poId = $item->purchaseOrder->id;
-        
+
         try {
-            $item->markAsProcessed();
+            // Admin bypasses the delivery-tolerance restriction (no amend-request flow on admin side).
+            $item->markAsProcessed(false);
         } catch (\Exception $e) {
             return redirect()->back()->with('error', $e->getMessage());
         }
@@ -418,6 +442,68 @@ class AdminController extends Controller
         return redirect()->back()->with('success', 'Item reverted to processing status!');
     }
 
+    // Upload rolls data via Excel/PDF (admin mirror of VendorController@uploadRollsData; no vendor scoping).
+    public function uploadRollsData(Request $request, $itemId)
+    {
+        $item = PoItem::with(['purchaseOrder'])->findOrFail($itemId);
+
+        $request->validate([
+            'file' => 'required|file|mimes:xlsx,xls,csv,pdf|max:2048',
+        ]);
+
+        $file = $request->file('file');
+        $extension = $file->getClientOriginalExtension();
+        $rollsData = [];
+
+        try {
+            if ($extension === 'pdf') {
+                $parser = new PdfParser;
+                $pdf = $parser->parseFile($file->getPathname());
+                $text = $pdf->getText();
+
+                $lines = explode("\n", $text);
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if (preg_match('/([A-Z0-9_-]+)?\s*(\d+(?:\.\d+)?)$/', $line, $matches)) {
+                        $rollsData[] = [
+                            'internal_id' => $matches[1] ?? '',
+                            'quantity' => (float) $matches[2],
+                        ];
+                    }
+                }
+            } else {
+                // Excel/CSV
+                $data = Excel::toArray([], $file);
+                if (! empty($data) && ! empty($data[0])) {
+                    foreach ($data[0] as $row) {
+                        // Skip header or empty rows
+                        if (! isset($row[1]) || ! is_numeric($row[1])) {
+                            continue;
+                        }
+
+                        $rollsData[] = [
+                            'internal_id' => $row[0] ?? '',
+                            'quantity' => (float) $row[1],
+                        ];
+                    }
+                }
+            }
+
+            if (empty($rollsData)) {
+                return response()->json(['success' => false, 'message' => 'No valid data found in the file.']);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $rollsData,
+                'message' => count($rollsData).' rolls identified successfully.',
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Error parsing file: '.$e->getMessage()]);
+        }
+    }
+
     public function generatePackingSlip(Request $request, $poId)
     {
         $purchaseOrder = PurchaseOrder::with(['items.rolls'])->findOrFail($poId);
@@ -425,25 +511,34 @@ class AdminController extends Controller
         $request->validate([
             'items' => 'required|array',
             'items.*' => 'exists:po_items,id',
-            'delivery_note' => 'required|string|max:255'
+            'delivery_note' => 'required|string|max:255',
         ]);
 
         $packingSlip = \App\Models\PackingSlip::create([
             'po_id' => $poId,
             'vendor_id' => $purchaseOrder->vendor_id,
             'items' => $request->items,
-            'delivery_note' => $request->delivery_note
+            'delivery_note' => $request->delivery_note,
         ]);
 
         \App\Models\Roll::whereIn('item_id', $request->items)->update(['is_printed' => true, 'printed_at' => now()]);
 
-        return redirect()->route('admin.packing-slip.view', $packingSlip->id);
+        return redirect()->route('admin.packing-slip.view', [
+            'id' => $packingSlip->id,
+            'show_secondary' => $request->input('show_secondary', 0),
+            'reverse_units' => $request->input('reverse_units', 0),
+        ]);
     }
 
     public function viewPackingSlip($id)
     {
         $packingSlip = \App\Models\PackingSlip::with(['purchaseOrder.vendor'])->findOrFail($id);
-        return redirect()->route('admin.packing-slip.print', $packingSlip->id);
+
+        return redirect()->route('admin.packing-slip.print', [
+            'id' => $packingSlip->id,
+            'show_secondary' => request()->query('show_secondary', 0),
+            'reverse_units' => request()->query('reverse_units', 0),
+        ]);
     }
 
     public function printPackingSlip($id)
@@ -455,14 +550,30 @@ class AdminController extends Controller
             ->with([
                 'rolls' => function ($query) {
                     $query->orderBy('sequence');
-                }
+                },
             ])
             ->get();
 
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('admin.pdf.packing-slip', compact('packingSlip', 'selectedItems'));
+        $showSecondary = request()->query('show_secondary', 0);
+        $reverseUnits = request()->query('reverse_units', 0);
+
+        // Resolve view template dynamically (improved template fetching logic)
+        $view = $this->resolvePackingSlipView();
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView($view, compact('packingSlip', 'selectedItems', 'showSecondary', 'reverseUnits'));
         $packingSlip->markPrinted();
 
-        return $pdf->stream('packing-slip-' . $packingSlip->slip_number . '.pdf');
+        return $pdf->stream('packing-slip-'.$packingSlip->slip_number.'.pdf');
+    }
+
+    protected function resolvePackingSlipView()
+    {
+        foreach (['pdf.packing-slip', 'admin.pdf.packing-slip', 'vendor.pdf.packing-slip'] as $view) {
+            if (view()->exists($view)) {
+                return $view;
+            }
+        }
+        return 'admin.pdf.packing-slip';
     }
 
     public function quickGeneratePackingSlip(Request $request, $poId)
@@ -470,7 +581,7 @@ class AdminController extends Controller
         $purchaseOrder = PurchaseOrder::findOrFail($poId);
 
         $request->validate([
-            'delivery_note' => 'required|string|max:255'
+            'delivery_note' => 'required|string|max:255',
         ]);
 
         $completedItemIds = \App\Models\PoItem::where('po_id', $poId)->where('status', 'completed')->pluck('id')->toArray();
@@ -483,17 +594,22 @@ class AdminController extends Controller
             'po_id' => $poId,
             'vendor_id' => $purchaseOrder->vendor_id,
             'items' => $completedItemIds,
-            'delivery_note' => $request->delivery_note
+            'delivery_note' => $request->delivery_note,
         ]);
 
         \App\Models\Roll::whereIn('item_id', $completedItemIds)->update(['is_printed' => true, 'printed_at' => now()]);
 
-        return redirect()->route('admin.packing-slip.print', $packingSlip->id);
+        return redirect()->route('admin.packing-slip.print', [
+            'id' => $packingSlip->id,
+            'show_secondary' => $request->input('show_secondary', 0),
+            'reverse_units' => $request->input('reverse_units', 0),
+        ]);
     }
 
     public function settings()
     {
         $settings = \App\Models\Setting::orderBy('group')->orderBy('key')->get();
+
         return view('admin.settings', compact('settings'));
     }
 

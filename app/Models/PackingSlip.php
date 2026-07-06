@@ -10,7 +10,9 @@ class PackingSlip extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
+
     protected $primaryKey = 'id';
 
     protected $fillable = [
@@ -21,7 +23,7 @@ class PackingSlip extends Model
         'printed_count',
         'last_printed_at',
         'pdf_path',
-        'delivery_note'
+        'delivery_note',
     ];
 
     protected $casts = [
@@ -29,7 +31,7 @@ class PackingSlip extends Model
         'po_id' => 'string',
         'vendor_id' => 'string',
         'items' => 'array',
-        'last_printed_at' => 'datetime'
+        'last_printed_at' => 'datetime',
     ];
 
     protected static function boot()
@@ -41,7 +43,7 @@ class PackingSlip extends Model
                 $model->id = (string) \Illuminate\Support\Str::uuid();
             }
             if (empty($model->slip_number)) {
-                $model->slip_number = 'SLIP-' . date('Ymd') . '-' . strtoupper(uniqid());
+                $model->slip_number = 'SLIP-'.date('Ymd').'-'.strtoupper(uniqid());
             }
         });
     }
@@ -61,6 +63,7 @@ class PackingSlip extends Model
         $this->printed_count++;
         $this->last_printed_at = now();
         $this->save();
+
         return $this;
     }
 }

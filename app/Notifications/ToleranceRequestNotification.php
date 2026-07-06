@@ -2,9 +2,9 @@
 
 namespace App\Notifications;
 
+use App\Models\ToleranceAmendmentRequest;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
-use App\Models\ToleranceAmendmentRequest;
 
 class ToleranceRequestNotification extends Notification
 {
@@ -19,20 +19,20 @@ class ToleranceRequestNotification extends Notification
 
     public function via($notifiable): array
     {
-        return ["database"];
+        return ['database'];
     }
 
     public function toArray($notifiable): array
     {
-        $typeLabel = $this->request->type === "partial_shipment" ? "Partial Shipment" : "Tolerance Amendment";
+        $typeLabel = $this->request->type === 'partial_shipment' ? 'Partial Shipment' : 'Tolerance Amendment';
         $poNumber = $this->request->poItem->purchaseOrder->po_number;
-        
+
         return [
-            "title" => "New " . $typeLabel . " Request",
-            "message" => "Item " . $this->request->poItem->item_number . " (PO: " . $poNumber . ") requires approval.",
-            "url" => route("admin.purchase-order.view", $this->request->poItem->purchaseOrder->id),
-            "icon" => "fas fa-file-invoice-dollar",
-            "type" => "request"
+            'title' => 'New '.$typeLabel.' Request',
+            'message' => 'Item '.$this->request->poItem->item_number.' (PO: '.$poNumber.') requires approval.',
+            'url' => route('admin.purchase-order.view', $this->request->poItem->purchaseOrder->id),
+            'icon' => 'fas fa-file-invoice-dollar',
+            'type' => 'request',
         ];
     }
 }

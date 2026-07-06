@@ -23,7 +23,7 @@
 
                     <div class="col-md-2">
                         <label for="status" class="form-label">Status</label>
-                        <select class="form-select" id="status" name="status">
+                        <select class="form-select searchable" id="status" name="status">
                             <option value="">All Status</option>
                             <option value="pending" {{ request('status') == 'pending' ? 'selected' : '' }}>Pending</option>
                             <option value="processing" {{ request('status') == 'processing' ? 'selected' : '' }}>Processing
@@ -37,7 +37,7 @@
 
                     <div class="col-md-3">
                         <label for="vendor_id" class="form-label">Vendor</label>
-                        <select class="form-select" id="vendor_id" name="vendor_id">
+                        <select class="form-select searchable" id="vendor_id" name="vendor_id">
                             <option value="">All Vendors</option>
                             @foreach($vendors as $vendor)
                                 <option value="{{ $vendor->id }}" {{ request('vendor_id') == $vendor->id ? 'selected' : '' }}>
@@ -275,4 +275,6 @@
             background-color: #dc3545;
         }
     </style>
+
+@include('partials.searchable-select')
 @endsection

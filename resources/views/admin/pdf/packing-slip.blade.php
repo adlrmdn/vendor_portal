@@ -73,10 +73,11 @@
             text-align: center;
         }
 
-        th:nth-child(4), td:nth-child(4), /* Quantity */
-        th:nth-child(5), td:nth-child(5)  /* Rolls */
+        th:nth-child(4), td:nth-child(4), /* Order Qty */
+        th:nth-child(5), td:nth-child(5), /* Actual Qty */
+        th:nth-child(6), td:nth-child(6)  /* Rolls */
         {
-            width: 120px;
+            width: 110px;
             text-align: center;
         }
 
@@ -119,7 +120,7 @@
             </div>
 
             <div class="slip-info">
-                <h2>PACKING SLIP (ADMIN COPY)</h2>
+                <h2>PACKING SLIP</h2>
                 <p><strong>Slip #:</strong> {{ $packingSlip->slip_number }}</p>
                 <p><strong>PO #:</strong> {{ $packingSlip->purchaseOrder->po_number }}</p>
                 <p><strong>Date:</strong> {{ $packingSlip->created_at->format('m/d/Y') }}</p>
@@ -155,26 +156,31 @@
                     <th>Item #</th>
                     <th>Description</th>
                     <th>Batch</th>
-                    <th>Quantity</th>
+                    <th>Order Qty</th>
+                    <th>Actual Qty</th>
                     <th>Rolls</th>
                 </tr>
             </thead>
             <tbody>
-                @php 
-                    $totalRolls = 0; 
+                @php
+                    $totalRolls = 0;
                     $totalQty = 0;
+                    $totalActualQty = 0;
                 @endphp
                 @foreach($selectedItems as $item)
-                    @php 
+                    @php
                         $itemRollCount = $item->rolls->count();
-                        $totalRolls += $itemRollCount; 
+                        $itemActualQty = $item->totalDeliveredQuantity();
+                        $totalRolls += $itemRollCount;
                         $totalQty += $item->quantity;
+                        $totalActualQty += $itemActualQty;
                     @endphp
                     <tr>
                         <td>{{ $item->item_number }}</td>
                         <td>{{ $item->description }}</td>
                         <td>{{ $item->batch ?? '-' }}</td>
                         <td>{{ number_format($item->quantity, 2) }} {{ ucfirst($item->unit) }}</td>
+                        <td>{{ number_format($itemActualQty, 2) }} {{ ucfirst($item->unit) }}</td>
                         <td>{{ $itemRollCount }} rolls</td>
                     </tr>
                 @endforeach
@@ -182,6 +188,7 @@
                 <tr style="background-color: #f9f9f9; font-weight: bold;">
                     <td colspan="3" style="text-align: right;">Total:</td>
                     <td style="text-align: center;">{{ number_format($totalQty, 2) }} {{ $selectedItems->isNotEmpty() ? ucfirst($selectedItems->first()->unit) : '' }}</td>
+                    <td style="text-align: center;">{{ number_format($totalActualQty, 2) }} {{ $selectedItems->isNotEmpty() ? ucfirst($selectedItems->first()->unit) : '' }}</td>
                     <td style="text-align: center;">{{ $totalRolls }} rolls</td>
                 </tr>
             </tbody>
@@ -216,14 +223,71 @@
     @foreach($selectedItems as $item)
         @php
             $sortedRolls = $item->rolls->sortBy('sequence');
-            $totalQuantity = 0;
+            
+            $totalPrimary = 0;
+            $totalSecondary = 0;
+            $hasSecondary = false;
+            $primaryUnitName = $sortedRolls->first()->unit ?? '';
+            $secondaryUnitName = '';
+
             foreach ($sortedRolls as $roll) {
-                if ($roll->unit == 'YD')
-                    $totalQuantity += $roll->length_yd;
-                elseif ($roll->unit == 'M')
-                    $totalQuantity += $roll->length_m;
-                else
-                    $totalQuantity += $roll->weight;
+                $pQty = 0;
+                $sQty = 0;
+                $sUnit = null;
+
+                if ($roll->unit == 'YD') {
+                    $pQty = $roll->length_yd ?? 0;
+                    $sUnit = 'M';
+                    $sQty = $roll->length_m ?? 0;
+                    if ($sQty == 0 && $pQty > 0) {
+                        $sQty = $pQty * 0.9144;
+                    }
+                } elseif ($roll->unit == 'M') {
+                    $pQty = $roll->length_m ?? 0;
+                    $sUnit = 'YD';
+                    $sQty = $roll->length_yd ?? 0;
+                    if ($sQty == 0 && $pQty > 0) {
+                        $sQty = $pQty / 0.9144;
+                    }
+                } else {
+                    $pQty = $roll->weight ?? 0;
+                    if (($roll->length_yd ?? 0) > 0 || ($roll->length_m ?? 0) > 0) {
+                        if (isset($reverseUnits) && $reverseUnits) {
+                            $sUnit = 'M';
+                            $sQty = $roll->length_m ?? 0;
+                            if ($sQty == 0 && ($roll->length_yd ?? 0) > 0) {
+                                $sQty = $roll->length_yd * 0.9144;
+                            }
+                        } else {
+                            $sUnit = 'YD';
+                            $sQty = $roll->length_yd ?? 0;
+                            if ($sQty == 0 && ($roll->length_m ?? 0) > 0) {
+                                $sQty = $roll->length_m / 0.9144;
+                            }
+                        }
+                    }
+                }
+
+                if (isset($reverseUnits) && $reverseUnits && ($roll->unit == 'YD' || $roll->unit == 'M')) {
+                    $tempQty = $pQty;
+                    $pQty = $sQty;
+                    $sQty = $tempQty;
+                    $primaryUnitName = ($roll->unit == 'YD') ? 'M' : 'YD';
+                    $secondaryUnitName = $roll->unit;
+                } else {
+                    $secondaryUnitName = $sUnit;
+                }
+
+                $totalPrimary += $pQty;
+                if ($sUnit !== null) {
+                    $totalSecondary += $sQty;
+                    $hasSecondary = true;
+                }
+            }
+
+            $totalQtyText = number_format($totalPrimary, 2) . ' ' . $primaryUnitName;
+            if (isset($showSecondary) && $showSecondary && $hasSecondary) {
+                $totalQtyText .= ' (' . number_format($totalSecondary, 2) . ' ' . $secondaryUnitName . ')';
             }
         @endphp
         @if($sortedRolls->count() > 0)
@@ -231,13 +295,13 @@
                 <h3 style="margin-bottom: 5px;">Rolls Details: (Item: {{ $item->item_number }})</h3>
                 <p style="margin: 0 0 10px 0; font-size: 13px;">
                     <strong>Total Rolls:</strong> {{ $sortedRolls->count() }}<br>
-                    <strong>Total Qty:</strong> {{ number_format($totalQuantity, 2) }} {{ $sortedRolls->first()->unit ?? '' }}
+                    <strong>Total Qty:</strong> {{ $totalQtyText }}
                 </p>
                 <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
                     <thead>
                         <tr>
                             <th style="border: 1px solid #ddd; padding: 6px; background-color: #f4f4f4;">Roll Number</th>
-                            <th style="border: 1px solid #ddd; padding: 6px; background-color: #f4f4f4; text-align: center;">Sequence Order</th>
+                            <th style="border: 1px solid #ddd; padding: 6px; background-color: #f4f4f4; text-align: center;">Lot-ID</th>
                             <th style="border: 1px solid #ddd; padding: 6px; background-color: #f4f4f4; text-align: right;">Quantity</th>
                             <th style="border: 1px solid #ddd; padding: 6px; background-color: #f4f4f4; text-align: center;">Unit</th>
                         </tr>
@@ -245,19 +309,65 @@
                     <tbody>
                         @foreach($sortedRolls as $roll)
                             @php
-                                $displayQty = 0;
-                                if ($roll->unit == 'YD')
-                                    $displayQty = $roll->length_yd;
-                                elseif ($roll->unit == 'M')
-                                    $displayQty = $roll->length_m;
-                                else
-                                    $displayQty = $roll->weight;
+                                $pQty = 0;
+                                $sQty = 0;
+                                $sUnit = null;
+
+                                if ($roll->unit == 'YD') {
+                                    $pQty = $roll->length_yd ?? 0;
+                                    $sUnit = 'M';
+                                    $sQty = $roll->length_m ?? 0;
+                                    if ($sQty == 0 && $pQty > 0) {
+                                        $sQty = $pQty * 0.9144;
+                                    }
+                                } elseif ($roll->unit == 'M') {
+                                    $pQty = $roll->length_m ?? 0;
+                                    $sUnit = 'YD';
+                                    $sQty = $roll->length_yd ?? 0;
+                                    if ($sQty == 0 && $pQty > 0) {
+                                        $sQty = $pQty / 0.9144;
+                                    }
+                                } else {
+                                    $pQty = $roll->weight ?? 0;
+                                    if (($roll->length_yd ?? 0) > 0 || ($roll->length_m ?? 0) > 0) {
+                                        if (isset($reverseUnits) && $reverseUnits) {
+                                            $sUnit = 'M';
+                                            $sQty = $roll->length_m ?? 0;
+                                            if ($sQty == 0 && ($roll->length_yd ?? 0) > 0) {
+                                                $sQty = $roll->length_yd * 0.9144;
+                                            }
+                                        } else {
+                                            $sUnit = 'YD';
+                                            $sQty = $roll->length_yd ?? 0;
+                                            if ($sQty == 0 && ($roll->length_m ?? 0) > 0) {
+                                                $sQty = $roll->length_m / 0.9144;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                $pUnit = $roll->unit;
+                                if (isset($reverseUnits) && $reverseUnits && ($roll->unit == 'YD' || $roll->unit == 'M')) {
+                                    $tempQty = $pQty;
+                                    $pQty = $sQty;
+                                    $sQty = $tempQty;
+                                    
+                                    $pUnit = ($roll->unit == 'YD') ? 'M' : 'YD';
+                                    $sUnit = $roll->unit;
+                                }
+
+                                $qtyVal = number_format($pQty, 2);
+                                $unitVal = $pUnit;
+                                if (isset($showSecondary) && $showSecondary && $sUnit !== null) {
+                                    $qtyVal .= ' (' . number_format($sQty, 2) . ')';
+                                    $unitVal .= ' (' . $sUnit . ')';
+                                }
                             @endphp
                             <tr>
                                 <td style="border: 1px solid #ddd; padding: 6px;">{{ $roll->roll_number }}</td>
-                                <td style="border: 1px solid #ddd; padding: 6px; text-align: center;">{{ $roll->sequence }}</td>
-                                <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">{{ number_format($displayQty, 2) }}</td>
-                                <td style="border: 1px solid #ddd; padding: 6px; text-align: center;">{{ $roll->unit }}</td>
+                                <td style="border: 1px solid #ddd; padding: 6px; text-align: center;">{{ $roll->internal_id ?? '-' }}</td>
+                                <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">{{ $qtyVal }}</td>
+                                <td style="border: 1px solid #ddd; padding: 6px; text-align: center;">{{ $unitVal }}</td>
                             </tr>
                         @endforeach
                     </tbody>
@@ -290,8 +400,8 @@
              flex-direction: column;
              justify-content: center;
              align-items: center;
-        }
-        .qr-header-cell {
+         }
+         .qr-header-cell {
             border: none !important;
             padding: 10px 0 5px 0 !important;
             text-align: left !important;
@@ -309,14 +419,67 @@
             @foreach($item->rolls->chunk(4) as $chunk)
                 <tr>
                     @foreach($chunk as $roll)
+                        @php
+                            $pQty = 0;
+                            $sQty = 0;
+                            $sUnit = null;
+
+                            if ($roll->unit == 'YD') {
+                                $pQty = $roll->length_yd ?? 0;
+                                $sUnit = 'M';
+                                $sQty = $roll->length_m ?? 0;
+                                if ($sQty == 0 && $pQty > 0) {
+                                    $sQty = $pQty * 0.9144;
+                                }
+                            } elseif ($roll->unit == 'M') {
+                                $pQty = $roll->length_m ?? 0;
+                                $sUnit = 'YD';
+                                $sQty = $roll->length_yd ?? 0;
+                                if ($sQty == 0 && $pQty > 0) {
+                                    $sQty = $pQty / 0.9144;
+                                }
+                            } else {
+                                $pQty = $roll->weight ?? 0;
+                                if (($roll->length_yd ?? 0) > 0 || ($roll->length_m ?? 0) > 0) {
+                                    if (isset($reverseUnits) && $reverseUnits) {
+                                        $sUnit = 'M';
+                                        $sQty = $roll->length_m ?? 0;
+                                        if ($sQty == 0 && ($roll->length_yd ?? 0) > 0) {
+                                            $sQty = $roll->length_yd * 0.9144;
+                                        }
+                                    } else {
+                                        $sUnit = 'YD';
+                                        $sQty = $roll->length_yd ?? 0;
+                                        if ($sQty == 0 && ($roll->length_m ?? 0) > 0) {
+                                            $sQty = $roll->length_m / 0.9144;
+                                        }
+                                    }
+                                }
+                            }
+
+                            $pUnit = $roll->unit;
+                            if (isset($reverseUnits) && $reverseUnits && ($roll->unit == 'YD' || $roll->unit == 'M')) {
+                                $tempQty = $pQty;
+                                $pQty = $sQty;
+                                $sQty = $tempQty;
+                                
+                                $pUnit = ($roll->unit == 'YD') ? 'M' : 'YD';
+                                $sUnit = $roll->unit;
+                            }
+
+                            $barcodeText = 'Lot-ID ' . ($roll->internal_id ?? 'N/A') . ' | ' . number_format($pQty, 2) . ' ' . $pUnit;
+                            if (isset($showSecondary) && $showSecondary && $sUnit !== null) {
+                                $barcodeText .= ' (' . number_format($sQty, 2) . ' ' . $sUnit . ')';
+                            }
+                        @endphp
                         <td class="qr-cell">
                             <div style="margin-bottom: 2px; height: 130px; display: flex; align-items: center; justify-content: center;">
-                                <img src="data:image/svg+xml;base64, {{ base64_encode(\SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(120)->generate($roll->roll_number)) }}" style="max-width: 100%; max-height: 100%;">
+                                <img src="data:image/svg+xml;base64, {{ base64_encode(\SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(120)->generate($barcodeText)) }}" style="max-width: 100%; max-height: 100%;">
                             </div>
                             <div style="font-size: 9px; line-height: 1.1; overflow: hidden;">
                                 <strong style="font-size: 8px;">{{ $roll->roll_number }}</strong><br>
                                 {{ $item->batch ?? 'N/A' }}<br>
-                                {{ $roll->length_yd > 0 ? number_format($roll->length_yd, 2) . ' YD' : ($roll->length_m > 0 ? number_format($roll->length_m, 2) . ' M' : number_format($roll->weight, 2) . ' KG') }}
+                                {{ $barcodeText }}
                             </div>
                         </td>
                     @endforeach

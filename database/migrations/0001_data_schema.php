@@ -2,18 +2,23 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up()
     {
         // Enable UUID extension (PostgreSQL specific)
-        DB::statement('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+        }
+
+        $defaultUuid = DB::getDriverName() === 'pgsql' ? DB::raw('uuid_generate_v4()') : null;
 
         // Vendors table
-        Schema::create('vendors', function (Blueprint $table) {
-            $table->uuid('id')->primary()->default(DB::raw('uuid_generate_v4()'));
+        Schema::create('vendors', function (Blueprint $table) use ($defaultUuid) {
+            $table->uuid('id')->primary()->default($defaultUuid);
             $table->string('name');
             $table->string('vendor_code', 50)->unique();
             $table->string('group')->nullable();
@@ -23,13 +28,17 @@ return new class extends Migration {
         });
 
         // Users table
-        Schema::create('users', function (Blueprint $table) {
-            $table->uuid('id')->primary()->default(DB::raw('uuid_generate_v4()'));
+        Schema::create('users', function (Blueprint $table) use ($defaultUuid) {
+            $table->uuid('id')->primary()->default($defaultUuid);
             $table->string('name');
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
-            $table->enum('role', ['vendor', 'admin'])->default('vendor');
+            if (DB::getDriverName() === 'sqlite') {
+                $table->string('role', 20)->default('fabric_vendor');
+            } else {
+                $table->enum('role', ['vendor', 'admin'])->default('vendor');
+            }
             $table->uuid('vendor_id')->nullable();
             $table->rememberToken();
             $table->timestamps();
@@ -39,8 +48,8 @@ return new class extends Migration {
         });
 
         // Purchase Orders table
-        Schema::create('purchase_orders', function (Blueprint $table) {
-            $table->uuid('id')->primary()->default(DB::raw('uuid_generate_v4()'));
+        Schema::create('purchase_orders', function (Blueprint $table) use ($defaultUuid) {
+            $table->uuid('id')->primary()->default($defaultUuid);
             $table->string('po_number', 100)->unique();
             $table->uuid('vendor_id');
             $table->enum('status', ['pending', 'processing', 'completed', 'cancelled'])->default('pending');
@@ -57,8 +66,8 @@ return new class extends Migration {
         });
 
         // PO Items table
-        Schema::create('po_items', function (Blueprint $table) {
-            $table->uuid('id')->primary()->default(DB::raw('uuid_generate_v4()'));
+        Schema::create('po_items', function (Blueprint $table) use ($defaultUuid) {
+            $table->uuid('id')->primary()->default($defaultUuid);
             $table->uuid('po_id');
             $table->string('item_number', 100);
             $table->string('description');
@@ -82,8 +91,8 @@ return new class extends Migration {
         });
 
         // Rolls table
-        Schema::create('rolls', function (Blueprint $table) {
-            $table->uuid('id')->primary()->default(DB::raw('uuid_generate_v4()'));
+        Schema::create('rolls', function (Blueprint $table) use ($defaultUuid) {
+            $table->uuid('id')->primary()->default($defaultUuid);
             $table->uuid('item_id');
             $table->string('roll_number', 50);
             $table->integer('sequence');
@@ -105,8 +114,8 @@ return new class extends Migration {
         });
 
         // Packing Slips table
-        Schema::create('packing_slips', function (Blueprint $table) {
-            $table->uuid('id')->primary()->default(DB::raw('uuid_generate_v4()'));
+        Schema::create('packing_slips', function (Blueprint $table) use ($defaultUuid) {
+            $table->uuid('id')->primary()->default($defaultUuid);
             $table->string('slip_number', 100)->unique();
             $table->uuid('po_id');
             $table->uuid('vendor_id');

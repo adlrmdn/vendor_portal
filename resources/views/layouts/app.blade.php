@@ -166,6 +166,7 @@
             width: fit-content;
         }
     </style>
+    @stack('styles')
 </head>
 
 <body>
@@ -258,7 +259,7 @@
                             </a>
                             <ul class="dropdown-menu dropdown-menu-end">
                                 <li>
-                                    <a class="dropdown-item" href="#">
+                                    <a class="dropdown-item" href="{{ Auth::user()->role === 'subcon_vendor' ? route('subcon.vendor.profile') : '#' }}">
                                         <i class="fas fa-user me-2"></i> Profile
                                     </a>
                                 </li>

@@ -11,22 +11,20 @@ class CheckRole
     /**
      * Handle an incoming request.
      *
-     * @param  \Illuminate\Http\Request  $request
-     * @param  \Closure  $next
      * @param  mixed  ...$roles
      * @return mixed
      */
     public function handle(Request $request, Closure $next, ...$roles)
     {
         // Check if user is authenticated
-        if (!Auth::check()) {
+        if (! Auth::check()) {
             return redirect()->route('login');
         }
 
         $user = Auth::user();
-        
+
         // Check if user has one of the required roles
-        if (!in_array($user->role, $roles)) {
+        if (! in_array($user->role, $roles)) {
             abort(403, 'Unauthorized access. You do not have permission to access this page.');
         }
 

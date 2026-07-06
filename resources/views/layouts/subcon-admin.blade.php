@@ -27,6 +27,35 @@
                         </a>
                     </li>
                     <li>
+                        @php($pendingApprovals = \App\Models\SubconOrder::whereIn('workflow_stage', ['cutting_review', 'gramasi_review'])->count())
+                        <a href="{{ route('subcon.admin.approvals') }}"
+                            class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.approvals') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Requested Approvals">
+                            <i class="fas fa-gavel me-2"></i> <span>Approvals</span>
+                            @if($pendingApprovals > 0)
+                                <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingApprovals }}</span>
+                            @endif
+                        </a>
+                    </li>
+                    <li>
+                        @php($waitingDistCount = \App\Models\SubconOrder::where('workflow_stage', \App\Models\SubconOrder::STAGE_WAITING_DISTRIBUTION)->count())
+                        <a href="{{ route('subcon.admin.orders-waiting-distribution') }}"
+                            class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.orders-waiting-distribution*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Generate Labels">
+                            <i class="fas fa-print me-2"></i> <span>Generate Labels</span>
+                            @if($waitingDistCount > 0)
+                                <span class="badge bg-info rounded-pill text-dark ms-auto">{{ $waitingDistCount }}</span>
+                            @endif
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('subcon.admin.workflow') }}"
+                            class="nav-link {{ request()->routeIs('subcon.admin.workflow*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Workflow Settings">
+                            <i class="fas fa-sitemap me-2"></i> <span>Workflow</span>
+                        </a>
+                    </li>
+                    <li>
                         <a href="{{ route('subcon.admin.vendors') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.vendors*') ? 'active' : '' }}"
                             data-bs-toggle="tooltip" data-bs-placement="right" title="Subcon Vendors">

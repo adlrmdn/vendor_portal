@@ -10,7 +10,9 @@ class Vendor extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
+
     protected $primaryKey = 'id';
 
     protected $fillable = [
@@ -19,13 +21,13 @@ class Vendor extends Model
         'group',
         'type',
         'contact_info',
-        'is_active'
+        'is_active',
     ];
 
     protected $casts = [
         'id' => 'string',
         'contact_info' => 'array',
-        'is_active' => 'boolean'
+        'is_active' => 'boolean',
     ];
 
     public function users()

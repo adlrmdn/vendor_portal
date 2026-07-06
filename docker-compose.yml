@@ -8,13 +8,29 @@ services:
     image: vendor-portal
     container_name: vendor_portal_app
     ports:
-      - "8080:80"
+      - "8082:80"
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
       # Ensure key is set, or better, mount .env
 
 
+    volumes:
+      - .:/var/www/html
+      - ./database/database.sqlite:/var/www/html/database/database.sqlite
+      - ./.env:/var/www/html/.env
+    restart: unless-stopped
+
+  # Processes the database queue (D365 cutting/gramasi sync jobs dispatched after
+  # approval). Without this, queued jobs never run. Shares the app image + env.
+  worker:
+    image: vendor-portal
+    depends_on:
+      - app
+    command: php artisan queue:work --sleep=3 --tries=3 --max-time=3600
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
     volumes:
       - .:/var/www/html
       - ./database/database.sqlite:/var/www/html/database/database.sqlite

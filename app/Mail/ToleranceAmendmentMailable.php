@@ -2,13 +2,12 @@
 
 namespace App\Mail;
 
+use App\Models\ToleranceAmendmentRequest;
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
-use App\Models\ToleranceAmendmentRequest;
 use Illuminate\Support\Facades\URL;
 
 class ToleranceAmendmentMailable extends Mailable
@@ -16,7 +15,9 @@ class ToleranceAmendmentMailable extends Mailable
     use Queueable, SerializesModels;
 
     public $request;
+
     public $approveUrl;
+
     public $declineUrl;
 
     /**
@@ -25,10 +26,13 @@ class ToleranceAmendmentMailable extends Mailable
     public function __construct(ToleranceAmendmentRequest $request)
     {
         $this->request = $request;
-        
-        // Generate signed URLs for approval/decline
-        $this->approveUrl = URL::signedRoute('tolerance.approve', ['request' => $request->id]);
-        $this->declineUrl = URL::signedRoute('tolerance.decline', ['request' => $request->id]);
+
+        // Generate signed URLs for approval/decline. Use a relative signature
+        // (absolute: false) so it validates behind the HTTPS reverse proxy,
+        // where the internal request host/scheme differs from the public URL.
+        // Wrapped in url() to keep the email link a full clickable https URL.
+        $this->approveUrl = url(URL::signedRoute('tolerance.approve', ['request' => $request->id], absolute: false));
+        $this->declineUrl = url(URL::signedRoute('tolerance.decline', ['request' => $request->id], absolute: false));
     }
 
     /**
@@ -36,9 +40,9 @@ class ToleranceAmendmentMailable extends Mailable
      */
     public function envelope(): Envelope
     {
-        $subject = ($this->request->type === 'partial_shipment' ? 'Partial Shipment' : 'Tolerance Amendment') . 
-                   ' Request - Item ' . $this->request->poItem->item_number;
-                   
+        $subject = ($this->request->type === 'partial_shipment' ? 'Partial Shipment' : 'Tolerance Amendment').
+                   ' Request - Item '.$this->request->poItem->item_number;
+
         return new Envelope(
             subject: $subject,
         );

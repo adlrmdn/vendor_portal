@@ -14,4 +14,4 @@ Schedule::command('d365:sync-orders')->hourly();
 // Subcon work orders — KNK (V0246) lives in the mpg legal entity.
 // --company is mandatory to avoid the cross-company vendor-code collision
 // (V0246 = PUMA CAT in mpr). Offset to avoid overlapping the fabric run.
-Schedule::command('d365:sync-subcon-orders --company=mpg --days=60')->hourlyAt(30);
+Schedule::command('d365:sync-subcon-orders --company=mpg --days=180')->hourlyAt(30);

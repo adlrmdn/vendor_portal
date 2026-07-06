@@ -2,20 +2,18 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\PurchaseOrder;
-use App\Models\PoItem;
-use App\Models\Roll;
 use App\Models\PackingSlip;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Barryvdh\DomPDF\Facade\Pdf;
-use Maatwebsite\Excel\Facades\Excel;
-use Smalot\PdfParser\Parser as PdfParser;
+use App\Models\PoItem;
+use App\Models\PurchaseOrder;
+use App\Models\Roll;
 use App\Models\Setting;
 use App\Models\ToleranceAmendmentRequest;
-use App\Mail\ToleranceAmendmentMailable;
-use Illuminate\Support\Facades\Mail;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Maatwebsite\Excel\Facades\Excel;
+use Smalot\PdfParser\Parser as PdfParser;
 
 class VendorController extends Controller
 {
@@ -26,6 +24,7 @@ class VendorController extends Controller
             if (Auth::user()->role !== 'fabric_vendor') {
                 abort(403, 'Unauthorized access.');
             }
+
             return $next($request);
         });
     }
@@ -54,8 +53,8 @@ class VendorController extends Controller
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                          ->select(DB::raw('count(distinct(item_number))'));
-                }
+                        ->select(DB::raw('count(distinct(item_number))'));
+                },
             ])
             ->with('items:id,po_id,status') // Eager load for button logic
             ->orderBy('created_at', 'desc')
@@ -79,15 +78,17 @@ class VendorController extends Controller
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                          ->select(DB::raw('count(distinct(item_number))'));
-                }
+                        ->select(DB::raw('count(distinct(item_number))'));
+                },
             ])
             ->with('items:id,po_id,status'); // Eager load for button logic
 
         if ($search) {
-            $query->where(function($q) use ($search) {
-                $q->where('po_number', 'like', '%' . $search . '%')
-                  ->orWhere('reference', 'like', '%' . $search . '%');
+            $query->where(function ($q) use ($search) {
+                $q->where('po_number', 'like', '%'.$search.'%')
+                    ->orWhereHas('items', function ($iq) use ($search) {
+                        $iq->where('plm_number', 'like', '%'.$search.'%');
+                    });
             });
         }
 
@@ -96,7 +97,7 @@ class VendorController extends Controller
         }
 
         $perPage = (int) $request->get('per_page', 25);
-        if (!in_array($perPage, [10, 25, 50])) {
+        if (! in_array($perPage, [10, 25, 50])) {
             $perPage = 25;
         }
 
@@ -115,7 +116,7 @@ class VendorController extends Controller
             ->with([
                 'items' => function ($query) {
                     $query->with(['rolls']); // Explicitly load rolls
-                }
+                },
             ])
             ->findOrFail($id);
 
@@ -129,7 +130,7 @@ class VendorController extends Controller
             'purchaseOrder',
             'rolls' => function ($query) {
                 $query->orderBy('roll_number');
-            }
+            },
         ])->findOrFail($itemId);
 
         // Verify vendor access
@@ -165,13 +166,13 @@ class VendorController extends Controller
                 }
 
                 // Validate quantity for non-deleted rolls
-                if (!isset($roll['quantity']) || !is_numeric($roll['quantity']) || $roll['quantity'] < 0.01) {
-                    $validator->errors()->add("rolls.$key.quantity", "Quantity for roll " . ($key + 1) . " must be a valid number greater than 0.");
+                if (! isset($roll['quantity']) || ! is_numeric($roll['quantity']) || $roll['quantity'] < 0.01) {
+                    $validator->errors()->add("rolls.$key.quantity", 'Quantity for roll '.($key + 1).' must be a valid number greater than 0.');
                 }
 
                 // Validate unit for non-deleted rolls
-                if (!isset($roll['unit']) || !in_array($roll['unit'], ['YD', 'M', 'KG'])) {
-                    $validator->errors()->add("rolls.$key.unit", "Invalid unit for roll " . ($key + 1));
+                if (! isset($roll['unit']) || ! in_array($roll['unit'], ['YD', 'M', 'KG'])) {
+                    $validator->errors()->add("rolls.$key.unit", 'Invalid unit for roll '.($key + 1));
                 }
             }
         });
@@ -216,13 +217,14 @@ class VendorController extends Controller
             // Map input keys to objects for easier lookup
             $inputMap = [];
             foreach ($rollsData as $data) {
-                if (isset($data['delete']) && $data['delete'] == '1')
+                if (isset($data['delete']) && $data['delete'] == '1') {
                     continue;
+                }
                 if (isset($data['id'])) {
                     $inputMap[$data['id']] = $data;
                 } else {
                     // New rolls stored in a separate list to append
-                    $inputMap['new_' . $nextSequence . '_' . uniqid()] = $data;
+                    $inputMap['new_'.$nextSequence.'_'.uniqid()] = $data;
                 }
             }
 
@@ -244,16 +246,22 @@ class VendorController extends Controller
                     // Logic: Map input quantity to the correct column
                     if ($data['unit'] == 'YD') {
                         $updateData['length_yd'] = $data['quantity'];
+                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
+                        $updateData['weight'] = 0;
                     } elseif ($data['unit'] == 'M') {
                         $updateData['length_m'] = $data['quantity'];
+                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
+                        $updateData['weight'] = 0;
                     } else {
-                        // KG or others go to weight
+                        // KG or PCS
                         $updateData['weight'] = $data['quantity'];
+                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
+                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
                     }
 
                     // Generate Roll Number: PO-ITEM-SEQ
                     $rollNumber = sprintf(
-                        "%s-%s-%03d",
+                        '%s-%s-%03d',
                         $item->purchaseOrder->po_number,
                         $item->item_number,
                         $nextSequence
@@ -263,7 +271,7 @@ class VendorController extends Controller
                     $existingRoll->update($updateData);
 
                     // Update QR Code if name changed (optional, but good practice)
-                    // $existingRoll->generateQrCode(); 
+                    // $existingRoll->generateQrCode();
 
                     $nextSequence++;
                     $updatedCount++;
@@ -289,21 +297,25 @@ class VendorController extends Controller
                     // We REMOVE 'length' generic column as it causes errors
                     'length_yd' => 0,
                     'length_m' => 0,
-                    'weight' => 0
+                    'weight' => 0,
                 ];
 
                 // Map input quantity to the correct column
                 if ($data['unit'] == 'YD') {
                     $createData['length_yd'] = $data['quantity'];
+                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
                 } elseif ($data['unit'] == 'M') {
                     $createData['length_m'] = $data['quantity'];
+                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
                 } else {
                     $createData['weight'] = $data['quantity'];
+                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
+                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
                 }
 
                 // Generate Roll Number: PO-ITEM-SEQ
                 $rollNumber = sprintf(
-                    "%s-%s-%03d",
+                    '%s-%s-%03d',
                     $item->purchaseOrder->po_number,
                     $item->item_number,
                     $nextSequence
@@ -315,7 +327,7 @@ class VendorController extends Controller
                 try {
                     $roll->generateQrCode();
                 } catch (\Exception $e) {
-                    \Log::warning('QR generation failed for roll ' . $rollNumber . ': ' . $e->getMessage());
+                    \Log::warning('QR generation failed for roll '.$rollNumber.': '.$e->getMessage());
                 }
 
                 $nextSequence++;
@@ -334,21 +346,25 @@ class VendorController extends Controller
             \DB::commit();
 
             // Prepare success message
-            $message = "Saved successfully. ";
-            if ($deletedCount > 0)
+            $message = 'Saved successfully. ';
+            if ($deletedCount > 0) {
                 $message .= "$deletedCount deleted. ";
-            if ($createdCount > 0)
+            }
+            if ($createdCount > 0) {
                 $message .= "$createdCount created. ";
-            if ($updatedCount > 0)
+            }
+            if ($updatedCount > 0) {
                 $message .= "$updatedCount updated. ";
-            $message .= "Rolls re-sequenced.";
+            }
+            $message .= 'Rolls re-sequenced.';
 
             return redirect()->route('vendor.item.process', $itemId)
                 ->with('success', $message);
 
         } catch (\Exception $e) {
             \DB::rollBack();
-            return redirect()->back()->with('error', 'Error: ' . $e->getMessage());
+
+            return redirect()->back()->with('error', 'Error: '.$e->getMessage());
         }
     }
 
@@ -373,7 +389,7 @@ class VendorController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Roll deleted successfully',
-            'item_id' => $itemId
+            'item_id' => $itemId,
         ]);
     }
 
@@ -409,7 +425,7 @@ class VendorController extends Controller
         }
 
         // Check for approval
-        if (!$item->hasApprovedPartialShipment()) {
+        if (! $item->hasApprovedPartialShipment()) {
             return redirect()->back()->with('error', 'Partial shipment has not been approved for this item yet.');
         }
 
@@ -461,7 +477,7 @@ class VendorController extends Controller
             'type' => 'partial_shipment',
             'requested_qty' => $request->requested_qty,
             'reason' => $request->reason,
-            'status' => 'pending'
+            'status' => 'pending',
         ]);
 
         // Trigger Notifications for Admins
@@ -469,11 +485,11 @@ class VendorController extends Controller
             $admins = \App\Models\User::whereIn('role', ['admin', 'fabric_admin'])->get();
             \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\ToleranceRequestNotification($amendmentRequest));
         } catch (\Exception $e) {
-            \Log::error("Failed to send partial shipment notification: " . $e->getMessage());
+            \Log::error('Failed to send partial shipment notification: '.$e->getMessage());
         }
 
         $approverBadge = Setting::getValue('Approval');
-        
+
         // Use custom approver lookup logic from ToleranceAmendment
         if ($approverBadge) {
             $approverData = \DB::connection('people_function')
@@ -481,20 +497,20 @@ class VendorController extends Controller
                 ->where('badge', $approverBadge)
                 ->first();
 
-            if ($approverData && !empty($approverData->email)) {
+            if ($approverData && ! empty($approverData->email)) {
                 try {
                     \Mail::to($approverData->email)
                         ->send(new \App\Mail\ToleranceAmendmentMailable($amendmentRequest));
                 } catch (\Exception $e) {
-                    \Log::error("Failed to send partial shipment email: " . $e->getMessage());
+                    \Log::error('Failed to send partial shipment email: '.$e->getMessage());
                 }
             } else {
-                \Log::warning("Approver badge found but no email: " . $approverBadge);
+                \Log::warning('Approver badge found but no email: '.$approverBadge);
                 // Fallback attempt
                 $this->sendFallbackNotification($amendmentRequest);
             }
         } else {
-            \Log::warning("No Approver badge found in settings");
+            \Log::warning('No Approver badge found in settings');
             $this->sendFallbackNotification($amendmentRequest);
         }
 
@@ -507,7 +523,7 @@ class VendorController extends Controller
             \Mail::to(\App\Models\Setting::getValue('admin_notification_email', 'admin@example.com'))
                 ->send(new \App\Mail\ToleranceAmendmentMailable($amendmentRequest));
         } catch (\Exception $e) {
-            \Log::error("Failed to send fallback partial shipment email: " . $e->getMessage());
+            \Log::error('Failed to send fallback partial shipment email: '.$e->getMessage());
         }
     }
 
@@ -530,10 +546,10 @@ class VendorController extends Controller
 
         try {
             if ($extension === 'pdf') {
-                $parser = new PdfParser();
+                $parser = new PdfParser;
                 $pdf = $parser->parseFile($file->getPathname());
                 $text = $pdf->getText();
-                
+
                 // Simple AI-like heuristic: look for patterns that look like [ID] [Quantity]
                 // For now, look for lines with a number at the end
                 $lines = explode("\n", $text);
@@ -542,21 +558,23 @@ class VendorController extends Controller
                     if (preg_match('/([A-Z0-9_-]+)?\s*(\d+(?:\.\d+)?)$/', $line, $matches)) {
                         $rollsData[] = [
                             'internal_id' => $matches[1] ?? '',
-                            'quantity' => (float) $matches[2]
+                            'quantity' => (float) $matches[2],
                         ];
                     }
                 }
             } else {
                 // Excel/CSV
                 $data = Excel::toArray([], $file);
-                if (!empty($data) && !empty($data[0])) {
+                if (! empty($data) && ! empty($data[0])) {
                     foreach ($data[0] as $row) {
                         // Skip header or empty rows
-                        if (!isset($row[1]) || !is_numeric($row[1])) continue;
-                        
+                        if (! isset($row[1]) || ! is_numeric($row[1])) {
+                            continue;
+                        }
+
                         $rollsData[] = [
                             'internal_id' => $row[0] ?? '',
-                            'quantity' => (float) $row[1]
+                            'quantity' => (float) $row[1],
                         ];
                     }
                 }
@@ -569,11 +587,11 @@ class VendorController extends Controller
             return response()->json([
                 'success' => true,
                 'data' => $rollsData,
-                'message' => count($rollsData) . ' rolls identified successfully.'
+                'message' => count($rollsData).' rolls identified successfully.',
             ]);
 
         } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => 'Error parsing file: ' . $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Error parsing file: '.$e->getMessage()]);
         }
     }
 
@@ -601,7 +619,7 @@ class VendorController extends Controller
             'po_item_id' => 'required|exists:po_items,id',
             'new_underdelivery' => 'required|numeric|min:0|max:100',
             'new_overdelivery' => 'required|numeric|min:0|max:100',
-            'reason' => 'required|string|min:10'
+            'reason' => 'required|string|min:10',
         ]);
 
         $item = PoItem::findOrFail($request->po_item_id);
@@ -611,8 +629,8 @@ class VendorController extends Controller
         }
 
         $approverBadge = Setting::getValue('Approval');
-        
-        if (!$approverBadge) {
+
+        if (! $approverBadge) {
             return redirect()->back()->with('error', 'Approver badge is not configured in settings.');
         }
 
@@ -622,8 +640,8 @@ class VendorController extends Controller
             ->where('badge', $approverBadge)
             ->first();
 
-        if (!$approver) {
-            return redirect()->back()->with('error', 'Approver with badge ' . $approverBadge . ' not found in employees database.');
+        if (! $approver) {
+            return redirect()->back()->with('error', 'Approver with badge '.$approverBadge.' not found in employees database.');
         }
 
         if (empty($approver->email)) {
@@ -638,7 +656,7 @@ class VendorController extends Controller
             'new_overdelivery' => $request->new_overdelivery,
             'reason' => $request->reason,
             'approver_badge' => $approverBadge,
-            'status' => 'pending'
+            'status' => 'pending',
         ]);
 
         // Trigger Notifications for Admins
@@ -646,7 +664,7 @@ class VendorController extends Controller
             $admins = \App\Models\User::whereIn('role', ['admin', 'fabric_admin'])->get();
             \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\ToleranceRequestNotification($amendmentRequest));
         } catch (\Exception $e) {
-            \Log::error("Failed to send tolerance amendment notification to admins: " . $e->getMessage());
+            \Log::error('Failed to send tolerance amendment notification to admins: '.$e->getMessage());
         }
 
         try {
@@ -669,7 +687,7 @@ class VendorController extends Controller
         $request->validate([
             'items' => 'required|array',
             'items.*' => 'exists:po_items,id',
-            'delivery_note' => 'required|string|max:255'
+            'delivery_note' => 'required|string|max:255',
         ]);
 
         // Create packing slip
@@ -677,16 +695,20 @@ class VendorController extends Controller
             'po_id' => $poId,
             'vendor_id' => $vendorId,
             'items' => $request->items,
-            'delivery_note' => $request->delivery_note
+            'delivery_note' => $request->delivery_note,
         ]);
 
         // Mark rolls as printed
         Roll::whereIn('item_id', $request->items)->update([
             'is_printed' => true,
-            'printed_at' => now()
+            'printed_at' => now(),
         ]);
 
-        return redirect()->route('vendor.packing-slip.view', $packingSlip->id);
+        return redirect()->route('vendor.packing-slip.view', [
+            'id' => $packingSlip->id,
+            'show_secondary' => $request->input('show_secondary', 0),
+            'reverse_units' => $request->input('reverse_units', 0),
+        ]);
     }
 
     public function viewPackingSlip($id)
@@ -702,12 +724,16 @@ class VendorController extends Controller
             ->with([
                 'rolls' => function ($query) {
                     $query->orderBy('sequence');
-                }
+                },
             ])
             ->get();
 
         // Redirect to print view (PDF)
-        return redirect()->route('vendor.packing-slip.print', $packingSlip->id);
+        return redirect()->route('vendor.packing-slip.print', [
+            'id' => $packingSlip->id,
+            'show_secondary' => request()->query('show_secondary', 0),
+            'reverse_units' => request()->query('reverse_units', 0),
+        ]);
     }
 
     public function printPackingSlip($id)
@@ -724,17 +750,33 @@ class VendorController extends Controller
             ->with([
                 'rolls' => function ($query) {
                     $query->orderBy('sequence');
-                }
+                },
             ])
             ->get();
 
+        $showSecondary = request()->query('show_secondary', 0);
+        $reverseUnits = request()->query('reverse_units', 0);
+
+        // Resolve view template dynamically (improved template fetching logic)
+        $view = $this->resolvePackingSlipView();
+
         // Generate PDF
-        $pdf = Pdf::loadView('vendor.pdf.packing-slip', compact('packingSlip', 'selectedItems'));
+        $pdf = Pdf::loadView($view, compact('packingSlip', 'selectedItems', 'showSecondary', 'reverseUnits'));
 
         // Update printed count
         $packingSlip->markPrinted();
 
-        return $pdf->stream('packing-slip-' . $packingSlip->slip_number . '.pdf');
+        return $pdf->stream('packing-slip-'.$packingSlip->slip_number.'.pdf');
+    }
+
+    protected function resolvePackingSlipView()
+    {
+        foreach (['pdf.packing-slip', 'admin.pdf.packing-slip', 'vendor.pdf.packing-slip'] as $view) {
+            if (view()->exists($view)) {
+                return $view;
+            }
+        }
+        return 'vendor.pdf.packing-slip';
     }
 
     // NEW: Quick generate packing slip for all completed items in a PO
@@ -746,7 +788,7 @@ class VendorController extends Controller
         $purchaseOrder = PurchaseOrder::where('vendor_id', $vendorId)->findOrFail($poId);
 
         $request->validate([
-            'delivery_note' => 'required|string|max:255'
+            'delivery_note' => 'required|string|max:255',
         ]);
 
         // Find all completed items
@@ -764,16 +806,20 @@ class VendorController extends Controller
             'po_id' => $poId,
             'vendor_id' => $vendorId,
             'items' => $completedItemIds,
-            'delivery_note' => $request->delivery_note
+            'delivery_note' => $request->delivery_note,
         ]);
 
         // Mark rolls as printed
         Roll::whereIn('item_id', $completedItemIds)->update([
             'is_printed' => true,
-            'printed_at' => now()
+            'printed_at' => now(),
         ]);
 
         // Redirect to print view
-        return redirect()->route('vendor.packing-slip.print', $packingSlip->id);
+        return redirect()->route('vendor.packing-slip.print', [
+            'id' => $packingSlip->id,
+            'show_secondary' => $request->input('show_secondary', 0),
+            'reverse_units' => $request->input('reverse_units', 0),
+        ]);
     }
 }

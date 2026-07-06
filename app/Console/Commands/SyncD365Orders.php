@@ -2,14 +2,14 @@
 
 namespace App\Console\Commands;
 
+use App\Models\PoItem;
+use App\Models\PurchaseOrder;
+use App\Models\Vendor;
+use Carbon\Carbon;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use App\Models\Vendor;
-use App\Models\PurchaseOrder;
-use App\Models\PoItem;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 class SyncD365Orders extends Command
@@ -19,7 +19,9 @@ class SyncD365Orders extends Command
      *
      * @var string
      */
-    protected $signature = 'd365:sync-orders';
+    protected $signature = 'd365:sync-orders
+                            {--since= : Backfill: only pull POs created on/after this date (Y-m-d). Overrides the default 30-day window.}
+                            {--months= : Backfill: pull POs created within the last N months. Overrides the default 30-day window.}';
 
     /**
      * The console command description.
@@ -36,25 +38,36 @@ class SyncD365Orders extends Command
         $this->info('Starting D365 ETL pipeline...');
 
         $token = $this->getD365Token();
-        if (!$token) {
+        if (! $token) {
             $this->error('Failed to authenticate with D365.');
+
             return Command::FAILURE;
         }
 
-        // 1. Fetch Headers
-        $cutoff = Carbon::now()->subDays(30)->format('Y-m-d\TH:i:s\Z');
+        // 1. Fetch Headers. Default window is the last 30 days (incremental daily
+        // cadence); --since / --months widen it for a one-off historical backfill.
+        if ($since = $this->option('since')) {
+            $cutoffDate = Carbon::parse($since);
+        } elseif ($months = $this->option('months')) {
+            $cutoffDate = Carbon::now()->subMonths((int) $months);
+        } else {
+            $cutoffDate = Carbon::now()->subDays(30);
+        }
+        $cutoff = $cutoffDate->format('Y-m-d\TH:i:s\Z');
+        $this->info('Sync window: POs created on/after '.$cutoffDate->toDateString().'.');
         $filters = [
-            "(PurchPoolId eq 'Fab-Local' or PurchPoolId eq 'Fab-Import')",
+            "(PurchPoolId eq 'Fab-Local' or PurchPoolId eq 'Fab-Import' or PurchPoolId eq 'Fab-Repro')",
             "DocumentApprovalStatus eq Microsoft.Dynamics.DataEntities.VersioningDocumentState'Confirmed'",
-            "CreatedDateTime1 ge $cutoff"
+            "CreatedDateTime1 ge $cutoff",
         ];
-        
+
         $this->info('Fetching PO Headers...');
         $headers = $this->fetchRecords('PurchaseOrderHeadersV2', $filters);
-        $this->info('Fetched ' . count($headers) . ' header records.');
+        $this->info('Fetched '.count($headers).' header records.');
 
         if (empty($headers)) {
             $this->info('No new orders to sync.');
+
             return Command::SUCCESS;
         }
 
@@ -69,7 +82,7 @@ class SyncD365Orders extends Command
             $poNumber = $h['PurchaseOrderNumber'];
             $vendorAccount = $h['OrderVendorAccountNumber'];
 
-            if (!isset($vendors[$vendorAccount])) {
+            if (! isset($vendors[$vendorAccount])) {
                 continue; // Skip if vendor not in DB
             }
 
@@ -84,7 +97,7 @@ class SyncD365Orders extends Command
             }
         }
 
-        $this->info('Found ' . count($poMap) . ' valid POs (New: ' . count($validToInsert) . ').');
+        $this->info('Found '.count($poMap).' valid POs (New: '.count($validToInsert).').');
         if (empty($poMap)) {
             return Command::SUCCESS;
         }
@@ -93,31 +106,31 @@ class SyncD365Orders extends Command
         $this->info('Fetching PLM Mapping...');
         $plmFilters = ["ModifiedDateTimeHeader ge $cutoff"];
         $plmRecords = $this->fetchRecords('TOC_PurchRequisitions', $plmFilters, ['PurchReqId', 'TOC_PLM_ID']);
-        
+
         $plmMap = [];
         foreach ($plmRecords as $r) {
             if (isset($r['PurchReqId']) && isset($r['TOC_PLM_ID'])) {
                 $plmMap[$r['PurchReqId']] = $r['TOC_PLM_ID'];
             }
         }
-        $this->info('Built PLM Map with ' . count($plmMap) . ' entries.');
+        $this->info('Built PLM Map with '.count($plmMap).' entries.');
 
         // 4. Fetch Lines in Batches
         $poNumbers = array_keys($poMap);
         $chunks = array_chunk($poNumbers, 20);
-        
+
         $allLines = [];
         foreach ($chunks as $chunk) {
-            $this->info('Fetching batch for ' . count($chunk) . ' POs...');
-            $parts = array_map(function($po) {
+            $this->info('Fetching batch for '.count($chunk).' POs...');
+            $parts = array_map(function ($po) {
                 return "PurchaseOrderNumber eq '$po'";
             }, $chunk);
-            $filter = '(' . implode(' or ', $parts) . ')';
-            
+            $filter = '('.implode(' or ', $parts).')';
+
             $batchLines = $this->fetchRecords('PurchaseOrderLinesV2', [$filter]);
             $allLines = array_merge($allLines, $batchLines);
         }
-        $this->info('Fetched ' . count($allLines) . ' lines.');
+        $this->info('Fetched '.count($allLines).' lines.');
 
         // 5. Data transformation and insertion
         DB::beginTransaction();
@@ -133,24 +146,23 @@ class SyncD365Orders extends Command
             foreach ($validToInsert as $h) {
                 $poNumber = $h['PurchaseOrderNumber'];
                 $total = $poTotals[$poNumber] ?? 0.0;
-                
+
                 $orderDate = Carbon::parse($h['CreatedDateTime1'])->format('Y-m-d');
                 $deliveryDate = isset($h['RequestedDeliveryDate']) ? Carbon::parse($h['RequestedDeliveryDate'])->format('Y-m-d') : null;
 
-                PurchaseOrder::create([
-                    'id' => $h['local_uuid'],
-                    'po_number' => $poNumber,
-                    'vendor_id' => $h['local_vendor_id'],
-                    'reference' => $h['VendorOrderReference'] ?? null,
-                    'status' => 'pending',
-                    'total_amount' => $total,
-                    'currency' => $h['CurrencyCode'],
-                    'order_date' => $orderDate,
-                    'delivery_date' => $deliveryDate,
-                    'notes' => $h['ReasonComment'] ?? null,
-                ]);
+                $po = new PurchaseOrder;
+                $po->id = $h['local_uuid'];
+                $po->po_number = $poNumber;
+                $po->vendor_id = $h['local_vendor_id'];
+                $po->status = 'pending';
+                $po->total_amount = $total;
+                $po->currency = $h['CurrencyCode'];
+                $po->order_date = $orderDate;
+                $po->delivery_date = $deliveryDate;
+                $po->notes = $h['ReasonComment'] ?? null;
+                $po->save();
             }
-            $this->info('Inserted ' . count($validToInsert) . ' NEW POs.');
+            $this->info('Inserted '.count($validToInsert).' NEW POs.');
 
             // Update totals for existing POs just in case lines changed
             foreach ($existingPos as $poNumber => $poId) {
@@ -189,10 +201,12 @@ class SyncD365Orders extends Command
 
             DB::commit();
             $this->info('D365 ETL pipeline finished successfully.');
+
             return Command::SUCCESS;
         } catch (\Exception $e) {
             DB::rollBack();
-            $this->error('Error during database insertion: ' . $e->getMessage());
+            $this->error('Error during database insertion: '.$e->getMessage());
+
             return Command::FAILURE;
         }
     }
@@ -211,7 +225,7 @@ class SyncD365Orders extends Command
         }
 
         $url = "https://login.microsoftonline.com/{$tenantId}/oauth2/v2.0/token";
-        
+
         $response = Http::asForm()->post($url, [
             'grant_type' => 'client_credentials',
             'client_id' => $clientId,
@@ -223,12 +237,14 @@ class SyncD365Orders extends Command
             $data = $response->json();
             $token = $data['access_token'];
             $expiresIn = $data['expires_in'] - 300; // Buffer of 5 minutes
-            
+
             Cache::put($cacheKey, $token, $expiresIn);
+
             return $token;
         }
 
-        $this->error('D365 Auth Error: ' . $response->body());
+        $this->error('D365 Auth Error: '.$response->body());
+
         return null;
     }
 
@@ -236,27 +252,27 @@ class SyncD365Orders extends Command
     {
         $resource = config('services.d365.resource');
         $url = "{$resource}/data/{$table}";
-        
+
         $queryParams = ['cross-company' => 'true'];
 
-        if (!empty($filters)) {
+        if (! empty($filters)) {
             $queryParams['$filter'] = implode(' and ', $filters);
         }
 
-        if (!empty($select)) {
+        if (! empty($select)) {
             $queryParams['$select'] = implode(',', $select);
         }
 
         $allRecords = [];
         $queryString = http_build_query($queryParams);
-        $nextLink = $url . '?' . $queryString;
+        $nextLink = $url.'?'.$queryString;
 
         while ($nextLink) {
             $token = $this->getD365Token();
             $response = Http::withToken($token)->acceptJson()->get($nextLink);
 
-            if (!$response->successful()) {
-                $this->error("D365 Fetch Error: " . $response->status() . " " . $response->body());
+            if (! $response->successful()) {
+                $this->error('D365 Fetch Error: '.$response->status().' '.$response->body());
                 break;
             }
 

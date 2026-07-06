@@ -10,7 +10,9 @@ class Roll extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
+
     protected $primaryKey = 'id';
 
     protected $fillable = [
@@ -28,7 +30,7 @@ class Roll extends Model
         'qr_code_path',
         'is_printed',
         'printed_at',
-        'notes'
+        'notes',
     ];
 
     protected $casts = [
@@ -39,7 +41,7 @@ class Roll extends Model
         'length_yd' => 'decimal:2',
         'length_m' => 'decimal:2',
         'is_printed' => 'boolean',
-        'printed_at' => 'datetime'
+        'printed_at' => 'datetime',
     ];
 
     public function item()
@@ -51,7 +53,7 @@ class Roll extends Model
     {
         // Ensure directory exists
         $directory = storage_path('app/public/qrcodes');
-        if (!file_exists($directory)) {
+        if (! file_exists($directory)) {
             mkdir($directory, 0755, true);
         }
 
@@ -60,11 +62,11 @@ class Roll extends Model
             'po_number' => $this->item->purchaseOrder->po_number,
             'item_number' => $this->item->item_number,
             'quantity' => $this->weight,
-            'unit' => $this->unit
+            'unit' => $this->unit,
         ]);
 
-        $filename = 'qrcodes/' . $this->roll_number . '.png';
-        $filepath = storage_path('app/public/' . $filename);
+        $filename = 'qrcodes/'.$this->roll_number.'.png';
+        $filepath = storage_path('app/public/'.$filename);
 
         \SimpleSoftwareIO\QrCode\Facades\QrCode::size(300)->generate($qrContent, $filepath);
 
@@ -79,6 +81,7 @@ class Roll extends Model
         $this->is_printed = true;
         $this->printed_at = now();
         $this->save();
+
         return $this;
     }
 }

@@ -2,16 +2,14 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
+use App\Models\PoItem;
+use App\Models\PurchaseOrder;
 use App\Models\User;
 use App\Models\Vendor;
-use App\Models\PurchaseOrder;
-use App\Models\PoItem;
-use App\Models\SubconOrder;
-use App\Models\SubconOrderItem;
+use DateTime;
+use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
-use DateTime;
 
 class DatabaseSeeder extends Seeder
 {
@@ -36,7 +34,7 @@ class DatabaseSeeder extends Seeder
                 'id' => Str::uuid()->toString(),
                 'name' => 'Root Admin',
                 'password' => Hash::make('password'),
-                'role' => 'admin'
+                'role' => 'admin',
             ]
         );
 
@@ -47,7 +45,7 @@ class DatabaseSeeder extends Seeder
                 'id' => Str::uuid()->toString(),
                 'name' => 'Fabric Admin',
                 'password' => Hash::make('password'),
-                'role' => 'fabric_admin'
+                'role' => 'fabric_admin',
             ]
         );
 
@@ -62,9 +60,9 @@ class DatabaseSeeder extends Seeder
                 'contact_info' => [
                     'phone' => '572-3152-209 / 135-1572-1175',
                     'address' => 'No. 188 Dagang Road Zhili - Huzhou SHANGHAI CHN',
-                    'email' => 'None'
+                    'email' => 'None',
                 ],
-                'is_active' => true
+                'is_active' => true,
             ]
         );
         $vendorId = $vendor->id;
@@ -79,30 +77,12 @@ class DatabaseSeeder extends Seeder
                 'contact_info' => [
                     'phone' => '0271825251',
                     'address' => 'Jl. Komp Kw Industri Kendal, Jawa Tengah KENDAL, IDN',
-                    'email' => 'allen.yang@goldenteks.id'
+                    'email' => 'allen.yang@goldenteks.id',
                 ],
-                'is_active' => true
+                'is_active' => true,
             ]
         );
         $vendorId1 = $vendor1->id;
-
-        // Subcon vendor
-        $subconVendor = Vendor::firstOrCreate(
-            ['vendor_code' => 'SC001'],
-            [
-                'id' => Str::uuid()->toString(),
-                'name' => 'PT MITRA GARMENT SUBCON',
-                'group' => 'Subcon',
-                'type' => 'subcon',
-                'contact_info' => [
-                    'phone' => '021-123456',
-                    'address' => 'Jakarta, IDN',
-                    'email' => 'subcon@mitragarment.id'
-                ],
-                'is_active' => true
-            ]
-        );
-        $subconVendorId = $subconVendor->id;
 
         // Fabric vendor users
         User::firstOrCreate(
@@ -112,7 +92,7 @@ class DatabaseSeeder extends Seeder
                 'name' => 'Vendor Angye',
                 'password' => Hash::make('password'),
                 'role' => 'fabric_vendor',
-                'vendor_id' => $vendorId
+                'vendor_id' => $vendorId,
             ]
         );
 
@@ -123,29 +103,7 @@ class DatabaseSeeder extends Seeder
                 'name' => 'Vendor Goldenteks',
                 'password' => Hash::make('password'),
                 'role' => 'fabric_vendor',
-                'vendor_id' => $vendorId1
-            ]
-        );
-
-        // Subcon users
-        User::firstOrCreate(
-            ['email' => 'subcon.admin@mp.com'],
-            [
-                'id' => Str::uuid()->toString(),
-                'name' => 'Subcon Admin',
-                'password' => Hash::make('password'),
-                'role' => 'subcon_admin'
-            ]
-        );
-
-        User::firstOrCreate(
-            ['email' => 'vendor@mitragarment.id'],
-            [
-                'id' => Str::uuid()->toString(),
-                'name' => 'Vendor Mitra Garment',
-                'password' => Hash::make('password'),
-                'role' => 'subcon_vendor',
-                'vendor_id' => $subconVendorId
+                'vendor_id' => $vendorId1,
             ]
         );
 
@@ -159,7 +117,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount' => 70972.00,
                 'currency' => 'CNY',
                 'order_date' => DateTime::createFromFormat('m/d/Y', '12/30/2025'),
-                'delivery_date' => DateTime::createFromFormat('m/d/Y', '1/12/2026')
+                'delivery_date' => DateTime::createFromFormat('m/d/Y', '1/12/2026'),
             ]
         );
         $poId = $po->id;
@@ -173,7 +131,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount' => 59942.83,
                 'currency' => 'CNY',
                 'order_date' => DateTime::createFromFormat('m/d/Y', '12/30/2025'),
-                'delivery_date' => DateTime::createFromFormat('m/d/Y', '12/30/2025')
+                'delivery_date' => DateTime::createFromFormat('m/d/Y', '12/30/2025'),
             ]
         );
         $poId1 = $po1->id;
@@ -187,7 +145,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount' => 60083.13,
                 'currency' => 'CNY',
                 'order_date' => DateTime::createFromFormat('m/d/Y', '12/30/2025'),
-                'delivery_date' => DateTime::createFromFormat('m/d/Y', '1/12/2026')
+                'delivery_date' => DateTime::createFromFormat('m/d/Y', '1/12/2026'),
             ]
         );
         $poId2 = $po2->id;
@@ -201,7 +159,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount' => 148036960.00,
                 'currency' => 'IDR',
                 'order_date' => DateTime::createFromFormat('m/d/Y', '12/19/2025'),
-                'delivery_date' => DateTime::createFromFormat('m/d/Y', '12/22/2025')
+                'delivery_date' => DateTime::createFromFormat('m/d/Y', '12/22/2025'),
             ]
         );
         $poId3 = $po3->id;
@@ -219,7 +177,7 @@ class DatabaseSeeder extends Seeder
                 'unit_price' => 17.60,
                 'total_price' => 70972.00,
                 'color' => 'WHITE',
-                'status' => 'pending'
+                'status' => 'pending',
             ]
         );
 
@@ -235,7 +193,7 @@ class DatabaseSeeder extends Seeder
                 'unit_price' => 15.80,
                 'total_price' => 59942.83,
                 'color' => 'KHAKI',
-                'status' => 'pending'
+                'status' => 'pending',
             ]
         );
 
@@ -251,7 +209,7 @@ class DatabaseSeeder extends Seeder
                 'unit_price' => 15.80,
                 'total_price' => 60083.13,
                 'color' => 'LIGHT GREY',
-                'status' => 'pending'
+                'status' => 'pending',
             ]
         );
 
@@ -267,7 +225,7 @@ class DatabaseSeeder extends Seeder
                 'unit_price' => 43000.00,
                 'total_price' => 78441890.00,
                 'color' => 'DARK NAVY',
-                'status' => 'pending'
+                'status' => 'pending',
             ]
         );
 
@@ -283,7 +241,7 @@ class DatabaseSeeder extends Seeder
                 'unit_price' => 43000.00,
                 'total_price' => 69595070.00,
                 'color' => 'DARK NAVY',
-                'status' => 'pending'
+                'status' => 'pending',
             ]
         );
 

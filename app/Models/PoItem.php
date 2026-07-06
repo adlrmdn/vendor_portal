@@ -4,15 +4,17 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use App\Models\Setting;
 
 class PoItem extends Model
 {
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
+
     protected $primaryKey = 'id';
+
     protected $table = 'po_items';
 
     protected $fillable = [
@@ -30,7 +32,7 @@ class PoItem extends Model
         'fabric_type',
         'color',
         'specifications',
-        'status'
+        'status',
     ];
 
     protected $casts = [
@@ -41,7 +43,7 @@ class PoItem extends Model
         'underdelivery' => 'decimal:2',
         'overdelivery' => 'decimal:2',
         'unit_price' => 'decimal:2',
-        'total_price' => 'decimal:2'
+        'total_price' => 'decimal:2',
     ];
 
     public function purchaseOrder()
@@ -62,8 +64,8 @@ class PoItem extends Model
 
         $rolls = [];
         foreach ($rollsData as $index => $rollData) {
-            $rollNumber = $this->purchaseOrder->po_number . '-' .
-                $this->item_number . '-' .
+            $rollNumber = $this->purchaseOrder->po_number.'-'.
+                $this->item_number.'-'.
                 str_pad($index + 1, 3, '0', STR_PAD_LEFT);
 
             $roll = $this->rolls()->create([
@@ -72,7 +74,7 @@ class PoItem extends Model
                 'weight' => $rollData['quantity'] ?? 0, // Using weight field for quantity
                 'unit' => $rollData['unit'] ?? $this->unit,
                 'grade' => null,
-                'defects' => null
+                'defects' => null,
             ]);
 
             $rolls[] = $roll;
@@ -86,7 +88,7 @@ class PoItem extends Model
         $target = $this->getGlobalOrderedQuantity();
         $under = $this->getEffectiveUnderdelivery();
         $minGlobal = $target * (1 - $under / 100);
-        
+
         $otherDelivered = (float) \DB::table('rolls')
             ->whereIn('item_id', self::where('po_id', $this->po_id)
                 ->where('item_number', $this->item_number)
@@ -94,7 +96,7 @@ class PoItem extends Model
                 ->where('id', '!=', $this->id)
                 ->pluck('id'))
             ->sum(\DB::raw('COALESCE(length_yd, 0) + COALESCE(length_m, 0) + COALESCE(weight, 0)'));
-            
+
         return max(0, $minGlobal - $otherDelivered);
     }
 
@@ -103,7 +105,7 @@ class PoItem extends Model
         $target = $this->getGlobalOrderedQuantity();
         $over = $this->getEffectiveOverdelivery();
         $maxGlobal = $target * (1 + $over / 100);
-        
+
         $otherDelivered = (float) \DB::table('rolls')
             ->whereIn('item_id', self::where('po_id', $this->po_id)
                 ->where('item_number', $this->item_number)
@@ -111,7 +113,7 @@ class PoItem extends Model
                 ->where('id', '!=', $this->id)
                 ->pluck('id'))
             ->sum(\DB::raw('COALESCE(length_yd, 0) + COALESCE(length_m, 0) + COALESCE(weight, 0)'));
-            
+
         return max(0, $maxGlobal - $otherDelivered);
     }
 
@@ -125,7 +127,7 @@ class PoItem extends Model
         $currentDelivered = $this->totalDeliveredQuantity();
         $min = $this->getMinQuantityLimit();
         $max = $this->getMaxQuantityLimit();
-        
+
         return $currentDelivered >= $min && $currentDelivered <= $max;
     }
 
@@ -141,7 +143,7 @@ class PoItem extends Model
         $ids = self::where('po_id', $this->po_id)
             ->where('item_number', $this->item_number)
             ->pluck('id');
-            
+
         return (float) \DB::table('rolls')
             ->whereIn('item_id', $ids)
             ->sum(\DB::raw('COALESCE(length_yd, 0) + COALESCE(length_m, 0) + COALESCE(weight, 0)'));
@@ -150,19 +152,23 @@ class PoItem extends Model
     public function getEffectiveUnderdelivery()
     {
         $under = (float) $this->underdelivery;
+
         return $under > 0 ? $under : (float) Setting::getValue('default_underdelivery', 3.00);
     }
 
     public function getEffectiveOverdelivery()
     {
         $over = (float) $this->overdelivery;
+
         return $over > 0 ? $over : (float) Setting::getValue('default_overdelivery', 3.00);
     }
 
-    public function markAsProcessed()
+    public function markAsProcessed(bool $enforceTolerance = true)
     {
-        if (!$this->isQuantityWithinTolerance()) {
-            throw new \Exception("Quantity is outside the allowed delivery tolerance.");
+        // Admins can finalize regardless of tolerance (they have no amend-request flow);
+        // vendors still pass $enforceTolerance = true.
+        if ($enforceTolerance && ! $this->isQuantityWithinTolerance()) {
+            throw new \Exception('Quantity is outside the allowed delivery tolerance.');
         }
 
         $this->status = 'completed';
@@ -177,7 +183,7 @@ class PoItem extends Model
     public function splitToPartialShipment()
     {
         $deliveredQty = $this->totalDeliveredQuantity();
-        $remainingQty = (float)$this->quantity - $deliveredQty;
+        $remainingQty = (float) $this->quantity - $deliveredQty;
 
         if ($remainingQty <= 0) {
             return $this->markAsProcessed();
@@ -185,7 +191,7 @@ class PoItem extends Model
 
         return \DB::transaction(function () use ($deliveredQty, $remainingQty) {
             // 1. Create the shadow item
-            $shadowBatch = $this->batch . '-P2';
+            $shadowBatch = $this->batch.'-P2';
 
             // Check if batch already exists, increment suffix if needed
             $count = 2;
@@ -194,7 +200,7 @@ class PoItem extends Model
                 ->where('batch', $shadowBatch)
                 ->exists()
             ) {
-                $shadowBatch = $this->batch . '-P' . (++$count);
+                $shadowBatch = $this->batch.'-P'.(++$count);
             }
 
             $shadow = $this->replicate();
@@ -202,12 +208,12 @@ class PoItem extends Model
             $shadow->quantity = $remainingQty;
             $shadow->batch = $shadowBatch;
             $shadow->status = 'pending';
-            $shadow->total_price = $remainingQty * (float)$this->unit_price;
+            $shadow->total_price = $remainingQty * (float) $this->unit_price;
             $shadow->save();
 
             // 2. Update current item
             $this->quantity = $deliveredQty;
-            $this->total_price = $deliveredQty * (float)$this->unit_price;
+            $this->total_price = $deliveredQty * (float) $this->unit_price;
             $this->status = 'completed';
             $this->save();
 

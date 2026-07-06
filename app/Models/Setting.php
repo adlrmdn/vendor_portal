@@ -11,13 +11,13 @@ class Setting extends Model
         'value',
         'group',
         'type',
-        'description'
+        'description',
     ];
 
     public static function getValue($key, $default = null)
     {
         $setting = self::where('key', $key)->first();
-        if (!$setting) {
+        if (! $setting) {
             return $default;
         }
 

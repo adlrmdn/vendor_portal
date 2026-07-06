@@ -1,10 +1,11 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AdminController;
-use App\Http\Controllers\VendorController;
 use App\Http\Controllers\SubconAdminController;
+use App\Http\Controllers\SubconApprovalController;
 use App\Http\Controllers\SubconVendorController;
+use App\Http\Controllers\VendorController;
+use Illuminate\Support\Facades\Route;
 
 // Authentication Routes
 Auth::routes();
@@ -13,14 +14,16 @@ Auth::routes();
 Route::get('/home', function () {
     if (Auth::check()) {
         $role = Auth::user()->role;
-        return match($role) {
+
+        return match ($role) {
             'admin', 'fabric_admin' => redirect()->route('admin.dashboard'),
-            'fabric_vendor'         => redirect()->route('vendor.dashboard'),
-            'subcon_admin'          => redirect()->route('subcon.admin.dashboard'),
-            'subcon_vendor'         => redirect()->route('subcon.vendor.dashboard'),
-            default                 => redirect('/'),
+            'fabric_vendor' => redirect()->route('vendor.dashboard'),
+            'subcon_admin' => redirect()->route('subcon.admin.dashboard'),
+            'subcon_vendor' => redirect()->route('subcon.vendor.dashboard'),
+            default => redirect('/'),
         };
     }
+
     return redirect('/');
 })->name('home');
 
@@ -28,14 +31,16 @@ Route::get('/home', function () {
 Route::get('/', function () {
     if (auth()->check()) {
         $role = auth()->user()->role;
-        return match($role) {
+
+        return match ($role) {
             'admin', 'fabric_admin' => redirect()->route('admin.dashboard'),
-            'fabric_vendor'         => redirect()->route('vendor.dashboard'),
-            'subcon_admin'          => redirect()->route('subcon.admin.dashboard'),
-            'subcon_vendor'         => redirect()->route('subcon.vendor.dashboard'),
-            default                 => redirect()->route('login'),
+            'fabric_vendor' => redirect()->route('vendor.dashboard'),
+            'subcon_admin' => redirect()->route('subcon.admin.dashboard'),
+            'subcon_vendor' => redirect()->route('subcon.vendor.dashboard'),
+            default => redirect()->route('login'),
         };
     }
+
     return redirect()->route('login');
 });
 
@@ -53,6 +58,7 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     // Admin Item Processing Routes (Mirrors Vendor)
     Route::get('/item/{id}/process', [AdminController::class, 'processItem'])->name('item.process');
     Route::post('/item/{id}/save-rolls', [AdminController::class, 'saveItemRolls'])->name('item.save-rolls');
+    Route::post('/item/{id}/upload-rolls', [AdminController::class, 'uploadRollsData'])->name('item.upload-rolls');
     Route::post('/rolls/{roll}/delete', [AdminController::class, 'deleteRoll'])->name('roll.delete');
     Route::post('/item/{id}/mark-processed', [AdminController::class, 'markItemProcessed'])->name('item.mark-processed');
     Route::post('/item/{id}/mark-partial', [AdminController::class, 'markAsPartialShipment'])->name('item.mark-partial');
@@ -100,30 +106,76 @@ Route::middleware(['auth'])->prefix('vendor')->name('vendor.')->group(function (
 });
 
 // Approval Routes (Signed URLs)
-Route::get('/tolerance/approve/{request}', [App\Http\Controllers\ApprovalController::class, 'approveAmendment'])->name('tolerance.approve')->middleware('signed');
-Route::get('/tolerance/decline/{request}', [App\Http\Controllers\ApprovalController::class, 'declineAmendment'])->name('tolerance.decline')->middleware('signed');
+// Relative signature (path + query only) so it survives the HTTPS reverse proxy.
+Route::get('/tolerance/approve/{request}', [App\Http\Controllers\ApprovalController::class, 'approveAmendment'])->name('tolerance.approve')->middleware('signed:relative');
+Route::get('/tolerance/decline/{request}', [App\Http\Controllers\ApprovalController::class, 'declineAmendment'])->name('tolerance.decline')->middleware('signed:relative');
 
 // Subcon Admin Routes
 Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->group(function () {
     Route::get('/dashboard', [SubconAdminController::class, 'dashboard'])->name('dashboard');
+    Route::post('/sync-orders', [SubconAdminController::class, 'syncOrders'])->name('sync-orders');
+    Route::get('/sync-status', [SubconAdminController::class, 'syncStatus'])->name('sync-status');
     Route::get('/vendors', [SubconAdminController::class, 'vendors'])->name('vendors');
     Route::post('/vendors', [SubconAdminController::class, 'storeVendor'])->name('vendor.store');
+    Route::put('/vendors/{id}', [SubconAdminController::class, 'updateVendor'])->name('vendors.update');
+    Route::post('/vendors/{id}/toggle-status', [SubconAdminController::class, 'toggleVendorStatus'])->name('vendors.toggle-status');
+    Route::delete('/vendors/{id}', [SubconAdminController::class, 'deleteVendor'])->name('vendors.destroy');
+    Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
     Route::get('/orders', [SubconAdminController::class, 'orders'])->name('orders');
-    Route::get('/orders/create', [SubconAdminController::class, 'createOrder'])->name('orders.create');
-    Route::post('/orders', [SubconAdminController::class, 'storeOrder'])->name('orders.store');
+    Route::get('/orders-waiting-distribution', [SubconAdminController::class, 'waitingDistribution'])->name('orders-waiting-distribution');
+    Route::post('/orders/{id}/generate-labels-manual', [SubconAdminController::class, 'generateLabelsManual'])->name('orders.generate-labels-manual');
     Route::get('/orders/{id}', [SubconAdminController::class, 'viewOrder'])->name('orders.view');
+    Route::get('/orders/{id}/export-cutting', [SubconAdminController::class, 'exportCuttingReport'])->name('orders.export-cutting');
     Route::post('/orders/{id}/status', [SubconAdminController::class, 'updateOrderStatus'])->name('orders.update-status');
+    Route::post('/orders/{id}/approve', [SubconApprovalController::class, 'approveInApp'])->name('orders.approve');
+    Route::post('/orders/{id}/decline', [SubconApprovalController::class, 'declineInApp'])->name('orders.decline');
+    Route::get('/orders/{id}/print-labels', [SubconAdminController::class, 'printPackagingLabels'])->name('orders.print-labels');
+    Route::get('/workflow', [SubconAdminController::class, 'workflow'])->name('workflow');
+    Route::post('/workflow', [SubconAdminController::class, 'updateWorkflow'])->name('workflow.update');
 });
+
+// Subcon Approval Routes (Signed URLs from approval emails)
+// Relative signature (path + query only) so it survives the HTTPS reverse proxy
+// — the absolute host/scheme the app sees internally differs from the public URL.
+Route::get('/subcon/approve/{order}/{gate}', [SubconApprovalController::class, 'approveSigned'])->name('subcon.approve')->middleware('signed:relative');
+// No-login cutting-approval form submit (consumption + approve). Signed POST.
+Route::post('/subcon/approve-cutting/{order}', [SubconApprovalController::class, 'approveCuttingSubmit'])->name('subcon.approve.cutting.submit')->middleware('signed:relative');
+Route::get('/subcon/decline/{order}/{gate}', [SubconApprovalController::class, 'declineSigned'])->name('subcon.decline')->middleware('signed:relative');
+Route::get('/subcon/generate-labels/{order}', [SubconApprovalController::class, 'generateLabelsSigned'])->name('subcon.generate-labels')->middleware('signed:relative');
+
+// QC Console packaging-approval link (from the Tauri console's email).
+// Public route: factory reps have no portal login; the random `approval_token`
+// stored on the QMS session row IS the credential. GET so an email click works.
+Route::get('/qc/approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'approve'])->name('qc.approve');
+Route::get('/qc/reject/{token}', [App\Http\Controllers\QcApprovalController::class, 'reject'])->name('qc.reject');
+
+// HO (Head Office) approval — second stage, emailed to our approver list after
+// the vendor confirms. Same `approval_token` (the contract keys both stages off
+// it); GET renders the form, POST commits fabric/deduction lines + the HO signature.
+Route::get('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprovalForm'])->name('qc.ho-approve');
+Route::post('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprove'])->name('qc.ho-approve.submit');
+// HO rejection — writes `ho_approval_signature` with a "Rejected: …" prefix (console contract).
+Route::get('/qc/ho-decline/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoDecline'])->name('qc.ho-decline');
 
 // Subcon Vendor Routes
 Route::middleware(['auth'])->prefix('subcon/vendor')->name('subcon.vendor.')->group(function () {
     Route::get('/dashboard', [SubconVendorController::class, 'dashboard'])->name('dashboard');
     Route::get('/orders', [SubconVendorController::class, 'orders'])->name('orders');
     Route::get('/orders/{id}', [SubconVendorController::class, 'viewOrder'])->name('orders.view');
+    Route::post('/orders/{id}/submit-cutting', [SubconVendorController::class, 'submitCuttingReport'])->name('orders.submit-cutting');
+    Route::post('/orders/{id}/submit-gramasi', [SubconVendorController::class, 'submitGramasi'])->name('orders.submit-gramasi');
+    Route::post('/orders/{id}/complete', [SubconVendorController::class, 'completeOrder'])->name('orders.complete');
+    Route::get('/orders/{id}/template', [SubconVendorController::class, 'downloadTemplate'])->name('orders.download-template');
+    Route::post('/orders/{id}/upload-report', [SubconVendorController::class, 'uploadReport'])->name('orders.upload-report');
+    Route::get('/orders/{id}/print-labels', [SubconVendorController::class, 'printPackagingLabels'])->name('orders.print-labels');
+    Route::get('/profile', [SubconVendorController::class, 'profile'])->name('profile');
+    Route::put('/profile', [SubconVendorController::class, 'updateProfile'])->name('profile.update');
+    Route::put('/profile/password', [SubconVendorController::class, 'updatePassword'])->name('profile.password');
 });
 
 // Notification Routes
 Route::post('/notifications/mark-as-read', function () {
     auth()->user()->unreadNotifications->each->markAsRead();
+
     return response()->json(['success' => true]);
 })->name('notifications.mark-as-read')->middleware('auth');

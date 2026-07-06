@@ -19,7 +19,7 @@ class ToleranceAmendmentRequest extends Model
         'reason',
         'approver_badge',
         'status',
-        'actioned_at'
+        'actioned_at',
     ];
 
     protected $casts = [
@@ -28,7 +28,7 @@ class ToleranceAmendmentRequest extends Model
         'old_overdelivery' => 'decimal:2',
         'new_underdelivery' => 'decimal:2',
         'new_overdelivery' => 'decimal:2',
-        'actioned_at' => 'datetime'
+        'actioned_at' => 'datetime',
     ];
 
     public function poItem()

@@ -11,7 +11,9 @@ class SubconOrderItem extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
+
     protected $primaryKey = 'id';
 
     protected static function boot()

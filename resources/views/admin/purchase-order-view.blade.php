@@ -9,6 +9,9 @@
     <div class="container-fluid">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div>
+                <a href="{{ route('admin.purchase-orders') }}" class="btn btn-sm btn-outline-secondary mb-2">
+                    <i class="fas fa-arrow-left me-2"></i>Back to Purchase Orders
+                </a>
                 <h1 class="h3">Purchase Order Details</h1>
                 <nav aria-label="breadcrumb">
                     <ol class="breadcrumb">
@@ -330,7 +333,20 @@
                                     <label class="form-label fw-bold" for="deliveryNoteInput">Delivery Note Number <span class="text-danger">*</span></label>
                                     <input type="text" name="delivery_note" id="deliveryNoteInput" class="form-control" 
                                            placeholder="Enter Delivery Note Number" required oninput="validateGenerateSlip()">
-                                    <div class="form-text text-muted">Required before generating the packing slip.</div>
+                                    <div class="form-text text-muted mb-3">Required before generating the packing slip.</div>
+
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="checkbox" name="show_secondary" value="1" id="showSecondary" checked>
+                                        <label class="form-check-label fw-semibold" for="showSecondary">
+                                            Show secondary metric (e.g. Yard and Meter)
+                                        </label>
+                                    </div>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="checkbox" name="reverse_units" value="1" id="reverseUnits">
+                                        <label class="form-check-label fw-semibold" for="reverseUnits">
+                                            Reverse units (swap primary and secondary metrics)
+                                        </label>
+                                    </div>
                                 </div>
                             @endif
                         </div>

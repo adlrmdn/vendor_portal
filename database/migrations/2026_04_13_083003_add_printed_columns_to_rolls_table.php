@@ -12,13 +12,26 @@ return new class extends Migration
     public function up(): void
     {
         // Drop index if it already exists to avoid PG conflict
-        DB::statement('DROP INDEX IF EXISTS rolls_is_printed_item_id_index');
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement('DROP INDEX IF EXISTS rolls_is_printed_item_id_index');
+        }
 
         Schema::table('rolls', function (Blueprint $table) {
-            $table->boolean('is_printed')->default(false)->after('qr_code_path');
-            $table->timestamp('printed_at')->nullable()->after('is_printed');
-            $table->index(['is_printed', 'item_id']);
+            if (! Schema::hasColumn('rolls', 'is_printed')) {
+                $table->boolean('is_printed')->default(false)->after('qr_code_path');
+            }
+            if (! Schema::hasColumn('rolls', 'printed_at')) {
+                $table->timestamp('printed_at')->nullable()->after('is_printed');
+            }
         });
+
+        try {
+            Schema::table('rolls', function (Blueprint $table) {
+                $table->index(['is_printed', 'item_id']);
+            });
+        } catch (\Throwable $e) {
+            // Already has index
+        }
     }
 
     /**

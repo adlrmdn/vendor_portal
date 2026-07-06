@@ -26,6 +26,13 @@
                             <i class="fas fa-clipboard-list me-2"></i> <span>My Work Orders</span>
                         </a>
                     </li>
+                    <li>
+                        <a href="{{ route('subcon.vendor.profile') }}"
+                            class="nav-link {{ request()->routeIs('subcon.vendor.profile*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Profile Settings">
+                            <i class="fas fa-user-cog me-2"></i> <span>Profile Settings</span>
+                        </a>
+                    </li>
                 </ul>
                 <hr>
                 <div class="text-white small text-center text-md-start">

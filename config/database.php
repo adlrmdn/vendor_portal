@@ -146,6 +146,26 @@ return [
             'sslmode' => 'prefer',
         ],
 
+        // QC Console / QMS database (same Postgres server, separate database).
+        // The subcon vendor portal writes packaging-approval signatures here;
+        // the operator's Tauri QC Console polls the same rows. Scope this DB
+        // user to only what the approval flow needs (SELECT/UPDATE on
+        // packaging_project_sessions) — it is not the app's primary role.
+        'qms' => [
+            'driver' => 'pgsql',
+            'url' => env('QMS_DB_URL'),
+            'host' => env('QMS_DB_HOST', env('DB_HOST', '127.0.0.1')),
+            'port' => env('QMS_DB_PORT', env('DB_PORT', '5432')),
+            'database' => env('QMS_DB_DATABASE', 'qms'),
+            'username' => env('QMS_DB_USERNAME', env('DB_USERNAME', 'root')),
+            'password' => env('QMS_DB_PASSWORD', env('DB_PASSWORD', '')),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => 'prefer',
+        ],
+
     ],
 
     /*

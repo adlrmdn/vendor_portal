@@ -98,8 +98,8 @@
             <p>Please review and choose an action below:</p>
             
             <div class="button-group">
-                <a href="{{ $approveUrl }}" class="btn btn-approve">APPROVE</a>
-                <a href="{{ $declineUrl }}" class="btn btn-decline">DECLINE</a>
+                <a href="{{ $approveUrl }}" class="btn btn-approve" style="display:inline-block;padding:12px 24px;border-radius:6px;text-decoration:none !important;font-weight:bold;margin:0 10px;background-color:#198754;color:#ffffff !important;">APPROVE</a>
+                <a href="{{ $declineUrl }}" class="btn btn-decline" style="display:inline-block;padding:12px 24px;border-radius:6px;text-decoration:none !important;font-weight:bold;margin:0 10px;background-color:#dc3545;color:#ffffff !important;">DECLINE</a>
             </div>
         </div>
         <div class="footer">

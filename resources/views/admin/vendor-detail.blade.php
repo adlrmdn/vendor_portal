@@ -6,6 +6,9 @@
     <div class="container-fluid">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div>
+                <a href="{{ route('admin.vendors') }}" class="btn btn-sm btn-outline-secondary mb-2">
+                    <i class="fas fa-arrow-left me-2"></i>Back to Vendors
+                </a>
                 <h1 class="h3">Edit Vendor: {{ $vendor->name }}</h1>
                 <nav aria-label="breadcrumb">
                     <ol class="breadcrumb">

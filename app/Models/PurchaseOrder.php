@@ -10,7 +10,9 @@ class PurchaseOrder extends Model
     use HasFactory;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
+
     protected $primaryKey = 'id';
 
     protected $fillable = [
@@ -21,7 +23,7 @@ class PurchaseOrder extends Model
         'currency',
         'order_date',
         'delivery_date',
-        'notes'
+        'notes',
     ];
 
     protected $casts = [
@@ -29,7 +31,7 @@ class PurchaseOrder extends Model
         'vendor_id' => 'string',
         'total_amount' => 'decimal:2',
         'order_date' => 'date',
-        'delivery_date' => 'date'
+        'delivery_date' => 'date',
     ];
 
     protected static function boot()
@@ -38,7 +40,7 @@ class PurchaseOrder extends Model
 
         static::creating(function ($model) {
             if (empty($model->po_number)) {
-                $model->po_number = 'PO-' . strtoupper(uniqid());
+                $model->po_number = 'PO-'.strtoupper(uniqid());
             }
         });
     }
@@ -68,6 +70,7 @@ class PurchaseOrder extends Model
         $total = $this->items()->sum('total_price');
         $this->total_amount = $total;
         $this->save();
+
         return $this;
     }
 
@@ -96,6 +99,7 @@ class PurchaseOrder extends Model
         }
 
         $this->save();
+
         return $this;
     }
 }

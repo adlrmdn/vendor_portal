@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Auth;
 use App\Http\Controllers\Controller;
 use Illuminate\Foundation\Auth\AuthenticatesUsers;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 
 class LoginController extends Controller
 {
@@ -21,12 +20,12 @@ class LoginController extends Controller
 
     private function redirectForRole(string $role): string
     {
-        return match($role) {
+        return match ($role) {
             'admin', 'fabric_admin' => route('admin.dashboard'),
-            'fabric_vendor'         => route('vendor.dashboard'),
-            'subcon_admin'          => route('subcon.admin.dashboard'),
-            'subcon_vendor'         => route('subcon.vendor.dashboard'),
-            default                 => url('/home'),
+            'fabric_vendor' => route('vendor.dashboard'),
+            'subcon_admin' => route('subcon.admin.dashboard'),
+            'subcon_vendor' => route('subcon.vendor.dashboard'),
+            default => url('/home'),
         };
     }
 

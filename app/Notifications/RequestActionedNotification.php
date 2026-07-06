@@ -2,9 +2,9 @@
 
 namespace App\Notifications;
 
+use App\Models\ToleranceAmendmentRequest;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
-use App\Models\ToleranceAmendmentRequest;
 
 class RequestActionedNotification extends Notification
 {
@@ -19,23 +19,23 @@ class RequestActionedNotification extends Notification
 
     public function via($notifiable): array
     {
-        return ["database"];
+        return ['database'];
     }
 
     public function toArray($notifiable): array
     {
-        $typeLabel = $this->request->type === "partial_shipment" ? "Partial Shipment" : "Tolerance Amendment";
+        $typeLabel = $this->request->type === 'partial_shipment' ? 'Partial Shipment' : 'Tolerance Amendment';
         $status = ucfirst($this->request->status);
         $poNumber = $this->request->poItem->purchaseOrder->po_number;
-        
-        $icon = $this->request->status === "approved" ? "fas fa-check-circle" : "fas fa-times-circle";
-        
+
+        $icon = $this->request->status === 'approved' ? 'fas fa-check-circle' : 'fas fa-times-circle';
+
         return [
-            "title" => $typeLabel . " " . $status,
-            "message" => "Your request for Item " . $this->request->poItem->item_number . " (PO: " . $poNumber . ") has been " . $this->request->status . ".",
-            "url" => route("vendor.item.process", $this->request->poItem->id),
-            "icon" => $icon,
-            "type" => "status_update"
+            'title' => $typeLabel.' '.$status,
+            'message' => 'Your request for Item '.$this->request->poItem->item_number.' (PO: '.$poNumber.') has been '.$this->request->status.'.',
+            'url' => route('vendor.item.process', $this->request->poItem->id),
+            'icon' => $icon,
+            'type' => 'status_update',
         ];
     }
 }

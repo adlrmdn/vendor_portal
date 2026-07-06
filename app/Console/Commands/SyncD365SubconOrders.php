@@ -11,6 +11,8 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 
 class SyncD365SubconOrders extends Command
@@ -74,9 +76,30 @@ class SyncD365SubconOrders extends Command
             $filters[] = "dataAreaId eq '$company'";
         }
 
+        $localActivePos = SubconOrder::whereNotIn('status', ['completed', 'cancelled'])->pluck('order_number')->toArray();
+
         $this->info('Fetching PO headers...');
         $headers = $this->fetchRecords('PurchaseOrderHeadersV2', $filters);
         $this->info('Fetched '.count($headers).' header records.');
+
+        $fetchedPoNumbers = [];
+        foreach ($headers as $h) {
+            $fetchedPoNumbers[] = $h['PurchaseOrderNumber'];
+        }
+
+        $missingActivePos = array_diff($localActivePos, $fetchedPoNumbers);
+        if (! empty($missingActivePos)) {
+            $this->info('Fetching headers for '.count($missingActivePos).' local active POs outside cutoff...');
+            foreach (array_chunk($missingActivePos, 20) as $chunk) {
+                $parts = array_map(fn ($po) => "PurchaseOrderNumber eq '$po'", $chunk);
+                $missingFilters = ['('.implode(' or ', $parts).')'];
+                if (! empty($company)) {
+                    $missingFilters[] = "dataAreaId eq '$company'";
+                }
+                $missingHeaders = $this->fetchRecords('PurchaseOrderHeadersV2', $missingFilters);
+                $headers = array_merge($headers, $missingHeaders);
+            }
+        }
 
         if (empty($headers)) {
             $this->info('No subcon orders to sync.');
@@ -139,16 +162,137 @@ class SyncD365SubconOrders extends Command
         // POs not yet present in the VSM snapshot fall back to the old title.
         $styles = $production->stylesForPos(array_keys($poMap));
 
-        // 4. Transform + persist.
+        // Resolve Distribution IDs from VSM mapping & D365 TOC_DT entity.
+        $this->info('Resolving PLM activities from VSM...');
+        $poNumbers = array_keys($poMap);
+        $poPlmMap = [];
+        $uniquePlmIds = [];
+        try {
+            $poLines = DB::connection('vsm')->table('po_lines')
+                ->whereIn('PurchaseOrderNumber', $poNumbers)
+                ->whereNotNull('PLMId')
+                ->where('PLMId', '!=', '')
+                ->get(['PurchaseOrderNumber', 'PLMId']);
+            foreach ($poLines as $l) {
+                $poPlmMap[$l->PurchaseOrderNumber][] = $l->PLMId;
+                $uniquePlmIds[] = $l->PLMId;
+            }
+            $uniquePlmIds = array_unique($uniquePlmIds);
+        } catch (\Throwable $e) {
+            $this->warn('Failed to fetch PO lines from VSM: '.$e->getMessage());
+        }
+
+        $plmSoMap = [];
+        if (! empty($uniquePlmIds)) {
+            $this->info('Resolving Sales Orders from VSM plm_trans...');
+            try {
+                $trans = DB::connection('vsm')->table('plm_trans')
+                    ->whereIn('PLMId', $uniquePlmIds)
+                    ->where('ActivityName', 'SO Intercompany')
+                    ->whereNotNull('ActivityNo')
+                    ->where('ActivityNo', '!=', '')
+                    ->get(['PLMId', 'ActivityNo']);
+                foreach ($trans as $t) {
+                    $plmSoMap[$t->PLMId] = $t->ActivityNo;
+                }
+            } catch (\Throwable $e) {
+                $this->warn('Failed to fetch SO mapping from VSM: '.$e->getMessage());
+            }
+        }
+
+        $soDstMap = [];
+        $salesOrders = array_unique(array_values($plmSoMap));
+        if (! empty($salesOrders)) {
+            $this->info('Fetching Distribution IDs from D365 TOC_DT...');
+            foreach (array_chunk($salesOrders, 20) as $chunk) {
+                $filterParts = array_map(fn ($so) => "SOID eq '$so'", $chunk);
+                $filter = '('.implode(' or ', $filterParts).')';
+                try {
+                    $tocRecords = $this->fetchRecords('TOC_DT', [$filter], ['SOID', 'DistributionID']);
+                    foreach ($tocRecords as $rec) {
+                        if (! empty($rec['SOID']) && ! empty($rec['DistributionID'])) {
+                            $soDstMap[$rec['SOID']] = $rec['DistributionID'];
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $this->warn('Failed to fetch Distribution IDs from D365: '.$e->getMessage());
+                }
+            }
+        }
+
+        $poDstMap = [];
+        foreach ($poMap as $poNumber => $vendorId) {
+            $plmIds = $poPlmMap[$poNumber] ?? [];
+            $dstIds = [];
+            foreach ($plmIds as $plmId) {
+                if ($so = $plmSoMap[$plmId] ?? null) {
+                    if ($dst = $soDstMap[$so] ?? null) {
+                        $dstIds[] = $dst;
+                    }
+                }
+            }
+            if (! empty($dstIds)) {
+                $poDstMap[$poNumber] = implode(' / ', array_unique($dstIds));
+            }
+        }        // 4. Transform + persist.
         DB::beginTransaction();
         try {
             $createdOrders = 0;
             $createdItems = 0;
             $retitled = 0;
+            $deletedOrders = 0;
 
             foreach ($poMap as $poNumber => $vendorId) {
                 $h = $poHeaders[$poNumber];
 
+                // --- 1. Check if Finished ---
+                $isFinished = false;
+
+                // A. Check D365 PurchaseOrderStatus
+                $d365Status = $h['PurchaseOrderStatus'] ?? null;
+                if ($d365Status && $d365Status !== 'Backorder') {
+                    $isFinished = true;
+                }
+
+                // B. Check production order status (from VSM production group lines)
+                $groups = $production->forPo($poNumber);
+                if (! $isFinished && ! empty($groups)) {
+                    $allVsmLines = [];
+                    foreach ($groups as $g) {
+                        if (! empty($g['lines'])) {
+                            foreach ($g['lines'] as $line) {
+                                $allVsmLines[] = $line;
+                            }
+                        }
+                    }
+                    if (! empty($allVsmLines)) {
+                        // Only a fully *Completed* group counts as finished here.
+                        // 'ReportedFinished' means sewing reported done, but the
+                        // subcon paperwork (cutting/gramasi/labels) may still be
+                        // pending — removing the order then would yank it mid-flow.
+                        $finishedLines = array_filter($allVsmLines, function ($line) {
+                            return in_array($line->ProdStatus, ['Completed']);
+                        });
+                        if (count($finishedLines) === count($allVsmLines)) {
+                            $isFinished = true;
+                        }
+                    }
+                }
+
+                if ($isFinished) {
+                    $existsLocal = SubconOrder::where('order_number', $poNumber)->exists();
+                    if ($existsLocal) {
+                        SubconOrder::where('order_number', $poNumber)->delete();
+                        $deletedOrders++;
+                        $this->info("PO {$poNumber} is finished. Deleted/removed from local portal.");
+                    } else {
+                        $this->info("PO {$poNumber} is finished on D365. Skipping creation.");
+                    }
+
+                    continue; // Skip creating or syncing this order further
+                }
+
+                // --- 2. Create/Update SubconOrder ---
                 $orderDate = isset($h['CreatedDateTime1'])
                     ? Carbon::parse($h['CreatedDateTime1'])->format('Y-m-d')
                     : now()->format('Y-m-d');
@@ -160,6 +304,21 @@ class SyncD365SubconOrders extends Command
                     ?: (! empty($h['VendorOrderReference'])
                         ? $h['VendorOrderReference']
                         : ('Work Order '.$poNumber));
+                $distributionId = $poDstMap[$poNumber] ?? null;
+
+                // Resolve Production Group fallback
+                $tocPrg = $h['TOC_ProductionGroup'] ?? null;
+                if (! $tocPrg && ! empty($groups)) {
+                    foreach ($groups as $g) {
+                        if (! empty($g['production_group'])) {
+                            $tocPrg = $g['production_group'];
+                            break;
+                        }
+                    }
+                }
+
+                $summary = $production->summarize($groups);
+                $sizesCount = $summary['size_count'] ?? 0;
 
                 $order = SubconOrder::firstOrCreate(
                     ['order_number' => $poNumber],
@@ -172,16 +331,36 @@ class SyncD365SubconOrders extends Command
                         'order_date' => $orderDate,
                         'due_date' => $dueDate,
                         'notes' => $h['ReasonComment'] ?? null,
+                        'distribution_id' => $distributionId,
+                        'workflow_stage' => SubconOrder::STAGE_CUTTING,
+                        'production_group' => $tocPrg,
+                        'sizes_count' => $sizesCount,
                     ]
                 );
+
                 if ($order->wasRecentlyCreated) {
                     $createdOrders++;
-                } elseif ($style && $order->title !== $style) {
-                    // Existing order whose style has since resolved in VSM — retitle it.
-                    $order->update(['title' => $style]);
-                    $retitled++;
+                } else {
+                    $updates = [];
+                    if ($style && $order->title !== $style) {
+                        $updates['title'] = $style;
+                        $retitled++;
+                    }
+                    if ($distributionId && $order->distribution_id !== $distributionId) {
+                        $updates['distribution_id'] = $distributionId;
+                    }
+                    if ($tocPrg && $order->production_group !== $tocPrg) {
+                        $updates['production_group'] = $tocPrg;
+                    }
+                    if ($sizesCount !== $order->sizes_count) {
+                        $updates['sizes_count'] = $sizesCount;
+                    }
+                    if (! empty($updates)) {
+                        $order->update($updates);
+                    }
                 }
 
+                // --- 3. Create Order Items ---
                 foreach ($linesByPo[$poNumber] ?? [] as $l) {
                     $item = SubconOrderItem::firstOrCreate(
                         ['order_id' => $order->id, 'item_number' => $l['ItemNumber']],
@@ -198,15 +377,107 @@ class SyncD365SubconOrders extends Command
                         $createdItems++;
                     }
                 }
+
+                // --- 4. Sync Qty Cutting and Gramasi from D365 and Escalate Workflow ---
+                $cuttingFilled = false;
+                $gramasiFilled = false;
+
+                $jobTransService = app(\App\Services\D365JobTransactionService::class);
+                foreach ($groups as $g) {
+                    if (empty($g['production_group'])) {
+                        continue;
+                    }
+
+                    $erpDetails = $jobTransService->fetchJobTransactionDetails($g['production_group']);
+
+                    // Process cutting quantities
+                    if (! empty($erpDetails['cutting'])) {
+                        $cuttingFilled = true;
+                        foreach ($g['lines'] as $line) {
+                            $size = $line->Size;
+                            if (isset($erpDetails['cutting'][$size])) {
+                                $qty = $erpDetails['cutting'][$size];
+
+                                \App\Models\SubconCuttingReport::updateOrCreate(
+                                    ['order_id' => $order->id, 'prod_id' => $line->ProdId],
+                                    [
+                                        'size' => $size,
+                                        'cutting_qty' => $qty,
+                                    ]
+                                );
+                            }
+                        }
+                    }
+
+                    // Process gramasi
+                    if (! empty($erpDetails['gramasi'])) {
+                        $gramasiFilled = true;
+                        foreach ($g['lines'] as $line) {
+                            $size = $line->Size;
+                            if (isset($erpDetails['gramasi'][$size])) {
+                                // Convert kg from D365 to grams locally (multiply by 1000)
+                                $grams = (float) $erpDetails['gramasi'][$size] * 1000;
+
+                                \App\Models\SubconCuttingReport::updateOrCreate(
+                                    ['order_id' => $order->id, 'prod_id' => $line->ProdId],
+                                    [
+                                        'size' => $size,
+                                        'gramasi' => $grams,
+                                    ]
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Escalate workflow if anything filled
+                if ($gramasiFilled) {
+                    $sendEmail = false;
+                    if (! in_array($order->workflow_stage, [SubconOrder::STAGE_WAITING_DISTRIBUTION, SubconOrder::STAGE_LABELS, SubconOrder::STAGE_COMPLETED], true)) {
+                        $order->workflow_stage = SubconOrder::STAGE_WAITING_DISTRIBUTION;
+                        $sendEmail = true;
+                    }
+                    if (empty($order->cutting_approved_at)) {
+                        $order->cutting_approved_at = now();
+                        $order->cutting_approved_by = 'ERP Sync';
+                    }
+                    if (empty($order->gramasi_approved_at)) {
+                        $order->gramasi_approved_at = now();
+                        $order->gramasi_approved_by = 'ERP Sync';
+                    }
+                    $order->save();
+                    if ($sendEmail) {
+                        try {
+                            $recipients = \App\Http\Controllers\SubconApprovalController::labelGeneratorRecipient();
+                            if (! empty($recipients)) {
+                                Mail::to($recipients)->send(new \App\Mail\SubconStageStatusMailable($order, 'gramasi', 'approved'));
+                            }
+                        } catch (\Throwable $e) {
+                            Log::error('Sync Subcon email failed: '.$e->getMessage());
+                        }
+                    }
+                } elseif ($cuttingFilled) {
+                    if (in_array($order->workflow_stage, [SubconOrder::STAGE_CUTTING, SubconOrder::STAGE_CUTTING_REVIEW])) {
+                        $order->workflow_stage = SubconOrder::STAGE_GRAMASI;
+                    }
+                    if (empty($order->cutting_approved_at)) {
+                        $order->cutting_approved_at = now();
+                        $order->cutting_approved_by = 'ERP Sync';
+                    }
+                    $order->save();
+                }
             }
 
             DB::commit();
-            $this->info("Synced subcon orders. New orders: $createdOrders, new items: $createdItems, retitled: $retitled.");
+            $this->info("Synced subcon orders. New orders: $createdOrders, new items: $createdItems, retitled: $retitled, deleted/removed: $deletedOrders.");
 
             return Command::SUCCESS;
         } catch (\Exception $e) {
             DB::rollBack();
             $this->error('Error during insertion: '.$e->getMessage());
+            if (app()->runningUnitTests()) {
+                throw $e;
+            }
 
             return Command::FAILURE;
         }
