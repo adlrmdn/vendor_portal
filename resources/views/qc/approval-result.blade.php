@@ -1,6 +1,7 @@
 @extends('layouts.app')
 
 @section('title', 'Packaging Approval')
+@section('bare', '1')
 
 @section('content')
 <div class="container py-5">

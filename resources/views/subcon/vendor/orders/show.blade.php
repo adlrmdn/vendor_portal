@@ -95,13 +95,20 @@
                 <i class="fas fa-arrow-left me-1"></i> Back
             </a>
             @if($order->canPrintLabels())
-                <a href="{{ route('subcon.vendor.orders.print-labels', $order->id) }}" target="_blank" class="btn btn-outline-primary px-3 shadow-sm">
-                    <i class="fas fa-print me-1"></i> Print Packaging Labels
+                <a href="{{ route('subcon.vendor.orders.print-labels', ['id' => $order->id, 'scope' => 'store']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm shadow-sm" style="min-width: 210px;">
+                    <i class="fas fa-print"></i> <span class="text-center">Print Store Labels</span>
+                </a>
+                <a href="{{ route('subcon.vendor.orders.print-labels', ['id' => $order->id, 'scope' => 'warehouse']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm shadow-sm" style="min-width: 210px;">
+                    <i class="fas fa-warehouse"></i> <span class="text-center">Print WH Labels</span>
                 </a>
             @else
-                <span class="btn btn-outline-secondary px-3 shadow-sm disabled" tabindex="-1" aria-disabled="true"
+                <span class="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center gap-2 lh-sm shadow-sm disabled" style="min-width: 210px;" tabindex="-1" aria-disabled="true"
                       title="Unlocks after gramasi &amp; blister approval">
-                    <i class="fas fa-lock me-1"></i> Print Packaging Labels
+                    <i class="fas fa-lock"></i> <span class="text-center">Print Store Labels</span>
+                </span>
+                <span class="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center gap-2 lh-sm shadow-sm disabled" style="min-width: 210px;" tabindex="-1" aria-disabled="true"
+                      title="Unlocks after gramasi &amp; blister approval">
+                    <i class="fas fa-lock"></i> <span class="text-center">Print WH Labels</span>
                 </span>
             @endif
         </div>
@@ -185,6 +192,22 @@
 <div class="row">
     <div class="col-12">
 
+        {{-- Vendor remarks — free notes, no approval, saved anytime, visible to approvers --}}
+        <div class="card mt-2 mb-3 shadow-sm border-0" style="border-radius:12px; border:1px solid rgba(0,0,0,0.08);">
+            <div class="card-body p-3">
+                <form method="POST" action="{{ route('subcon.vendor.orders.remarks', $order->id) }}">
+                    @csrf
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <label for="remarks" class="fw-semibold small text-secondary text-uppercase mb-0" style="letter-spacing:.05em;">
+                            <i class="fas fa-comment-dots me-1"></i> Remarks
+                        </label>
+                        <button type="submit" class="btn btn-sm btn-outline-primary"><i class="fas fa-save me-1"></i> Save Remarks</button>
+                    </div>
+                    <textarea name="remarks" id="remarks" rows="3" class="form-control form-control-sm" placeholder="Notes for this work order — visible to approvers. No approval needed; save anytime.">{{ old('remarks', $order->remarks) }}</textarea>
+                </form>
+            </div>
+        </div>
+
         {{-- Awaiting-approval / completion banners --}}
         @if($order->workflow_stage === \App\Models\SubconOrder::STAGE_CUTTING_REVIEW)
             <div class="alert alert-warning d-flex align-items-center gap-2 border-0 shadow-sm" role="alert" style="border-radius:12px;">
@@ -247,7 +270,7 @@
             @elseif($mode === 'gramasi')
                 <div class="alert alert-success d-flex align-items-center gap-2 border-0 shadow-sm mb-3" role="alert" style="border-radius:12px;">
                     <i class="fas fa-check-circle"></i>
-                    <div>Cutting report approved. Enter <strong>gramasi (kg)</strong> per size and the <strong>blister capacity</strong>, then submit for approval.</div>
+                    <div>Cutting report approved. Enter <strong>gramasi (g)</strong> per size and the <strong>blister capacity</strong>, then submit for approval.</div>
                 </div>
 
                 <form id="stageForm" method="POST" action="{{ route('subcon.vendor.orders.submit-gramasi', $order->id) }}">
@@ -300,8 +323,11 @@
                                 <i class="fas fa-info-circle me-1"></i> Print your packaging labels, then mark this work order complete.
                             </div>
                             <div class="d-flex gap-2">
-                                <a href="{{ route('subcon.vendor.orders.print-labels', $order->id) }}" target="_blank" class="btn btn-outline-primary px-3 fw-semibold shadow-sm">
-                                    <i class="fas fa-print me-1"></i> Print Labels
+                                <a href="{{ route('subcon.vendor.orders.print-labels', ['id' => $order->id, 'scope' => 'store']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm fw-semibold shadow-sm" style="min-width: 210px;">
+                                    <i class="fas fa-print"></i> <span class="text-center">Print Store Labels</span>
+                                </a>
+                                <a href="{{ route('subcon.vendor.orders.print-labels', ['id' => $order->id, 'scope' => 'warehouse']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm fw-semibold shadow-sm" style="min-width: 210px;">
+                                    <i class="fas fa-warehouse"></i> <span class="text-center">Print WH Labels</span>
                                 </a>
                                 <form method="POST" action="{{ route('subcon.vendor.orders.complete', $order->id) }}" class="m-0"
                                       onsubmit="return confirm('Mark this work order as completed?');">

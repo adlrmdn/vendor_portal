@@ -3,6 +3,9 @@
     fabric type, identified by its label (description + unit). Editable on the
     cutting report — where the vendor may also add any fabric VSM does not carry —
     and read-only elsewhere. "Sisa Kain" is always labelled "Sisa Kain (Utuh)".
+    On the editable (vendor) form, Retur Kain is LOCKED and auto-calculated as
+    Short Roll + Sisa Kain + Kepala Kain; the approver can still override it
+    directly on the cutting-approval form.
     Params:
       $fabricLines  array from SubconProductionService::fabricLinesForPo()
       $fabricRecon  Collection of SubconFabricReconciliation keyed by label
@@ -91,11 +94,21 @@
                                 @foreach($cols as $name => $label)
                                     <td class="text-end">
                                         @if($editable)
-                                            <input type="number" step="0.01" min="0" inputmode="decimal"
-                                                   class="form-control form-control-sm text-end d-inline-block" style="width:100px;"
-                                                   name="fabrics_recon[{{ $i }}][{{ $name }}]"
-                                                   value="{{ old('fabrics_recon.'.$i.'.'.$name, $s[$name]) }}"
-                                                   placeholder="0">
+                                            @if($name === 'retur_kain')
+                                                {{-- Locked for the vendor: auto-calculated = Short Roll + Sisa Kain + Kepala Kain.
+                                                     readonly (not disabled) so it still posts. The approver can override it later. --}}
+                                                <input type="number" step="0.01" min="0" readonly tabindex="-1"
+                                                       class="form-control form-control-sm text-end d-inline-block recon-retur" style="width:100px;background:#f1f5f9;cursor:not-allowed;"
+                                                       name="fabrics_recon[{{ $i }}][{{ $name }}]"
+                                                       value="{{ old('fabrics_recon.'.$i.'.'.$name, $s[$name]) }}"
+                                                       title="Auto-calculated: Short Roll + Sisa Kain + Kepala Kain">
+                                            @else
+                                                <input type="number" step="0.01" min="0" inputmode="decimal"
+                                                       class="form-control form-control-sm text-end d-inline-block recon-waste-src" style="width:100px;"
+                                                       name="fabrics_recon[{{ $i }}][{{ $name }}]"
+                                                       value="{{ old('fabrics_recon.'.$i.'.'.$name, $s[$name]) }}"
+                                                       placeholder="0">
+                                            @endif
                                         @else
                                             <span class="fw-semibold">{{ number_format((float) $s[$name], 2) }}</span>
                                         @endif
@@ -114,7 +127,10 @@
                 </table>
             </div>
             @if($editable)
-                <div class="form-text mt-1">Add a fabric here if one you used is not listed above.</div>
+                <div class="form-text mt-1">
+                    <i class="fas fa-lock me-1 text-muted"></i>Retur Kain is auto-calculated (Short Roll + Sisa Kain + Kepala Kain).
+                    Add a fabric here if one you used is not listed above.
+                </div>
             @endif
         @endif
     </div>
@@ -131,22 +147,48 @@ document.addEventListener('DOMContentLoaded', function () {
     let rIdx = {{ count($seed) }};
     const cols = ['short_roll', 'sisa_kain', 'kepala_kain', 'retur_kain'];
 
+    // Retur Kain is locked for the vendor = Short Roll + Sisa Kain + Kepala Kain.
+    function syncRetur(tr) {
+        const retur = tr.querySelector('.recon-retur');
+        if (! retur) return;
+        let sum = 0;
+        tr.querySelectorAll('.recon-waste-src').forEach(function (el) {
+            sum += parseFloat(el.value) || 0;
+        });
+        retur.value = (Math.round(sum * 100) / 100).toFixed(2);
+    }
+
     addBtn.addEventListener('click', function () {
         const i = rIdx++;
         const tr = document.createElement('tr');
         let cells = '<td><input type="text" class="form-control form-control-sm" name="fabrics_recon[' + i + '][label]" placeholder="Fabric description" required></td>';
         cols.forEach(function (c) {
-            cells += '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" class="form-control form-control-sm text-end d-inline-block" style="width:100px;" name="fabrics_recon[' + i + '][' + c + ']" value="0"></td>';
+            if (c === 'retur_kain') {
+                cells += '<td class="text-end"><input type="number" step="0.01" min="0" readonly tabindex="-1" class="form-control form-control-sm text-end d-inline-block recon-retur" style="width:100px;background:#f1f5f9;cursor:not-allowed;" name="fabrics_recon[' + i + '][' + c + ']" value="0.00" title="Auto-calculated: Short Roll + Sisa Kain + Kepala Kain"></td>';
+            } else {
+                cells += '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" class="form-control form-control-sm text-end d-inline-block recon-waste-src" style="width:100px;" name="fabrics_recon[' + i + '][' + c + ']" value="0"></td>';
+            }
         });
         cells += '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger recon-remove" title="Remove"><i class="fas fa-times"></i></button></td>';
         tr.innerHTML = cells;
         rows.appendChild(tr);
+        syncRetur(tr);
     });
 
     rows.addEventListener('click', function (e) {
         const btn = e.target.closest('.recon-remove');
         if (btn) btn.closest('tr').remove();
     });
+
+    // Live-recalc a row's Retur Kain whenever one of its three source columns changes.
+    rows.addEventListener('input', function (e) {
+        if (e.target.classList.contains('recon-waste-src')) {
+            syncRetur(e.target.closest('tr'));
+        }
+    });
+
+    // Initialise on load so Retur Kain always reflects the three columns.
+    rows.querySelectorAll('tr').forEach(syncRetur);
 });
 </script>
 @endif

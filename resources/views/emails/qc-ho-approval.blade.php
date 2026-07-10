@@ -20,9 +20,9 @@
 <body>
     <div class="wrap">
         <div class="card">
-            <span class="tag">HO Approval Needed</span>
-            <h2>Head Office Packaging Approval</h2>
-            <p style="margin:0;color:#495057;">The vendor has confirmed this packaging inspection. It now needs Head Office sign-off. Open the form to enter <strong>Fabric Sent</strong> and <strong>Consumption Plan</strong>, then approve.</p>
+            <span class="tag">Final Approval Needed</span>
+            <h2>Final Approval</h2>
+            <p style="margin:0;color:#495057;">The vendor has confirmed this packaging inspection. It now needs final sign-off. Open the form to enter <strong>Fabric Sent</strong> and <strong>Consumption Plan</strong>, then approve.</p>
 
             <table class="meta">
                 @if($orderNumber)
@@ -35,11 +35,19 @@
                 <tr><td class="k">Session</td><td>{{ $sessionId ?? '—' }}</td></tr>
             </table>
 
-            <p>
-                <a href="{{ $url }}" class="btn-ok">Open HO Approval Form</a>
-            </p>
+            @if(!empty($remarks ?? null))
+                <div style="margin:14px 0; padding:12px 14px; background:#fff9db; border:1px solid #ffe066; border-radius:8px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:#7a5a00; margin-bottom:4px;">Vendor Remarks</div>
+                    <div style="font-size:13px; color:#495057; white-space:pre-wrap;">{{ $remarks }}</div>
+                </div>
+            @endif
 
-            <p style="font-size:13px;">You'll enter Fabric Sent &amp; Consumption Plan and review the calculated figures on that page, then choose <strong>Approve</strong> or <strong>Reject</strong> there. Or paste this link into your browser:<br>
+            <p>
+                <a href="{{ $url }}" class="btn btn-ok" style="display:inline-block;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:8px;color:#ffffff !important;background:#2b8a3e;">Review &amp; Approve</a>
+                &nbsp;&nbsp;
+                <a href="{{ $declineUrl }}" class="btn btn-no" style="display:inline-block;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:8px;color:#ffffff !important;background:#c92a2a;">Reject</a>
+            </p>
+            <p class="muted" style="font-size:13px;">Approving opens a quick page to enter <strong>Fabric Sent</strong> &amp; <strong>Consumption Plan</strong>, review the calculated figures, then sign off — no login required. Or paste this link into your browser:<br>
                 <a href="{{ $url }}">{{ $url }}</a>
             </p>
 

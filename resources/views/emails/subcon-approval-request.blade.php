@@ -42,16 +42,23 @@
                 @endif
             </table>
 
+            @if(!empty($order->remarks))
+                <div style="margin:14px 0; padding:12px 14px; background:#fff9db; border:1px solid #ffe066; border-radius:8px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:#7a5a00; margin-bottom:4px;">Vendor Remarks</div>
+                    <div style="font-size:13px; color:#495057; white-space:pre-wrap;">{{ $order->remarks }}</div>
+                </div>
+            @endif
+
             @if(!empty($rows))
                 <div class="section-title">
-                    {{ $gate === 'gramasi' ? 'Submitted Gramasi (kg) by size' : 'Submitted Cutting Quantities by size' }}
+                    {{ $gate === 'gramasi' ? 'Submitted Gramasi (g) by size' : 'Submitted Cutting Quantities by size' }}
                 </div>
                 <table class="data">
                     <thead>
                         <tr>
                             <th>Size</th>
                             @if($gate === 'gramasi')
-                                <th style="text-align:right;">Gramasi (kg)</th>
+                                <th style="text-align:right;">Gramasi (g)</th>
                             @else
                                 <th style="text-align:right;">Order Qty</th>
                                 <th style="text-align:right;">Qty Cut</th>

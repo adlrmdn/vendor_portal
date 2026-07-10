@@ -20,6 +20,17 @@
         background: #ffffff;
         overflow: hidden;
     }
+    /* The filter card holds the Tom Select dropdowns — it must NOT clip them
+       (overflow:hidden) and must stack above the table card below it. */
+    .filter-card {
+        overflow: visible;
+        position: relative;
+        z-index: 3;
+    }
+    /* Float the open dropdown above any following card. */
+    .filter-card .ts-dropdown {
+        z-index: 1050;
+    }
     .premium-table th {
         font-family: 'Outfit', sans-serif;
         font-weight: 600;
@@ -66,7 +77,7 @@
 </div>
 
 {{-- Filters --}}
-<form method="GET" class="card premium-card mb-4">
+<form method="GET" class="card premium-card filter-card mb-4">
     <div class="card-body p-4">
         <div class="row g-3">
             <div class="col-12 col-md-4">

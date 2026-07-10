@@ -6,11 +6,16 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h2 class="mb-0">Requested Approvals</h2>
-        <small class="text-muted">Cutting reports & gramasi submissions awaiting your decision</small>
+        <small class="text-muted">Cutting reports, gramasi &amp; final submissions awaiting your decision</small>
     </div>
-    <a href="{{ route('subcon.admin.orders') }}" class="btn btn-outline-secondary">
-        <i class="fas fa-clipboard-list me-1"></i> All Work Orders
-    </a>
+    <div class="d-flex gap-2">
+        <a href="{{ route('subcon.admin.approval-logs') }}" class="btn btn-outline-secondary">
+            <i class="fas fa-clock-rotate-left me-1"></i> Approval Log
+        </a>
+        <a href="{{ route('subcon.admin.orders') }}" class="btn btn-outline-secondary">
+            <i class="fas fa-clipboard-list me-1"></i> All Work Orders
+        </a>
+    </div>
 </div>
 
 <div class="card">
@@ -27,7 +32,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @forelse($orders as $order)
+                    @foreach($orders as $order)
                         @php $gate = $order->workflow_stage === \App\Models\SubconOrder::STAGE_CUTTING_REVIEW ? 'cutting' : 'gramasi'; @endphp
                         <tr>
                             <td>
@@ -58,7 +63,7 @@
                                         </form>
                                     @endif
                                     <form method="POST" action="{{ route('subcon.admin.orders.decline', $order->id) }}" class="m-0"
-                                          onsubmit="return confirm('Return this to the vendor for changes?');">
+                                          onsubmit="return confirm('Reject the {{ $gate === 'gramasi' ? 'gramasi & blister capacity' : 'cutting report' }} for {{ $order->order_number }}?\n\nThis returns the work order to the vendor for changes. Press OK only if you are sure.');">
                                         @csrf
                                         <input type="hidden" name="gate" value="{{ $gate }}">
                                         <button type="submit" class="btn btn-sm btn-outline-danger"><i class="fas fa-times me-1"></i> Reject</button>
@@ -66,14 +71,48 @@
                                 </div>
                             </td>
                         </tr>
-                    @empty
+                    @endforeach
+
+                    {{-- Final (QC-console) approvals: stage-1 done, awaiting Final sign-off. --}}
+                    @foreach($finalApprovals as $fa)
+                        <tr>
+                            <td>
+                                @if($fa['order_id'])
+                                    <a href="{{ route('subcon.admin.orders.view', $fa['order_id']) }}" class="fw-semibold text-decoration-none font-monospace">{{ $fa['order_number'] }}</a>
+                                @else
+                                    <span class="fw-semibold font-monospace">{{ $fa['order_number'] }}</span>
+                                @endif
+                                @if($fa['style'])<div class="text-muted small">{{ $fa['style'] }}</div>@endif
+                            </td>
+                            <td>{{ $fa['vendor'] }}</td>
+                            <td>
+                                <span class="badge bg-primary-subtle text-primary border border-primary border-opacity-25">Final Approval</span>
+                            </td>
+                            <td class="small text-muted">{{ $fa['approved_at'] ? \Illuminate\Support\Carbon::parse($fa['approved_at'])->diffForHumans() : '—' }}</td>
+                            <td class="text-end pe-4">
+                                <div class="d-flex gap-2 justify-content-end">
+                                    {{-- Final approval needs fabric-consumption review, so route to the form
+                                         (no one-click) — opened in a new tab so the approvals list stays put. --}}
+                                    <a href="{{ route('qc.ho-approve', ['token' => $fa['token']]) }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
+                                        <i class="fas fa-check me-1"></i> Review &amp; Approve
+                                    </a>
+                                    <a href="{{ route('qc.ho-decline', ['token' => $fa['token']]) }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener"
+                                       onclick="return confirm('Reject this inspection at the Final approval stage? This records a rejection and cannot be undone.');">
+                                        <i class="fas fa-times me-1"></i> Reject
+                                    </a>
+                                </div>
+                            </td>
+                        </tr>
+                    @endforeach
+
+                    @if($orders->isEmpty() && empty($finalApprovals))
                         <tr>
                             <td colspan="5" class="text-center text-muted py-5">
                                 <i class="fas fa-check-double fa-2x mb-3 text-success opacity-50 d-block"></i>
                                 No approvals pending. You're all caught up.
                             </td>
                         </tr>
-                    @endforelse
+                    @endif
                 </tbody>
             </table>
         </div>

@@ -8,6 +8,7 @@ use App\Models\SubconOrder;
 use App\Models\User;
 use App\Notifications\SubconStageDecision;
 use App\Services\SubconConsumptionService;
+use App\Services\SubconFabricLinePublisher;
 use App\Services\SubconProductionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -122,16 +123,27 @@ class SubconApprovalController extends Controller
                 report($e);
             }
 
+            // Yield / per-size production detail — best-effort (VSM may be down).
+            $productionGroups = [];
+            try {
+                $productionGroups = $production->forPo($model->order_number);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+            $cuttingReports = \App\Models\SubconCuttingReport::where('order_id', $model->id)->get()->keyBy('prod_id');
+
             return view('subcon.cutting-approval-form', [
                 'order' => $model,
                 'fabricLines' => $fabricLines,
+                'productionGroups' => $productionGroups,
+                'cuttingReports' => $cuttingReports,
                 'totalCut' => $production->totalCutForOrder($model),
                 'submitUrl' => url(URL::signedRoute('subcon.approve.cutting.submit', ['order' => $model->id], absolute: false)),
                 'declineUrl' => url(URL::signedRoute('subcon.decline', ['order' => $model->id, 'gate' => 'cutting'], absolute: false)),
             ]);
         }
 
-        $result = $this->doApprove($model, $gate, 'Email approval');
+        $result = $this->doApprove($model, $gate, 'Email approval', 'email');
 
         return view('approvals.result', ['success' => $result['ok'], 'message' => $result['message']]);
     }
@@ -156,7 +168,7 @@ class SubconApprovalController extends Controller
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
         ]);
 
-        $result = $this->applyCuttingApproval($model, $data['fabrics'] ?? [], 'Email approval');
+        $result = $this->applyCuttingApproval($model, $data['fabrics'] ?? [], 'Email approval', 'email');
 
         return view('approvals.result', ['success' => $result['ok'], 'message' => $result['message']]);
     }
@@ -164,7 +176,7 @@ class SubconApprovalController extends Controller
     public function declineSigned(string $order, string $gate)
     {
         $model = SubconOrder::with('vendor')->findOrFail($order);
-        $result = $this->doDecline($model, $gate, 'Email approval');
+        $result = $this->doDecline($model, $gate, 'Email approval', 'email');
 
         return view('approvals.result', ['success' => $result['ok'], 'message' => $result['message']]);
     }
@@ -187,9 +199,18 @@ class SubconApprovalController extends Controller
             ]);
         }
 
+        // Don't stack a second run while one is already in flight.
+        if ($model->isGeneratingLabels()) {
+            return view('approvals.result', [
+                'success' => true,
+                'message' => 'Label generation is already running for work order '.$model->order_number.'. It will unlock printing in the portal once finished.',
+            ]);
+        }
+
         // Resolution + DTT call (up to 30s) run off the request cycle so the
         // signed link returns immediately; the worker advances the order to
         // "labels", which unlocks printing in the portal.
+        $model->markLabelGenStarted();
         \App\Jobs\GenerateSubconLabels::dispatch($model->id);
 
         return view('approvals.result', [
@@ -220,12 +241,12 @@ class SubconApprovalController extends Controller
                 'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
                 'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
             ]);
-            $result = $this->applyCuttingApproval($model, $data['fabrics'] ?? [], $approver);
+            $result = $this->applyCuttingApproval($model, $data['fabrics'] ?? [], $approver, 'in_app');
 
             return back()->with($result['ok'] ? 'success' : 'error', $result['message']);
         }
 
-        $result = $this->doApprove($model, $gate, $approver);
+        $result = $this->doApprove($model, $gate, $approver, 'in_app');
 
         return back()->with($result['ok'] ? 'success' : 'error', $result['message']);
     }
@@ -235,7 +256,7 @@ class SubconApprovalController extends Controller
         $this->authorizeAdmin();
         $gate = $request->input('gate');
         $model = SubconOrder::with('vendor')->findOrFail($id);
-        $result = $this->doDecline($model, $gate, Auth::user()->name ?? Auth::user()->email);
+        $result = $this->doDecline($model, $gate, Auth::user()->name ?? Auth::user()->email, 'in_app');
 
         return back()->with($result['ok'] ? 'success' : 'error', $result['message']);
     }
@@ -258,7 +279,7 @@ class SubconApprovalController extends Controller
      * @param  array<int, array<string, mixed>>  $fabrics
      * @return array{ok: bool, message: string}
      */
-    private function applyCuttingApproval(SubconOrder $order, array $fabrics, string $approver): array
+    private function applyCuttingApproval(SubconOrder $order, array $fabrics, string $approver, string $source = 'in_app'): array
     {
         if ($order->workflow_stage !== SubconOrder::STAGE_CUTTING_REVIEW) {
             return ['ok' => false, 'message' => 'This request is no longer awaiting approval (current stage: '.$order->stageLabel().').'];
@@ -275,12 +296,22 @@ class SubconApprovalController extends Controller
         // Push the approved cutting figures to D365 in the background (never blocks).
         SyncSubconReportToD365::dispatch($order->id, 'cutting');
 
+        // Publish the consumption to the QMS fabric-lines table (keyed by
+        // production_group) so the QC Console can PULL it even before its
+        // packaging project exists. Staged with a NULL project_id — the console
+        // adopts it later. Best-effort + guarded; never blocks the approval.
+        app(SubconFabricLinePublisher::class)->publish($order);
+        app(\App\Services\SubconRemarksPublisher::class)->publish($order);
+
         $this->notifyVendor($order, 'cutting', 'approved');
 
-        return ['ok' => true, 'message' => 'Cutting report approved for '.$order->order_number.'. Consumption saved. The vendor may now enter gramasi & blister capacity. Values are syncing to D365 in the background.'];
+        $message = 'Cutting report approved for '.$order->order_number.'. Consumption saved. The vendor may now enter gramasi & blister capacity. Values are syncing to D365 in the background.';
+        $this->logDecision($order, 'cutting', 'approved', $approver, $source, $message);
+
+        return ['ok' => true, 'message' => $message];
     }
 
-    private function doApprove(SubconOrder $order, ?string $gate, string $approver): array
+    private function doApprove(SubconOrder $order, ?string $gate, string $approver, string $source = 'in_app'): array
     {
         if (! in_array($gate, ['cutting', 'gramasi'], true)) {
             return ['ok' => false, 'message' => 'Unknown approval stage.'];
@@ -315,10 +346,13 @@ class SubconApprovalController extends Controller
             ? ' An email has been sent to the vendor to generate packing labels.'
             : ' The vendor may now enter gramasi & blister capacity.';
 
-        return ['ok' => true, 'message' => $label.' approved for '.$order->order_number.'.'.$next.' Values are syncing to D365 in the background.'];
+        $message = $label.' approved for '.$order->order_number.'.'.$next.' Values are syncing to D365 in the background.';
+        $this->logDecision($order, $gate, 'approved', $approver, $source, $message);
+
+        return ['ok' => true, 'message' => $message];
     }
 
-    private function doDecline(SubconOrder $order, ?string $gate, string $approver): array
+    private function doDecline(SubconOrder $order, ?string $gate, string $approver, string $source = 'in_app'): array
     {
         if (! in_array($gate, ['cutting', 'gramasi'], true)) {
             return ['ok' => false, 'message' => 'Unknown approval stage.'];
@@ -337,7 +371,28 @@ class SubconApprovalController extends Controller
 
         $label = $gate === 'gramasi' ? 'Gramasi & blister capacity' : 'Cutting report';
 
-        return ['ok' => true, 'message' => $label.' for '.$order->order_number.' was returned to the vendor for changes.'];
+        $message = $label.' for '.$order->order_number.' was returned to the vendor for changes.';
+        $this->logDecision($order, $gate, 'declined', $approver, $source, $message);
+
+        return ['ok' => true, 'message' => $message];
+    }
+
+    /**
+     * Append one immutable audit row for a cutting/gramasi decision. Best-effort:
+     * a logging failure must never break an approval that already committed.
+     */
+    private function logDecision(SubconOrder $order, string $gate, string $decision, string $actor, string $source, ?string $note = null): void
+    {
+        \App\Models\SubconApprovalLog::record([
+            'order_id' => $order->id,
+            'order_number' => $order->order_number,
+            'vendor_name' => $order->vendor?->name,
+            'gate' => $gate,
+            'decision' => $decision,
+            'actor' => $actor,
+            'source' => $source,
+            'note' => $note,
+        ]);
     }
 
     private function notifyVendor(SubconOrder $order, string $gate, string $outcome): void

@@ -26,9 +26,14 @@ class SubconLabelService
      * Build the label view data for an order, or an ['error' => string] the
      * caller can redirect back with (missing distribution / no PI generated).
      *
-     * @return array{order:SubconOrder, styleName:string, grouped:array, printDate:string}|array{error:string}
+     * $scope selects which stores to print:
+     *   - 'store'     → every store EXCEPT WH Replenish / WH Online
+     *   - 'warehouse' → only WH Replenish / WH Online (the sack stores)
+     *   - 'all'       → everything (default)
+     *
+     * @return array{order:SubconOrder, styleName:string, grouped:array, printDate:string, scope:string}|array{error:string}
      */
-    public function buildViewData(SubconOrder $order): array
+    public function buildViewData(SubconOrder $order, string $scope = 'all'): array
     {
         if (empty($order->distribution_id)) {
             return ['error' => 'This order does not have a Distribution ID associated.'];
@@ -37,6 +42,29 @@ class SubconLabelService
         $groups = $this->d365->fetchPackingInstructionGroups($order);
         if (empty($groups)) {
             return ['error' => 'No packing instruction found for Distribution ID: '.$order->distribution_id.'. Labels may not be generated yet.'];
+        }
+
+        // Split by the two central distribution warehouses (WH Replenish / WH Online).
+        if ($scope === 'warehouse' || $scope === 'store') {
+            $whStores = $this->d365->warehouseStoreIds();
+            $groups = array_values(array_filter(
+                $groups,
+                fn ($g) => in_array($g['store_id'], $whStores, true) === ($scope === 'warehouse')
+            ));
+            if (empty($groups)) {
+                return ['error' => $scope === 'warehouse'
+                    ? 'No WH Replenish / WH Online labels for this work order — its packing instruction has no rows for those warehouses.'
+                    : 'No store labels for this work order — its packing instruction only has WH Replenish / WH Online rows.'];
+            }
+        }
+
+        // Guard: a group with no PackingCode would render a blank/unscannable
+        // barcode. That means the packing instruction was never fully generated
+        // (the DTT bot timed out / didn't finish), so block the print entirely
+        // rather than emit useless labels — the labels must be (re)generated first.
+        $missing = array_values(array_filter($groups, fn ($g) => trim((string) $g['packing_code']) === ''));
+        if (! empty($missing)) {
+            return ['error' => 'Cannot print: '.count($missing).' of '.count($groups).' labels have no packing code yet, so their barcodes would be blank. The packing instruction has not been fully generated — please (re)generate labels before printing.'];
         }
 
         // Style / article name (from VSM production detail).
@@ -98,6 +126,13 @@ class SubconLabelService
             $group['total_weight'] = $totalWeight;
 
             $warehouse = $warehouses[$group['store_id']] ?? null;
+            // D365 stamps the ORIGIN warehouse name onto EVERY PI row's StoreName
+            // (so all rows read e.g. "WH REPLENISH PEMALANG"). Use the real
+            // destination name from the Warehouses master; keep the PI value only
+            // if the master has no record for this StoreID.
+            if (! empty($warehouse['WarehouseName'])) {
+                $group['store_name'] = $warehouse['WarehouseName'];
+            }
             $group['store_province'] = ! empty($warehouse['TOC_DistribWh']) ? $warehouse['TOC_DistribWh'] : '';
             $group['address'] = $this->getStoreAddress(
                 $group['store_id'],
@@ -118,6 +153,7 @@ class SubconLabelService
             'styleName' => $styleName,
             'grouped' => $groups,
             'printDate' => $printDate,
+            'scope' => $scope,
         ];
     }
 

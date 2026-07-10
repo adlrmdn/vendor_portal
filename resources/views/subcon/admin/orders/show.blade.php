@@ -15,8 +15,11 @@
         <a href="{{ route('subcon.admin.orders.export-cutting', $order->id) }}" class="btn btn-outline-success">
             <i class="fas fa-file-excel me-1"></i> Export Cutting Report
         </a>
-        <a href="{{ route('subcon.admin.orders.print-labels', $order->id) }}" target="_blank" class="btn btn-outline-primary">
-            <i class="fas fa-print me-1"></i> Print Packaging Labels
+        <a href="{{ route('subcon.admin.orders.print-labels', ['id' => $order->id, 'scope' => 'store']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm" style="min-width: 210px;">
+            <i class="fas fa-print"></i> <span class="text-center">Print Store Labels</span>
+        </a>
+        <a href="{{ route('subcon.admin.orders.print-labels', ['id' => $order->id, 'scope' => 'warehouse']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm" style="min-width: 210px;">
+            <i class="fas fa-warehouse"></i> <span class="text-center">Print WH Labels</span>
         </a>
     </div>
 </div>
@@ -121,6 +124,8 @@
                 @endif
             </div>
         </div>
+
+        @include('subcon.partials.remarks', ['remarks' => $order->remarks ?? null])
 
         {{-- Stage approval --}}
         @if($order->isAwaitingApproval())

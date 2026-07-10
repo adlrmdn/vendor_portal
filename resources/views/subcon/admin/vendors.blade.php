@@ -270,9 +270,71 @@
     </div>
 </div>
 
+@if(session('new_vendor_credentials'))
+@php $cred = session('new_vendor_credentials'); @endphp
+<div class="modal fade" id="vendorCredentialsModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog">
+        <div class="modal-content modal-premium-content">
+            <div class="modal-header modal-premium-header">
+                <h5 class="modal-title"><i class="fas fa-key me-2 text-success"></i> Vendor Login Credentials</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body modal-premium-body">
+                <div class="alert alert-warning small mb-3">
+                    <i class="fas fa-triangle-exclamation me-1"></i>
+                    Copy these now — the password is shown <strong>only once</strong> and cannot be retrieved later.
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small text-muted mb-1">Vendor</label>
+                    <div class="fw-semibold">{{ $cred['name'] }}</div>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small text-muted mb-1">Login Email</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="credEmail" value="{{ $cred['login_email'] }}" readonly>
+                        <button class="btn btn-outline-secondary" type="button" onclick="copyCred('credEmail', this)"><i class="fas fa-copy"></i></button>
+                    </div>
+                </div>
+                <div class="mb-1">
+                    <label class="form-label small text-muted mb-1">Password</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control font-monospace" id="credPassword" value="{{ $cred['password'] }}" readonly>
+                        <button class="btn btn-outline-secondary" type="button" onclick="copyCred('credPassword', this)"><i class="fas fa-copy"></i></button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-premium-footer modal-footer">
+                <button class="btn btn-outline-primary px-3" style="border-radius:8px;" type="button" onclick="copyCred('__both__', this)"><i class="fas fa-copy me-1"></i> Copy both</button>
+                <button type="button" class="btn btn-primary px-3" style="border-radius:8px;" data-bs-dismiss="modal">Done</button>
+            </div>
+        </div>
+    </div>
+</div>
+@endif
+
 @push('scripts')
 <script>
+    function copyCred(id, btn) {
+        let text;
+        if (id === '__both__') {
+            const e = document.getElementById('credEmail');
+            const p = document.getElementById('credPassword');
+            text = 'Login Email: ' + e.value + '\nPassword: ' + p.value;
+        } else {
+            text = document.getElementById(id).value;
+        }
+        navigator.clipboard.writeText(text).then(function () {
+            const original = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check"></i>';
+            setTimeout(function () { btn.innerHTML = original; }, 1200);
+        });
+    }
     document.addEventListener('DOMContentLoaded', function () {
+        const credModal = document.getElementById('vendorCredentialsModal');
+        if (credModal && window.bootstrap) {
+            new bootstrap.Modal(credModal).show();
+        }
+
         const editVendorModal = document.getElementById('editVendorModal');
         if (editVendorModal) {
             editVendorModal.addEventListener('show.bs.modal', function (event) {

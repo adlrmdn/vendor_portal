@@ -1,18 +1,21 @@
 @extends('layouts.app')
 
-@section('title', 'HO Packaging Approval')
+@php $styleName = ($subcon ?? null) && $subcon->title ? $subcon->title : null; @endphp
+
+@section('title', 'Final Approval'.($styleName ? ' - '.$styleName : ''))
+@section('bare', '1')
 
 @section('content')
-<div class="container py-5">
+<div class="container-fluid py-5 px-lg-5">
     <div class="row justify-content-center">
-        <div class="col-12 col-xl-8">
+        <div class="col-12 col-xxl-11">
             <div class="card border-0 shadow-sm" style="border-radius:16px;">
                 <div class="card-body p-4 p-md-5">
                     <div class="d-flex align-items-center gap-2 mb-1">
-                        <span class="badge rounded-pill text-bg-warning">HO Approval</span>
+                        <span class="badge rounded-pill text-bg-warning">Final Approval</span>
                     </div>
-                    <h4 class="fw-bold mb-1">Head Office Packaging Approval</h4>
-                    <p class="text-muted mb-4">Review this packaging inspection and sign off. Fabric consumption was already entered at the cutting-report approval stage. Record any deductions below, then <strong>Approve</strong> or <strong>Reject</strong>.</p>
+                    <h4 class="fw-bold mb-1">Final Approval @if($styleName)<span class="text-muted fw-normal">- {{ $styleName }}</span>@endif</h4>
+                    <p class="text-muted mb-4">Review this packaging inspection and sign off. Fabric consumption is prefilled from the cutting-report approval — <strong>revise it here if needed</strong> and it will be recalculated and saved on approval. Record any deductions below, then <strong>Approve</strong> or <strong>Reject</strong>.</p>
 
                     <dl class="row small mb-4">
                         @if($subcon)
@@ -31,8 +34,27 @@
                         <dd class="col-7 col-sm-9">{{ number_format($totalCut) }} pcs</dd>
                     </dl>
 
-                    <form method="POST" action="{{ route('qc.ho-approve.submit', ['token' => $token]) }}">
+                    @include('subcon.partials.remarks', ['remarks' => $subcon->remarks ?? null])
+
+                    @include('subcon.partials.production-detail', [
+                        'productionGroups' => $productionGroups ?? [],
+                        'cuttingReports' => $cuttingReports ?? collect(),
+                        'mode' => 'view',
+                    ])
+
+                    <form method="POST" action="{{ route('qc.ho-approve.submit', ['token' => $token]) }}"
+                          onsubmit="return confirm('Submit Head Office approval? The entered consumption will be recalculated and saved, and the inspection signed off.');">
                         @csrf
+
+                        {{-- Consumption inputs (calculation+approval), same engine as the cutting gate --}}
+                        @if($subcon)
+                            @include('subcon.partials.consumption-input', [
+                                'order' => $subcon,
+                                'fabricLines' => $fabricLines,
+                                'totalCut' => $totalCut,
+                                'editable' => true,
+                            ])
+                        @endif
 
                         {{-- Optional deductions --}}
                         <div class="mb-3">
@@ -50,8 +72,7 @@
                                onclick="return confirm('Reject this inspection at the Head Office stage? This records a rejection and cannot be undone.');">
                                 <i class="fas fa-circle-xmark me-1"></i> Reject
                             </a>
-                            <button type="submit" class="btn btn-success px-4 fw-semibold shadow-sm"
-                                    onclick="return confirm('Submit Head Office approval? This signs off the inspection and regenerates the PDF.');">
+                            <button type="submit" class="btn btn-success px-4 fw-semibold shadow-sm">
                                 <i class="fas fa-circle-check me-1"></i> Approve &amp; Sign
                             </button>
                         </div>
@@ -72,7 +93,7 @@ document.addEventListener('DOMContentLoaded', function () {
         div.className = 'row g-2 mb-2 align-items-center';
         div.innerHTML =
             '<div class="col-7"><input type="text" class="form-control form-control-sm" name="deductions[' + dIdx + '][description]" placeholder="Description (e.g. Label reprint cost)"></div>' +
-            '<div class="col-4"><input type="number" step="0.01" min="0" class="form-control form-control-sm" name="deductions[' + dIdx + '][amount]" placeholder="Amount"></div>' +
+            '<div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">Rp</span><input type="number" step="0.01" min="0" class="form-control" name="deductions[' + dIdx + '][amount]" placeholder="Amount"></div></div>' +
             '<div class="col-1 text-end"><button type="button" class="btn btn-sm btn-outline-danger remove-deduction" title="Remove"><i class="fas fa-times"></i></button></div>';
         dRows.appendChild(div);
         dIdx++;

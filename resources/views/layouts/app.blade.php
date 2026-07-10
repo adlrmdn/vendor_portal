@@ -170,6 +170,11 @@
 </head>
 
 <body>
+    {{-- Standalone/token pages (e.g. the approval forms reached from an email or
+         from the admin Approvals tab) opt into "bare" chrome: the top navbar is
+         kept (so a logged-in admin can still navigate), but the role sidebar is
+         dropped so the page reads as a focused, standalone approval. --}}
+    @php($__bare = trim($__env->yieldContent('bare')) !== '')
     <!-- Navigation -->
     <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
         <div class="container-fluid">
@@ -283,7 +288,7 @@
         </div>
     </nav>
 
-    @auth
+    @if(auth()->check() && ! $__bare)
         @if(auth()->user()->isAdmin() || auth()->user()->isFabricAdmin())
             @include('layouts.admin')
         @elseif(auth()->user()->isFabricVendor())
@@ -294,11 +299,11 @@
             @include('layouts.subcon-vendor')
         @endif
     @else
-        <!-- Guest Content -->
+        <!-- Guest / standalone content -->
         <main>
             @yield('content')
         </main>
-    @endauth
+    @endif
 
     <!-- Bootstrap JS Bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>

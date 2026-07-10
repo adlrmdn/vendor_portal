@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\SubconOrder;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -21,7 +22,7 @@ use Illuminate\Support\Facades\Log;
  * the in-app admin button and the signed email link so neither click blocks on
  * the (up-to-30s) DTT call. Failures are retried a few times, then logged.
  */
-class GenerateSubconLabels implements ShouldQueue
+class GenerateSubconLabels implements ShouldQueue, ShouldBeUnique
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
@@ -29,6 +30,28 @@ class GenerateSubconLabels implements ShouldQueue
     public int $tries = 3;
 
     public int $backoff = 30;
+
+    /**
+     * Keep at most one in-flight label-gen job per order. Each attempt blocks the
+     * single queue worker for ~50s on the DTT call; without this, repeated
+     * "Generate Labels" clicks stack duplicate jobs and saturate the worker while
+     * the DTT bot is down (order never advances — the "stuck" symptom). The lock
+     * releases when the job finishes (success or final failure), so the admin can
+     * retry once the current attempt has exhausted its tries.
+     */
+    public int $uniqueFor = 600;
+
+    public function uniqueId(): string
+    {
+        return $this->orderId;
+    }
+
+    /**
+     * Must exceed the DTT HTTP timeout below (180s) so the queue worker doesn't
+     * kill the job mid-call — Laravel's default 60s would otherwise cut off a
+     * DTT run that legitimately takes minutes to build the packing instruction.
+     */
+    public int $timeout = 200;
 
     /** @param string $orderId SubconOrder UUID */
     public function __construct(public string $orderId) {}
@@ -44,6 +67,7 @@ class GenerateSubconLabels implements ShouldQueue
         // dispatch and execution — only act while genuinely waiting.
         if ($order->workflow_stage !== SubconOrder::STAGE_WAITING_DISTRIBUTION) {
             Log::info("Label generation skipped for {$order->order_number}: stage is {$order->workflow_stage}.");
+            $order->clearLabelGenState();
 
             return;
         }
@@ -62,7 +86,7 @@ class GenerateSubconLabels implements ShouldQueue
             'X-API-Key' => $apiKey,
             'X-Dynamic-Key' => $dynamicKey,
             'Content-Type' => 'application/json',
-        ])->timeout(30)->post($url, ['dst' => $order->distribution_id]);
+        ])->timeout(180)->post($url, ['dst' => $order->distribution_id]);
 
         $apiSuccess = false;
         $errorMsg = '';
@@ -72,10 +96,19 @@ class GenerateSubconLabels implements ShouldQueue
             if ($resData && ($resData['success'] ?? false) === true) {
                 $apiSuccess = true;
             } else {
-                $errorMsg = $resData['message'] ?? 'API response indicated failure.';
+                // DTT reports the reason under "error" (Playwright/D365 UI faults,
+                // e.g. the FilterField_TOC_DT_DTID selector timing out); fall back
+                // to "message" for older responses.
+                $errorMsg = $resData['error'] ?? $resData['message'] ?? 'API response indicated failure.';
             }
         } else {
-            $errorMsg = 'API returned status '.$response->status();
+            // FastAPI puts the reason under "detail" (e.g. 401 "Login failed: …",
+            // 500 unexpected error); fall back to "error" then the bare status.
+            $body = $response->json();
+            $detail = is_array($body) ? ($body['detail'] ?? $body['error'] ?? null) : null;
+            $errorMsg = $detail
+                ? 'API '.$response->status().': '.$detail
+                : 'API returned status '.$response->status();
         }
 
         // Outside production, treat a DTT failure as success so the workflow can
@@ -91,6 +124,8 @@ class GenerateSubconLabels implements ShouldQueue
         }
 
         $order->workflow_stage = SubconOrder::STAGE_LABELS;
+        $order->label_gen_status = null;
+        $order->label_gen_error = null;
         $order->save();
 
         Log::info("Packing labels generated for {$order->order_number}; printing unlocked.");
@@ -171,5 +206,12 @@ class GenerateSubconLabels implements ShouldQueue
     public function failed(\Throwable $e): void
     {
         Log::error("Label generation failed for order {$this->orderId}: ".$e->getMessage());
+
+        // Persist the reason so the portal can show the admin exactly why the RPA
+        // could not generate the packing instruction, and re-enable the button.
+        $order = SubconOrder::find($this->orderId);
+        if ($order) {
+            $order->markLabelGenFailed($e->getMessage());
+        }
     }
 }

@@ -127,7 +127,7 @@ Both follow the same shape: fetch headers (filtered by pool/vendor + Confirmed +
 
 **Cutting gate = "calculate + approve" (merged).** The cutting approval is *not* a bare approve: the approver enters per-fabric **consumption** (Fabric Sent + Cons. Plan) and the portal derives, per the agreed spreadsheet schema:
 - `cutt_plan = ROUNDDOWN(fabric_sent / consumption_plan, 0)`
-- `actual_consumption = (fabric_sent − (short_roll + sisa_kain + kepala_kain + retur_kain)) / total cutting qty` — **all four** waste columns are subtracted, including `retur_kain`
+- `actual_consumption = (fabric_sent − retur_kain) / total cutting qty` — **only `retur_kain`** is subtracted; the other three waste columns (short_roll/sisa_kain/kepala_kain) are still captured/stored but no longer reduce consumption
 - `overconsumption = (actual_consumption − consumption_plan) / consumption_plan` (stored as a ratio; the unrounded actual_consumption is used, so e.g. 1.2325 → 2.71%)
 
 - `deduction` (IDR) = `max(0, actual_consumption − 1.03 × consumption_plan) × total cutting qty × fabric_price` — charged **only when overconsumption > 3%** (the 3% is a tolerance; under-consuming is never charged)

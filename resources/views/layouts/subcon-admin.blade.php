@@ -27,7 +27,7 @@
                         </a>
                     </li>
                     <li>
-                        @php($pendingApprovals = \App\Models\SubconOrder::whereIn('workflow_stage', ['cutting_review', 'gramasi_review'])->count())
+                        @php($pendingApprovals = \App\Models\SubconOrder::whereIn('workflow_stage', ['cutting_review', 'gramasi_review'])->count() + \App\Models\SubconOrder::pendingFinalApprovalCount())
                         <a href="{{ route('subcon.admin.approvals') }}"
                             class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.approvals') ? 'active' : '' }}"
                             data-bs-toggle="tooltip" data-bs-placement="right" title="Requested Approvals">

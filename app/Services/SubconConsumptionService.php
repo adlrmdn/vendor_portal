@@ -11,7 +11,7 @@ use App\Models\SubconOrder;
  * spreadsheet schema (B=fabric_sent, C=consumption_plan, E=total qty cut,
  * G=short_roll, H=sisa_kain, I=kepala_kain, J=retur_kain):
  *   cutt_plan          = ROUNDDOWN(B / C, 0)
- *   actual_consumption = (B − (G + H + I + J)) / E     ← all four waste columns are subtracted
+ *   actual_consumption = (B − J) / E                   ← ONLY retur_kain is subtracted
  *   overconsumption    = (actual_consumption − C) / C  (ratio; 0.0271 = 2.71%)
  *   deduction (IDR)    = max(0, actual_consumption − 1.03 × C) × E × fabric_price
  *                        charged only when overconsumption > 3.00% (the 3% tolerance
@@ -61,8 +61,10 @@ class SubconConsumptionService
                     : round((float) $submitted, 2);
             }
 
-            // Waste subtracted from fabric sent: all four columns (incl. retur_kain).
-            $wasteTotal = $waste['short_roll'] + $waste['sisa_kain'] + $waste['kepala_kain'] + $waste['retur_kain'];
+            // Waste subtracted from fabric sent: ONLY retur_kain. The other three
+            // columns (short_roll/sisa_kain/kepala_kain) are still captured and
+            // stored for reference, but no longer reduce actual consumption.
+            $wasteTotal = $waste['retur_kain'];
 
             $fabricSent = ($f['fabric_sent'] ?? null) === null || $f['fabric_sent'] === ''
                 ? null : round((float) $f['fabric_sent'], 2);

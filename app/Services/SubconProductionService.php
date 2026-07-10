@@ -318,10 +318,27 @@ class SubconProductionService
             $r = $recon->get($label);
             $priced = $pricing[$label] ?? ['price' => ($vsm[$label]['fabric_price'] ?? null), 'currency' => null];
 
-            // Price: admin-saved value wins; otherwise prefill from the resolved source.
+            // Convert a non-IDR source price to IDR via the configured FX rate so
+            // the deduction is always computed in IDR. The converted value is the
+            // prefill; a saved admin value still wins. Source kept as a hint.
+            $srcPrice = $priced['price'] ?? null;
+            $srcCurrency = $priced['currency'] ?? null;
+            $prefillPrice = $srcPrice;
+            $priceSource = null;
+            if ($srcPrice !== null && $srcCurrency && strtoupper((string) $srcCurrency) !== 'IDR') {
+                $rate = $this->fxRateToIdr($srcCurrency);
+                if ($rate > 0) {
+                    $prefillPrice = round($srcPrice * $rate, 2);
+                    $priceSource = strtoupper((string) $srcCurrency).' '
+                        .rtrim(rtrim(number_format($srcPrice, 4, '.', ''), '0'), '.')
+                        .' @ '.number_format($rate).' = Rp '.number_format($prefillPrice, 2);
+                }
+            }
+
+            // Price: admin-saved value wins; otherwise the IDR-converted prefill.
             $fabricPrice = $r && $r->fabric_price !== null
                 ? (float) $r->fabric_price
-                : ($priced['price'] ?? null);
+                : $prefillPrice;
 
             $lines[] = [
                 'label' => $label,
@@ -335,7 +352,8 @@ class SubconProductionService
                 'actual_consumption' => $r && $r->actual_consumption !== null ? (float) $r->actual_consumption : null,
                 'overconsumption' => $r && $r->overconsumption !== null ? (float) $r->overconsumption : null,
                 'fabric_price' => $fabricPrice,
-                'fabric_currency' => $priced['currency'] ?? null,
+                'fabric_currency' => 'IDR', // always IDR: native or FX-converted above
+                'fabric_price_source' => $priceSource, // e.g. "USD 0.79 @ 16,000 = Rp 12,640.00" or null
                 'deduction' => $r && $r->deduction !== null ? (float) $r->deduction : null,
             ];
         }
@@ -343,7 +361,70 @@ class SubconProductionService
         return $lines;
     }
 
-    /** Total cutting quantity entered for an order (basis for actual_consumption). */
+    /**
+     * FX rate to convert a source currency into IDR for the fabric-price
+     * deduction. Fetched LIVE from a public rates API (open.er-api.com) for the
+     * current Jakarta day and cached until end-of-day, so the deduction uses
+     * "that day's" rate without hitting the API on every approval render.
+     * Returns 1.0 for IDR/blank and 0.0 for an unresolvable currency (→ no
+     * conversion). USD keeps a 16,000 offline fallback so the deduction still
+     * computes if the API is unreachable.
+     */
+    private function fxRateToIdr(string $currency): float
+    {
+        $code = strtoupper(trim($currency));
+        if ($code === '' || $code === 'IDR') {
+            return 1.0;
+        }
+
+        $today = now('Asia/Jakarta');
+        $cacheKey = 'fx_'.strtolower($code).'_idr_'.$today->toDateString();
+
+        $rate = \Illuminate\Support\Facades\Cache::get($cacheKey);
+        if ($rate === null) {
+            $rate = $this->fetchLiveFxRateToIdr($code); // 0.0 on failure — not cached, so a later render retries.
+            if ($rate > 0) {
+                \Illuminate\Support\Facades\Cache::put($cacheKey, $rate, $today->copy()->endOfDay());
+            }
+        }
+
+        if ($rate > 0) {
+            return (float) $rate;
+        }
+
+        // Best-effort offline fallback so a USD-priced deduction still computes.
+        return $code === 'USD' ? 16000.0 : 0.0;
+    }
+
+    /**
+     * Fetch today's live 1-unit-of-$code → IDR rate from open.er-api.com (free,
+     * no API key). Returns 0.0 on any failure; the caller supplies a fallback.
+     */
+    private function fetchLiveFxRateToIdr(string $code): float
+    {
+        try {
+            $resp = \Illuminate\Support\Facades\Http::timeout(8)
+                ->get('https://open.er-api.com/v6/latest/'.$code);
+
+            if ($resp->ok() && ($resp->json('result') === 'success')) {
+                return (float) $resp->json('rates.IDR', 0);
+            }
+        } catch (\Throwable $e) {
+            // Network/API failure → 0.0, caller falls back.
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * Total cutting quantity for an order (basis for actual_consumption).
+     * This is the ACTUAL quantity CUT — the sum of the vendor's per-line cutting
+     * reports (`SubconCuttingReport.cutting_qty`) — NOT the ordered/planned
+     * production-group quantity from VSM (`production_group_lines.Qty`), which is
+     * the order qty and over-states the basis (consumption must divide by what was
+     * really cut). Consumption is only entered at the cutting gate, after the
+     * vendor submits these reports, so the local sum is always available by then.
+     */
     public function totalCutForOrder(\App\Models\SubconOrder $order): int
     {
         return (int) \App\Models\SubconCuttingReport::where('order_id', $order->id)->sum('cutting_qty');

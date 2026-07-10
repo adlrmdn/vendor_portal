@@ -1,11 +1,12 @@
 @extends('layouts.app')
 
 @section('title', 'Cutting Report Approval')
+@section('bare', '1')
 
 @section('content')
-<div class="container py-5">
+<div class="container-fluid py-5 px-lg-5">
     <div class="row justify-content-center">
-        <div class="col-12 col-xl-9">
+        <div class="col-12 col-xxl-11">
             <div class="card border-0 shadow-sm" style="border-radius:16px;">
                 <div class="card-body p-4 p-md-5">
                     <div class="d-flex align-items-center gap-2 mb-1">
@@ -30,6 +31,14 @@
                         <dt class="col-5 col-sm-3 text-muted fw-normal">Total Qty Cut</dt>
                         <dd class="col-7 col-sm-9">{{ number_format($totalCut) }} pcs</dd>
                     </dl>
+
+                    @include('subcon.partials.remarks', ['remarks' => $order->remarks ?? null])
+
+                    @include('subcon.partials.production-detail', [
+                        'productionGroups' => $productionGroups ?? [],
+                        'cuttingReports' => $cuttingReports ?? collect(),
+                        'mode' => 'view',
+                    ])
 
                     <form method="POST" action="{{ $submitUrl }}"
                           onsubmit="return confirm('Approve the cutting report and save the entered consumption?');">

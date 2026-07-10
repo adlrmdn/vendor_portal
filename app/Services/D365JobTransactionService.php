@@ -17,10 +17,23 @@ class D365JobTransactionService
      * Pemalang distribution warehouses that ship in sacks (karung) rather than
      * blisters, matched by store CODE — on TOC_PILines the StoreName is the
      * origin ("WH REPLENISH PEMALANG") for every row, so the name is useless
-     * here. WH0503 = WH Replenish, WH0502-INB = WH (Inbound) Online. Their
-     * Blister count = ceil(qty / sack_capacity), with Coli following 1:1.
+     * here. WH0503 = WH Replenish, WH0502 / WH0502-INB = WH Online (the StoreID
+     * appears both with and without the -INB suffix across PIs, so match both).
+     * Their Blister count = ceil(qty / sack_capacity), with Coli following 1:1.
      */
-    private const SACK_STORES = ['WH0503', 'WH0502-INB'];
+    private const SACK_STORES = ['WH0503', 'WH0502', 'WH0502-INB'];
+
+    /**
+     * Store CODEs for the two central distribution warehouses — WH0503 = WH
+     * Replenish, WH0502-INB = WH (Inbound) Online. Exposed so the label print can
+     * offer a warehouse-only run (these are the SACK_STORES).
+     *
+     * @return array<int, string>
+     */
+    public function warehouseStoreIds(): array
+    {
+        return self::SACK_STORES;
+    }
 
     /** Fallback pieces-per-blister when an order has none (matches the print). */
     private const DEFAULT_BLISTER_CAPACITY = 10;

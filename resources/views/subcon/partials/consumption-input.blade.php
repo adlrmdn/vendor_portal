@@ -32,6 +32,16 @@
         return number_format((float) $v, 2);
     };
 
+    // Money (IDR): "Rp " + thousands + 2 decimals — the uniform currency standard
+    // for figures that are always IDR (Deduction, Total Deduction).
+    $money = function ($v) {
+        if ($v === null || $v === '') {
+            return '—';
+        }
+
+        return 'Rp '.number_format((float) $v, 2);
+    };
+
     // Consumption figures (Cons. Plan, Actual Cons.): min 2, max 4 decimals — keep
     // the tail when present (e.g. 2.242 stays 2.242), pad whole numbers to .00.
     $fmtCons = function ($v) {
@@ -63,7 +73,6 @@
                 <table class="table table-sm align-middle mb-0">
                     <thead class="table-light">
                         <tr>
-                            <th style="min-width:220px;">Fabric</th>
                             <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">Short Roll</th>
                             <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">Sisa Kain (Utuh)</th>
                             <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">Kepala Kain</th>
@@ -74,24 +83,27 @@
                             <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">Actual Cons.</th>
                             <th class="text-end" style="width:120px; font-size:.75rem; white-space:nowrap;">Overconsumption</th>
                             <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">Fabric Price (IDR)</th>
-                            <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">Deduction (IDR)</th>
+                            <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">Deduction</th>
                         </tr>
                     </thead>
                     <tbody>
                         @foreach($fabricLines as $i => $fl)
-                            @php $waste = (float) ($fl['short_roll'] ?? 0) + (float) ($fl['sisa_kain'] ?? 0) + (float) ($fl['kepala_kain'] ?? 0); @endphp
-                            <tr data-waste="{{ $waste }}">
-                                <td>
-                                    <div class="small fw-semibold">{{ $fl['label'] }}</div>
+                            @php $waste = (float) ($fl['retur_kain'] ?? 0); @endphp
+                            {{-- Fabric description on its own full-width line, calculation columns below --}}
+                            <tr class="table-light">
+                                <td colspan="11" class="fw-semibold small py-2">
+                                    <i class="fas fa-scroll text-secondary me-1"></i> {{ $fl['label'] }}
                                     @if($editable)
                                         <input type="hidden" name="fabrics[{{ $i }}][label]" value="{{ $fl['label'] }}">
                                     @endif
                                 </td>
+                            </tr>
+                            <tr data-waste="{{ $waste }}">
                                 @foreach(['short_roll','sisa_kain','kepala_kain','retur_kain'] as $rc)
                                     <td class="text-end">
                                         @if($editable)
-                                            <input type="number" step="0.01" min="0" inputmode="decimal"
-                                                   class="form-control form-control-sm text-end cons-waste" style="width:84px;"
+                                            <input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()"
+                                                   class="form-control form-control-sm text-end cons-waste{{ $rc === 'retur_kain' ? ' cons-retur' : '' }}" style="width:84px;"
                                                    name="fabrics[{{ $i }}][{{ $rc }}]"
                                                    value="{{ old('fabrics.'.$i.'.'.$rc, $fl[$rc] ?? 0) }}" placeholder="0">
                                         @else
@@ -101,7 +113,7 @@
                                 @endforeach
                                 <td class="text-end">
                                     @if($editable)
-                                        <input type="number" step="0.01" min="0" inputmode="decimal"
+                                        <input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()"
                                                class="form-control form-control-sm text-end cons-sent" style="width:110px;background:#fffaf0;border-color:#f0c000;font-weight:600;"
                                                name="fabrics[{{ $i }}][fabric_sent]"
                                                value="{{ old('fabrics.'.$i.'.fabric_sent', $fl['fabric_sent']) }}" placeholder="0">
@@ -111,7 +123,7 @@
                                 </td>
                                 <td class="text-end">
                                     @if($editable)
-                                        <input type="number" step="0.0001" min="0" inputmode="decimal"
+                                        <input type="number" step="0.0001" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()"
                                                class="form-control form-control-sm text-end cons-plan" style="width:120px;background:#fffaf0;border-color:#f0c000;font-weight:600;"
                                                name="fabrics[{{ $i }}][consumption_plan]"
                                                value="{{ old('fabrics.'.$i.'.consumption_plan', $fl['consumption_plan']) }}" placeholder="0">
@@ -124,30 +136,28 @@
                                 <td class="text-end fw-semibold cons-over">{{ $fl['overconsumption'] !== null ? $fmt2($fl['overconsumption'] * 100).'%' : '—' }}</td>
                                 <td class="text-end">
                                     @if($editable)
-                                        <input type="number" step="0.01" min="0" inputmode="decimal"
+                                        <input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()"
                                                class="form-control form-control-sm text-end cons-price" style="width:130px;"
                                                name="fabrics[{{ $i }}][fabric_price]"
                                                value="{{ old('fabrics.'.$i.'.fabric_price', $fl['fabric_price']) }}" placeholder="0">
-                                        @if(!empty($fl['fabric_currency']) && strtoupper($fl['fabric_currency']) !== 'IDR')
-                                            <div class="text-warning small" style="font-size:.7rem;">source: {{ strtoupper($fl['fabric_currency']) }} — convert to IDR</div>
-                                        @elseif(!empty($fl['fabric_currency']))
-                                            <div class="text-muted small" style="font-size:.7rem;">source: {{ strtoupper($fl['fabric_currency']) }}</div>
+                                        @if(!empty($fl['fabric_price_source'] ?? null))
+                                            <div class="text-muted small" style="font-size:.7rem;">converted: {{ $fl['fabric_price_source'] }}</div>
                                         @endif
                                     @else
                                         <span class="fw-semibold">{{ $fmt2($fl['fabric_price']) }}</span>
-                                        @if(!empty($fl['fabric_currency']))
-                                            <span class="text-muted small">({{ strtoupper($fl['fabric_currency']) }})</span>
+                                        @if(!empty($fl['fabric_price_source'] ?? null))
+                                            <div class="text-muted small" style="font-size:.7rem;">from {{ $fl['fabric_price_source'] }}</div>
                                         @endif
                                     @endif
                                 </td>
-                                <td class="text-end fw-semibold cons-ded">{{ $fmt2($fl['deduction']) }}</td>
+                                <td class="text-end fw-semibold cons-ded" style="white-space:nowrap;">{{ $money($fl['deduction']) }}</td>
                             </tr>
                         @endforeach
                     </tbody>
                     <tfoot class="table-light">
                         <tr>
-                            <td colspan="11" class="text-end fw-semibold">Total Deduction (IDR)</td>
-                            <td class="text-end fw-bold cons-ded-total">{{ $fmt2($totalDeduction) }}</td>
+                            <td colspan="10" class="text-end fw-semibold">Total Deduction</td>
+                            <td class="text-end fw-bold cons-ded-total" style="white-space:nowrap;">{{ $money($totalDeduction) }}</td>
                         </tr>
                     </tfoot>
                 </table>
@@ -156,7 +166,7 @@
             @if($editable)
                     <div class="form-text mt-1">
                         Cutt Plan = ROUNDDOWN(Fabric Sent ÷ Cons. Plan).
-                        Actual Cons. = (Fabric Sent − (Short Roll + Sisa Kain + Kepala Kain + Retur Kain)) ÷ Total Qty Cut ({{ $fmt2($totalCut) }}).
+                        Actual Cons. = (Fabric Sent − Retur Kain) ÷ Total Qty Cut ({{ $fmt2($totalCut) }}).
                         Overconsumption = (Actual Cons. − Cons. Plan) ÷ Cons. Plan.
                         Deduction = MAX(0, Actual Cons. − Cons. Plan × 1.03) × Total Qty Cut × Fabric Price — charged only when Overconsumption exceeds 3%.
                         Fabric Price is prefilled from the fabric PO; convert to IDR here if the source is another currency.
@@ -172,20 +182,20 @@
                         const dec = s.indexOf('.') !== -1 ? s.split('.')[1].length : 0;
                         return r.toFixed(Math.max(2, dec));
                     }
-                    // Money → fixed 2 decimals with thousands separators.
+                    // Money (IDR) → "Rp " + thousands + 2 decimals (uniform standard).
                     function fmtMoney(n) {
-                        return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        return 'Rp ' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                     }
                     const TOLERANCE = 0.03;
                     function recompute(tr) {
                         const fs = parseFloat(tr.querySelector('.cons-sent')?.value);
                         const cp = parseFloat(tr.querySelector('.cons-plan')?.value);
                         const price = parseFloat(tr.querySelector('.cons-price')?.value);
-                        // Waste = short_roll + sisa_kain + kepala_kain + retur_kain (all four,
-                        // now editable by the approver). Fall back to the stored sum.
-                        const wasteEls = tr.querySelectorAll('.cons-waste');
-                        const waste = wasteEls.length
-                            ? Array.from(wasteEls).reduce((s, el) => s + (parseFloat(el.value) || 0), 0)
+                        // Waste subtracted from Fabric Sent = ONLY Retur Kain. The other
+                        // three columns are still captured but don't reduce consumption.
+                        const returEl = tr.querySelector('.cons-retur');
+                        const waste = returEl
+                            ? (parseFloat(returEl.value) || 0)
                             : (parseFloat(tr.dataset.waste) || 0);
                         const cuttEl = tr.querySelector('.cons-cutt');
                         const actEl = tr.querySelector('.cons-actual');
@@ -208,7 +218,8 @@
                     function updateTotal() {
                         let sum = 0;
                         document.querySelectorAll('.cons-ded').forEach(function (el) {
-                            const v = parseFloat(el.textContent.replace(/,/g, ''));
+                            // Strip the "Rp " prefix + thousands separators before parsing.
+                            const v = parseFloat(el.textContent.replace(/[^0-9.-]/g, ''));
                             if (! isNaN(v)) sum += v;
                         });
                         const t = document.querySelector('.cons-ded-total');

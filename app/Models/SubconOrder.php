@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class SubconOrder extends Model
@@ -35,6 +37,33 @@ class SubconOrder extends Model
             }
             $model->status = self::inferStatusFromStage($model->workflow_stage);
         });
+    }
+
+    /**
+     * Count of QC-console packaging sessions that passed stage-1 confirmation but
+     * still await Final (HO) sign-off — the "Final Approval" rows surfaced in the
+     * subcon Approvals tab. Best-effort read from the QMS DB, fully guarded so it
+     * never breaks the admin nav badge (rendered on every page) or the dashboard
+     * if QMS is unreachable or the schema is older.
+     */
+    public static function pendingFinalApprovalCount(): int
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
+                || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'approval_status')) {
+                return 0;
+            }
+
+            return (int) DB::connection('qms')->table('packaging_project_sessions')
+                ->whereNotNull('approval_token')
+                ->where('approval_status', 'approved')
+                ->where(function ($q) {
+                    $q->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
+                })
+                ->count();
+        } catch (\Throwable $e) {
+            return 0;
+        }
     }
 
     /**
@@ -88,9 +117,13 @@ class SubconOrder extends Model
         'order_date',
         'due_date',
         'notes',
+        'remarks',
         'distribution_id',
         'production_group',
         'sizes_count',
+        'label_gen_status',
+        'label_gen_error',
+        'label_gen_at',
     ];
 
     protected $casts = [
@@ -109,7 +142,64 @@ class SubconOrder extends Model
         'job_trans_status' => 'string',
         'distribution_id' => 'string',
         'sizes_count' => 'integer',
+        'label_gen_at' => 'datetime',
     ];
+
+    // --- Label-generation state (async DTT/RPA run) -----------------------
+    public const LABEL_GEN_GENERATING = 'generating';
+
+    public const LABEL_GEN_FAILED = 'failed';
+
+    /**
+     * A generation run is considered live only for this long. Guards against a
+     * crashed/killed job leaving the button locked forever — comfortably above
+     * the job's own timeout×tries so a genuinely-running job is never unlocked
+     * out from under itself.
+     */
+    public const LABEL_GEN_STALE_MINUTES = 12;
+
+    /** True while a label-generation job is genuinely in flight (not stale). */
+    public function isGeneratingLabels(): bool
+    {
+        return $this->label_gen_status === self::LABEL_GEN_GENERATING
+            && $this->label_gen_at
+            && $this->label_gen_at->gt(now()->subMinutes(self::LABEL_GEN_STALE_MINUTES));
+    }
+
+    /** True if the last label-generation run failed (and none is in flight). */
+    public function labelGenFailed(): bool
+    {
+        return $this->label_gen_status === self::LABEL_GEN_FAILED;
+    }
+
+    /** Mark a generation run as started (button-locking state). */
+    public function markLabelGenStarted(): void
+    {
+        $this->forceFill([
+            'label_gen_status' => self::LABEL_GEN_GENERATING,
+            'label_gen_error' => null,
+            'label_gen_at' => now(),
+        ])->save();
+    }
+
+    /** Record a generation failure with a human-readable reason. */
+    public function markLabelGenFailed(string $reason): void
+    {
+        $this->forceFill([
+            'label_gen_status' => self::LABEL_GEN_FAILED,
+            'label_gen_error' => \Illuminate\Support\Str::limit($reason, 1000),
+            'label_gen_at' => now(),
+        ])->save();
+    }
+
+    /** Clear generation state after a successful run. */
+    public function clearLabelGenState(): void
+    {
+        $this->forceFill([
+            'label_gen_status' => null,
+            'label_gen_error' => null,
+        ])->save();
+    }
 
     /** Vendor may edit/submit the cutting report (qty per size). */
     public function canEditCutting(): bool

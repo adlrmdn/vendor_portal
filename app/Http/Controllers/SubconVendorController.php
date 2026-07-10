@@ -82,6 +82,27 @@ class SubconVendorController extends Controller
         return view('subcon.vendor.orders.index', compact('orders', 'style'));
     }
 
+    /**
+     * Save the vendor's free-text remarks on a work order. No approval and no
+     * stage gate — remarks can be updated at any point. Best-effort mirrored to
+     * the QC Console.
+     */
+    public function saveRemarks(\Illuminate\Http\Request $request, string $id, \App\Services\SubconRemarksPublisher $remarks)
+    {
+        $order = SubconOrder::where('vendor_id', Auth::user()->vendor_id)->findOrFail($id);
+
+        $data = $request->validate([
+            'remarks' => 'nullable|string|max:5000',
+        ]);
+
+        $order->remarks = $data['remarks'] ?? null;
+        $order->save();
+
+        $remarks->publish($order);
+
+        return back()->with('success', 'Remarks saved.');
+    }
+
     public function viewOrder(string $id, SubconProductionService $production)
     {
         $vendorId = Auth::user()->vendor_id;
@@ -184,13 +205,20 @@ class SubconVendorController extends Controller
                     continue;
                 }
                 $keptLabels[] = $label;
+                $short = round((float) ($rec['short_roll'] ?? 0), 2);
+                $sisa = round((float) ($rec['sisa_kain'] ?? 0), 2);
+                $kepala = round((float) ($rec['kepala_kain'] ?? 0), 2);
                 SubconFabricReconciliation::updateOrCreate(
                     ['order_id' => $order->id, 'label' => $label],
                     [
-                        'short_roll' => round((float) ($rec['short_roll'] ?? 0), 2),
-                        'sisa_kain' => round((float) ($rec['sisa_kain'] ?? 0), 2),
-                        'kepala_kain' => round((float) ($rec['kepala_kain'] ?? 0), 2),
-                        'retur_kain' => round((float) ($rec['retur_kain'] ?? 0), 2),
+                        'short_roll' => $short,
+                        'sisa_kain' => $sisa,
+                        'kepala_kain' => $kepala,
+                        // Retur Kain is LOCKED for the vendor = sum of the other three.
+                        // The form field is readonly, but it could be tampered client-side,
+                        // so enforce the rule here regardless of the posted value. The
+                        // approver can still override retur_kain on the approval form.
+                        'retur_kain' => round($short + $sisa + $kepala, 2),
                     ]
                 );
             }
@@ -599,7 +627,7 @@ class SubconVendorController extends Controller
         }
     }
 
-    public function printPackagingLabels(string $id, SubconLabelService $labels)
+    public function printPackagingLabels(\Illuminate\Http\Request $request, string $id, SubconLabelService $labels)
     {
         $vendorId = Auth::user()->vendor_id;
         $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
@@ -608,7 +636,8 @@ class SubconVendorController extends Controller
             return back()->with('error', 'Label printing unlocks after gramasi & blister capacity are approved (current stage: '.$order->stageLabel().').');
         }
 
-        $data = $labels->buildViewData($order);
+        $scope = in_array($request->query('scope'), ['store', 'warehouse'], true) ? $request->query('scope') : 'all';
+        $data = $labels->buildViewData($order, $scope);
         if (isset($data['error'])) {
             return back()->with('error', $data['error']);
         }
@@ -622,8 +651,9 @@ class SubconVendorController extends Controller
             ->setPaper([0, 0, 288, 432]); // 4in x 6in label
 
         $safeOrderNumber = str_replace(['/', '\\'], '-', $order->order_number);
+        $prefix = ['store' => 'store-labels-', 'warehouse' => 'replenish-online-labels-'][$scope] ?? 'packaging-labels-';
 
-        return $pdf->stream('packaging-labels-'.$safeOrderNumber.'.pdf');
+        return $pdf->stream($prefix.$safeOrderNumber.'.pdf');
     }
 
     /**

@@ -6,12 +6,16 @@ use App\Exports\SubconCuttingReportExport;
 use App\Jobs\SyncSubconOrdersJob;
 use App\Models\SubconCuttingReport;
 use App\Models\SubconOrder;
+use App\Models\User;
 use App\Models\Vendor;
 use App\Services\SubconLabelService;
 use App\Services\SubconProductionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -36,7 +40,8 @@ class SubconAdminController extends Controller
             'active_orders' => SubconOrder::whereIn('status', ['pending', 'in_progress'])->count(),
             'completed' => SubconOrder::where('status', 'completed')->count(),
             'total_vendors' => Vendor::where('type', 'subcon')->where('is_active', true)->count(),
-            'pending_approvals' => SubconOrder::whereIn('workflow_stage', [SubconOrder::STAGE_CUTTING_REVIEW, SubconOrder::STAGE_GRAMASI_REVIEW])->count(),
+            'pending_approvals' => SubconOrder::whereIn('workflow_stage', [SubconOrder::STAGE_CUTTING_REVIEW, SubconOrder::STAGE_GRAMASI_REVIEW])->count()
+                + SubconOrder::pendingFinalApprovalCount(),
         ];
 
         $recentOrders = SubconOrder::with('vendor')
@@ -109,26 +114,96 @@ class SubconAdminController extends Controller
             'contact_info.address' => 'nullable|string|max:1000',
         ]);
 
-        Vendor::create([
-            'id' => Str::uuid()->toString(),
-            'name' => $data['name'],
-            'vendor_code' => $data['vendor_code'],
-            'group' => $data['group'] ?? null,
-            'type' => 'subcon',
-            'contact_info' => array_filter([
-                'phone' => $data['contact_info']['phone'] ?? null,
-                'email' => $data['contact_info']['email'] ?? null,
-                'address' => $data['contact_info']['address'] ?? null,
-            ], fn ($v) => $v !== null),
-            'is_active' => true,
-        ]);
+        // Create the vendor + its portal login account together, so the admin
+        // gets usable credentials to hand over the moment the vendor is saved.
+        $vendorId = Str::uuid()->toString();
+        $loginEmail = $this->deriveVendorLoginEmail($data['name']);
+        // Basic shared default password — the vendor is expected to change it.
+        $password = 'password';
 
-        return redirect()->route('subcon.admin.vendors')->with('success', 'Subcon vendor created.');
+        DB::transaction(function () use ($data, $vendorId, $loginEmail, $password) {
+            Vendor::create([
+                'id' => $vendorId,
+                'name' => $data['name'],
+                'vendor_code' => $data['vendor_code'],
+                'group' => $data['group'] ?? null,
+                'type' => 'subcon',
+                'contact_info' => array_filter([
+                    'phone' => $data['contact_info']['phone'] ?? null,
+                    'email' => $data['contact_info']['email'] ?? null,
+                    'address' => $data['contact_info']['address'] ?? null,
+                ], fn ($v) => $v !== null),
+                'is_active' => true,
+            ]);
+
+            $user = new User([
+                'name' => $data['name'],
+                'email' => $loginEmail,
+                'password' => bcrypt($password),
+                'role' => 'subcon_vendor',
+                'vendor_id' => $vendorId,
+            ]);
+            $user->id = (string) Str::uuid();
+            $user->save();
+        });
+
+        // Flash the plaintext password once — it is never stored in readable form,
+        // so this is the only chance to copy it. Shown in a modal on redirect.
+        return redirect()->route('subcon.admin.vendors')
+            ->with('success', 'Subcon vendor "'.$data['name'].'" created with a portal login.')
+            ->with('new_vendor_credentials', [
+                'name' => $data['name'],
+                'login_email' => $loginEmail,
+                'password' => $password,
+            ]);
+    }
+
+    /**
+     * Derive a unique, readable portal login email from a vendor name: keep a
+     * leading company-form prefix (PT/CV/…), spell the first distinctive word in
+     * full, then append the initials of the remaining words. e.g.
+     * "PT. TUPAI ADYAMAS INDONESIA" → vendor@pttupaiai.com (suffixing on collision).
+     */
+    private function deriveVendorLoginEmail(string $name): string
+    {
+        $words = array_values(array_filter(
+            array_map(fn ($w) => preg_replace('/[^a-z0-9]/', '', strtolower($w)), explode(' ', $name)),
+            fn ($w) => $w !== ''
+        ));
+
+        $prefixes = ['pt', 'cv', 'fa', 'ud', 'pd', 'koperasi'];
+        $slug = '';
+        if (! empty($words)) {
+            $start = 0;
+            // Keep a leading company-form prefix as-is (e.g. "pt").
+            if (count($words) > 1 && in_array($words[0], $prefixes, true)) {
+                $slug .= $words[0];
+                $start = 1;
+            }
+            // First meaningful word in full, then initials of the rest.
+            $slug .= $words[$start] ?? '';
+            for ($i = $start + 1; $i < count($words); $i++) {
+                $slug .= substr($words[$i], 0, 1);
+            }
+        }
+        if ($slug === '') {
+            $slug = 'subcon';
+        }
+
+        $email = "vendor@{$slug}.com";
+        $counter = 1;
+        while (User::where('email', $email)->exists()) {
+            $email = "vendor@{$slug}{$counter}.com";
+            $counter++;
+        }
+
+        return $email;
     }
 
     public function updateVendor(Request $request, string $id)
     {
-        $vendor = Vendor::findOrFail($id);
+        // Scope to subcon: a subcon admin must never act on a fabric vendor.
+        $vendor = Vendor::where('type', 'subcon')->findOrFail($id);
 
         $data = $request->validate([
             'name' => 'required|string|max:255',
@@ -157,7 +232,7 @@ class SubconAdminController extends Controller
 
     public function toggleVendorStatus(string $id)
     {
-        $vendor = Vendor::findOrFail($id);
+        $vendor = Vendor::where('type', 'subcon')->findOrFail($id);
         $vendor->is_active = ! $vendor->is_active;
         $vendor->save();
 
@@ -168,7 +243,7 @@ class SubconAdminController extends Controller
 
     public function deleteVendor(string $id)
     {
-        $vendor = Vendor::findOrFail($id);
+        $vendor = Vendor::where('type', 'subcon')->findOrFail($id);
 
         \Illuminate\Support\Facades\DB::transaction(function () use ($vendor) {
             // Delete associated portal login users to avoid orphans
@@ -222,7 +297,103 @@ class SubconAdminController extends Controller
             ->orderBy('updated_at', 'desc')
             ->paginate(20);
 
-        return view('subcon.admin.approvals', compact('orders'));
+        // Final (QC-console) approvals: stage-1 confirmed on the QMS session but
+        // still awaiting Head-Office / Final sign-off. Read best-effort from QMS —
+        // never let an unreachable/older QMS 500 this tab.
+        $finalApprovals = $this->pendingFinalApprovals();
+
+        return view('subcon.admin.approvals', compact('orders', 'finalApprovals'));
+    }
+
+    /**
+     * Audit trail of every cutting/gramasi approve & reject decision, newest
+     * first. Optional gate/decision filters. See SubconApprovalController::logDecision().
+     */
+    public function approvalLogs(Request $request)
+    {
+        $query = \App\Models\SubconApprovalLog::query()->orderByDesc('created_at');
+
+        if (in_array($request->input('gate'), ['cutting', 'gramasi', 'final'], true)) {
+            $query->where('gate', $request->input('gate'));
+        }
+        if (in_array($request->input('decision'), ['approved', 'declined'], true)) {
+            $query->where('decision', $request->input('decision'));
+        }
+        if ($request->filled('q')) {
+            $query->where('order_number', 'like', '%'.trim($request->input('q')).'%');
+        }
+
+        $logs = $query->paginate(30)->withQueryString();
+
+        return view('subcon.admin.approval-logs', [
+            'logs' => $logs,
+            'gate' => $request->input('gate'),
+            'decision' => $request->input('decision'),
+            'q' => $request->input('q'),
+        ]);
+    }
+
+    /**
+     * QMS packaging sessions that passed stage-1 (approval_status='approved') but
+     * have no Final/HO signature yet, mapped back to the local subcon order via
+     * project_id → packaging_projects.production_group → subcon_orders.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function pendingFinalApprovals(): array
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
+                || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'approval_token')) {
+                return [];
+            }
+
+            $sessions = DB::connection('qms')->table('packaging_project_sessions')
+                ->whereNotNull('approval_token')
+                ->where('approval_status', 'approved')
+                ->where(function ($q) {
+                    $q->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
+                })
+                ->get();
+
+            if ($sessions->isEmpty()) {
+                return [];
+            }
+
+            // project_id → production_group
+            $pgByProject = [];
+            $projectIds = $sessions->pluck('project_id')->filter()->unique()->values()->all();
+            if (! empty($projectIds) && Schema::connection('qms')->hasTable('packaging_projects')) {
+                $pgByProject = DB::connection('qms')->table('packaging_projects')
+                    ->whereIn('project_id', $projectIds)
+                    ->pluck('production_group', 'project_id')->all();
+            }
+
+            // production_group → local subcon order
+            $pgs = array_values(array_filter(array_unique(array_values($pgByProject))));
+            $ordersByPg = empty($pgs)
+                ? collect()
+                : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
+
+            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg) {
+                $pg = $pgByProject[$s->project_id] ?? null;
+                $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
+
+                return [
+                    'token' => $s->approval_token,
+                    'order_id' => $order->id ?? null,
+                    'order_number' => $order->order_number ?? ($s->project_id ?? '—'),
+                    'style' => $order->title ?? null,
+                    'vendor' => $order?->vendor?->name ?? '—',
+                    'production_group' => $pg,
+                    'approved_at' => $s->approved_at ?? null,
+                ];
+            })->all();
+        } catch (\Throwable $e) {
+            Log::warning('Pending final approvals unavailable', ['error' => $e->getMessage()]);
+
+            return [];
+        }
     }
 
     public function waitingDistribution()
@@ -243,8 +414,15 @@ class SubconAdminController extends Controller
             return back()->with('error', 'This work order is not waiting for distribution details.');
         }
 
-        // Resolution + DTT call (up to 30s) run off the request cycle so the
-        // click returns immediately; the worker advances the order to "labels".
+        // Button-lock guard: don't stack a second run while one is in flight.
+        if ($model->isGeneratingLabels()) {
+            return back()->with('info', 'Label generation is already running for '.$model->order_number.'. Please wait for it to finish.');
+        }
+
+        // Lock the button (persisted state) then dispatch. Resolution + DTT call
+        // run off the request cycle; on success the worker advances to "labels",
+        // on failure it records the reason — both surfaced back on this page.
+        $model->markLabelGenStarted();
         \App\Jobs\GenerateSubconLabels::dispatch($model->id);
 
         return back()->with('success', 'Label generation started for work order '.$model->order_number.'. It is running in the background — printing will unlock once the labels are ready.');
@@ -312,6 +490,8 @@ class SubconAdminController extends Controller
             // Fixed 2 decimals for money/waste; min-2/max-4 for the two consumption
             // figures (Cons. Plan, Actual Cons.) — mirrors the in-app display rules.
             $fmt2 = fn ($v) => $v === null || $v === '' ? '—' : number_format((float) $v, 2);
+            // Money (IDR): "Rp " + thousands + 2 decimals — uniform currency standard.
+            $money = fn ($v) => $v === null || $v === '' ? '—' : 'Rp '.number_format((float) $v, 2);
             $fmtCons = function ($v) {
                 if ($v === null || $v === '') {
                     return '—';
@@ -340,9 +520,9 @@ class SubconAdminController extends Controller
                 $rows[] = ['    Actual Cons.', $fmtCons($rec->actual_consumption)];
                 $rows[] = ['    Overconsumption', $rec->overconsumption !== null ? $fmt2((float) $rec->overconsumption * 100).'%' : '—'];
                 $rows[] = ['    Fabric Price (IDR)', $fmt2($rec->fabric_price)];
-                $rows[] = ['    Deduction (IDR)', $fmt2($rec->deduction)];
+                $rows[] = ['    Deduction (IDR)', $money($rec->deduction)];
             }
-            $rows[] = ['  Total Deduction (IDR)', $fmt2($totalDeduction)];
+            $rows[] = ['  Total Deduction (IDR)', $money($totalDeduction)];
         }
 
         $rows = array_merge($rows, [
@@ -464,11 +644,12 @@ class SubconAdminController extends Controller
         return back()->with('success', 'Order reactivated.');
     }
 
-    public function printPackagingLabels(string $id, SubconLabelService $labels)
+    public function printPackagingLabels(Request $request, string $id, SubconLabelService $labels)
     {
         $order = SubconOrder::with('vendor')->findOrFail($id);
 
-        $data = $labels->buildViewData($order);
+        $scope = in_array($request->query('scope'), ['store', 'warehouse'], true) ? $request->query('scope') : 'all';
+        $data = $labels->buildViewData($order, $scope);
         if (isset($data['error'])) {
             return back()->with('error', $data['error']);
         }
@@ -482,8 +663,9 @@ class SubconAdminController extends Controller
             ->setPaper([0, 0, 288, 432]); // 4in x 6in label
 
         $safeOrderNumber = str_replace(['/', '\\'], '-', $order->order_number);
+        $prefix = ['store' => 'store-labels-', 'warehouse' => 'replenish-online-labels-'][$scope] ?? 'packaging-labels-';
 
-        return $pdf->stream('packaging-labels-'.$safeOrderNumber.'.pdf');
+        return $pdf->stream($prefix.$safeOrderNumber.'.pdf');
     }
 
     /**

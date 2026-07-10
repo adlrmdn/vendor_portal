@@ -121,6 +121,7 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
     Route::post('/vendors/{id}/toggle-status', [SubconAdminController::class, 'toggleVendorStatus'])->name('vendors.toggle-status');
     Route::delete('/vendors/{id}', [SubconAdminController::class, 'deleteVendor'])->name('vendors.destroy');
     Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
+    Route::get('/approval-logs', [SubconAdminController::class, 'approvalLogs'])->name('approval-logs');
     Route::get('/orders', [SubconAdminController::class, 'orders'])->name('orders');
     Route::get('/orders-waiting-distribution', [SubconAdminController::class, 'waitingDistribution'])->name('orders-waiting-distribution');
     Route::post('/orders/{id}/generate-labels-manual', [SubconAdminController::class, 'generateLabelsManual'])->name('orders.generate-labels-manual');
@@ -162,6 +163,7 @@ Route::middleware(['auth'])->prefix('subcon/vendor')->name('subcon.vendor.')->gr
     Route::get('/dashboard', [SubconVendorController::class, 'dashboard'])->name('dashboard');
     Route::get('/orders', [SubconVendorController::class, 'orders'])->name('orders');
     Route::get('/orders/{id}', [SubconVendorController::class, 'viewOrder'])->name('orders.view');
+    Route::post('/orders/{id}/remarks', [SubconVendorController::class, 'saveRemarks'])->name('orders.remarks');
     Route::post('/orders/{id}/submit-cutting', [SubconVendorController::class, 'submitCuttingReport'])->name('orders.submit-cutting');
     Route::post('/orders/{id}/submit-gramasi', [SubconVendorController::class, 'submitGramasi'])->name('orders.submit-gramasi');
     Route::post('/orders/{id}/complete', [SubconVendorController::class, 'completeOrder'])->name('orders.complete');

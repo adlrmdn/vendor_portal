@@ -121,13 +121,30 @@
                             <td class="fw-semibold">{{ $order->vendor?->name ?? '—' }}</td>
                             <td>{{ $order->title }}</td>
                             <td>@include('subcon.partials.stage-badge', ['order' => $order])</td>
-                            <td class="text-end">
-                                <form action="{{ route('subcon.admin.orders.generate-labels-manual', $order->id) }}" method="POST" class="d-inline" onsubmit="return confirm('Trigger label generation for {{ $order->order_number }}? This calls the idempotent DTT service.');">
-                                    @csrf
-                                    <button type="submit" class="btn btn-sm btn-generate rounded-pill px-3 fw-semibold">
-                                        <i class="fas fa-cog fa-spin-pulse me-1"></i> Generate Labels
+                            <td class="text-end" style="min-width: 260px;">
+                                @if($order->isGeneratingLabels())
+                                    {{-- In flight: button locked until it finishes (done) or fails. --}}
+                                    <button type="button" class="btn btn-sm btn-secondary rounded-pill px-3 fw-semibold" disabled>
+                                        <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Generating…
                                     </button>
-                                </form>
+                                    <div class="text-muted small mt-1">Started {{ $order->label_gen_at?->diffForHumans() }} · refresh to check</div>
+                                @else
+                                    @if($order->labelGenFailed())
+                                        {{-- Clear, specific reason the RPA/DTT run could not generate the PI. --}}
+                                        <div class="alert alert-danger border-0 text-start small mb-2 p-2 rounded-3">
+                                            <div class="fw-semibold mb-1"><i class="fas fa-triangle-exclamation me-1"></i>Label generation failed</div>
+                                            <div style="word-break: break-word;">{{ $order->label_gen_error ?: 'The RPA service could not generate the packing instruction.' }}</div>
+                                            @if($order->label_gen_at)<div class="text-muted mt-1">{{ $order->label_gen_at->diffForHumans() }}</div>@endif
+                                        </div>
+                                    @endif
+                                    <form action="{{ route('subcon.admin.orders.generate-labels-manual', $order->id) }}" method="POST" class="d-inline" onsubmit="return confirmGenerate(this, '{{ $order->order_number }}');">
+                                        @csrf
+                                        <button type="submit" class="btn btn-sm {{ $order->labelGenFailed() ? 'btn-warning' : 'btn-generate' }} rounded-pill px-3 fw-semibold">
+                                            <i class="fas {{ $order->labelGenFailed() ? 'fa-rotate-right' : 'fa-cog' }} me-1"></i>
+                                            {{ $order->labelGenFailed() ? 'Retry Generation' : 'Generate Labels' }}
+                                        </button>
+                                    </form>
+                                @endif
                             </td>
                         </tr>
                         @empty
@@ -149,4 +166,21 @@
         {{ $orders->links() }}
     </div>
 </div>
+
+<script>
+    // Confirm, then immediately lock the button so it can't be double-submitted
+    // within this page load. Server-side state + the unique queue job guard the
+    // rest (a reload shows the persisted "Generating…" state).
+    function confirmGenerate(form, orderNumber) {
+        if (!confirm('Trigger label generation for ' + orderNumber + '? This calls the DTT/RPA service and can take up to a minute.')) {
+            return false;
+        }
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Generating…';
+        }
+        return true;
+    }
+</script>
 @endsection

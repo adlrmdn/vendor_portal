@@ -3,11 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Models\Setting;
+use App\Models\SubconOrder;
+use App\Services\SubconConsumptionService;
+use App\Services\SubconFabricLinePublisher;
 use App\Services\SubconProductionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
@@ -208,28 +210,46 @@ class QcApprovalController extends Controller
             ]);
         }
 
-        // Consumption is now entered by the subcon admin at cutting-report
-        // approval (stored locally); the HO form only signs off + records
-        // deductions, so no fabric inputs here.
+        // HO gate is calculation+approval: re-expose the same consumption inputs
+        // used at the cutting gate, prefilled from the cutting snapshot, so HO can
+        // revise them before signing. Recompute + overwrite happens on submit.
         [$subcon, $totalCut, $productionGroup] = $this->subconContext($row);
+        $fabricLines = $subcon ? $production->fabricLinesWithData($subcon) : [];
 
-        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup'));
+        // Yield / per-size production detail — best-effort (VSM may be down).
+        $productionGroups = [];
+        $cuttingReports = collect();
+        if ($subcon) {
+            try {
+                $productionGroups = $production->forPo($subcon->order_number);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+            $cuttingReports = \App\Models\SubconCuttingReport::where('order_id', $subcon->id)->get()->keyBy('prod_id');
+        }
+
+        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports'));
     }
 
     /**
      * Stage 2 commit. Sequence (per the integration contract):
-     *   1. INSERT packaging_project_fabric_lines  (project-level)
+     *   1. PUBLISH packaging_project_fabric_lines via SubconFabricLinePublisher —
+     *      upsert keyed by production_group, ADOPTING the rows to this project_id.
+     *      (These rows are also published earlier, at cutting approval, so the
+     *      console can pull them before a project exists. This is a re-publish.)
      *   2. INSERT packaging_session_deduction_lines (session-level, 0+)
      *   3. UPDATE ho_approval_signature            (triggers PDF regen)
+     * The publish runs before the deductions+signature transaction so the console
+     * sees the fabric lines by the time the signature triggers PDF regen.
      *
-     * Fabric consumption (cutt_plan / actual_consumption / overconsumption) was
-     * already derived + snapshotted at cutting-report approval — see
-     * SubconConsumptionService for the formulas — so this stage only reads them.
+     * Fabric consumption is editable here too (calculation+approval): HO's inputs
+     * are run through the SAME SubconConsumptionService engine, which recomputes
+     * cutt_plan / actual_consumption / overconsumption / deduction and OVERWRITES
+     * the cutting-report snapshot before it is published.
      * The QMS objects are console-owned and may not exist yet, so every write is
-     * guarded + wrapped — a missing table/column is logged, never fatal
-     * (overconsumption is pushed only when the QMS column exists).
+     * guarded + wrapped — a missing table/column is logged, never fatal.
      */
-    public function hoApprove(Request $request, string $token, SubconProductionService $production)
+    public function hoApprove(Request $request, string $token, SubconProductionService $production, SubconConsumptionService $consumption, SubconFabricLinePublisher $publisher)
     {
         $row = $this->findByToken($token);
 
@@ -256,52 +276,48 @@ class QcApprovalController extends Controller
             'deductions' => 'nullable|array',
             'deductions.*.description' => 'nullable|string|max:255',
             'deductions.*.amount' => 'nullable|numeric|min:0',
+            // HO gate re-exposes the cutting consumption inputs (calculation+approval).
+            'fabrics' => 'nullable|array',
+            'fabrics.*.label' => 'required_with:fabrics|string|max:500',
+            'fabrics.*.short_roll' => 'nullable|numeric|min:0',
+            'fabrics.*.sisa_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.kepala_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.retur_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
+            'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
+            'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
         ]);
 
         [$subcon] = $this->subconContext($row);
 
-        // Fabric lines are sourced from the consumption entered at cutting-report
-        // approval (stored locally per fabric) — not from this form. cutt_plan and
-        // actual_consumption were already derived and snapshotted at save time.
+        // HO gate = calculation+approval: recompute + OVERWRITE the cutting snapshot
+        // from HO's (possibly revised) inputs using the same engine as the cutting
+        // gate. Runs on the local DB (its own transaction) before the QMS push, so
+        // the fabric lines pushed below reflect HO's final numbers. Same formulas —
+        // see SubconConsumptionService.
+        if ($subcon && ! empty($data['fabrics'])) {
+            DB::transaction(function () use ($consumption, $subcon, $data) {
+                $consumption->persist($subcon, $data['fabrics']);
+            });
+        }
+
+        // Fabric lines: publish the just-recomputed snapshot to QMS via the shared
+        // publisher (upsert keyed by production_group), ADOPTING the rows to this
+        // project_id. Runs BEFORE the signature so the console sees the lines when
+        // the signature triggers PDF regen. Best-effort + guarded — same rows the
+        // console can also pull earlier (staged at cutting approval with no project).
+        if ($subcon) {
+            $publisher->publish($subcon, (string) $row->project_id);
+            app(\App\Services\SubconRemarksPublisher::class)->publish($subcon);
+        }
         $fabricLines = $subcon ? $production->fabricLinesWithData($subcon) : [];
 
         $signature = 'Digitally Signed: '.self::HO_SIGNER
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
 
         try {
-            DB::connection('qms')->transaction(function () use ($row, $token, $data, $signature, $fabricLines) {
-                // 1. Fabric lines (project-level, one row per fabric) — pushed from
-                //    the locally-stored consumption + reconciliation (filled at
-                //    cutting-report approval).
-                if (Schema::connection('qms')->hasTable('packaging_project_fabric_lines')) {
-                    // overconsumption is a newer column — only push it if the
-                    // console-owned schema actually has it, so an older QMS DB
-                    // still accepts the insert.
-                    $hasOver = Schema::connection('qms')->hasColumn('packaging_project_fabric_lines', 'overconsumption');
-                    foreach ($fabricLines as $f) {
-                        $rowData = [
-                            'project_id' => $row->project_id,
-                            'label' => $f['label'], // fabric description + unit
-                            'fabric_sent' => round((float) ($f['fabric_sent'] ?? 0), 2),
-                            'consumption_plan' => round((float) ($f['consumption_plan'] ?? 0), 4),
-                            'cutt_plan' => (int) ($f['cutt_plan'] ?? 0),
-                            'actual_consumption' => round((float) ($f['actual_consumption'] ?? 0), 4),
-                            'short_roll' => round((float) ($f['short_roll'] ?? 0), 2),
-                            'sisa_kain' => round((float) ($f['sisa_kain'] ?? 0), 2),
-                            'kepala_kain' => round((float) ($f['kepala_kain'] ?? 0), 2),
-                            'return_kain' => round((float) ($f['retur_kain'] ?? 0), 2), // ours: retur_kain → QMS return_kain
-                            'created_by' => self::HO_SIGNER,
-                        ];
-                        if ($hasOver) {
-                            $rowData['overconsumption'] = round((float) ($f['overconsumption'] ?? 0), 4);
-                        }
-                        DB::connection('qms')->table('packaging_project_fabric_lines')->insert($rowData);
-                    }
-                } else {
-                    Log::warning('QC HO: packaging_project_fabric_lines missing — fabric lines skipped', ['token' => $token]);
-                }
-
-                // 2. Deduction lines (session-level, optional, 0+).
+            DB::connection('qms')->transaction(function () use ($row, $token, $data, $signature) {
+                // Deduction lines (session-level, optional, 0+).
                 if (Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
                     foreach (($data['deductions'] ?? []) as $d) {
                         $desc = trim((string) ($d['description'] ?? ''));
@@ -320,7 +336,7 @@ class QcApprovalController extends Controller
                     Log::warning('QC HO: packaging_session_deduction_lines missing — deductions skipped', ['token' => $token]);
                 }
 
-                // 3. HO signature — last, and idempotent (guards a double submit).
+                // HO signature — last, and idempotent (guards a double submit).
                 if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_approval_signature')) {
                     DB::connection('qms')->table(self::TABLE)
                         ->where('approval_token', $token)
@@ -346,6 +362,17 @@ class QcApprovalController extends Controller
             'project_id' => $row->project_id,
             'fabric_lines' => count($fabricLines),
             'deductions' => count($data['deductions'] ?? []),
+        ]);
+
+        \App\Models\SubconApprovalLog::record([
+            'order_id' => $subcon->id ?? null,
+            'order_number' => $subcon->order_number ?? ($row->project_id ?? null),
+            'vendor_name' => $subcon?->vendor?->name,
+            'gate' => 'final',
+            'decision' => 'approved',
+            'actor' => self::HO_SIGNER,
+            'source' => 'email',
+            'note' => 'Head Office approval recorded ('.count($fabricLines).' fabric line(s), '.count($data['deductions'] ?? []).' deduction(s)).',
         ]);
 
         return view('qc.approval-result', [
@@ -424,6 +451,18 @@ class QcApprovalController extends Controller
 
         Log::info('QC HO approval rejected', ['token' => $token, 'project_id' => $row->project_id ?? null]);
 
+        [$subcon] = $this->subconContext($row);
+        \App\Models\SubconApprovalLog::record([
+            'order_id' => $subcon->id ?? null,
+            'order_number' => $subcon->order_number ?? ($row->project_id ?? null),
+            'vendor_name' => $subcon?->vendor?->name,
+            'gate' => 'final',
+            'decision' => 'declined',
+            'actor' => self::HO_SIGNER,
+            'source' => 'email',
+            'note' => 'Head Office rejection recorded.',
+        ]);
+
         return view('qc.approval-result', [
             'state' => 'rejected',
             'message' => 'Head Office rejection recorded. The QC Console will be notified.',
@@ -460,12 +499,16 @@ class QcApprovalController extends Controller
             $productionGroup = $project->production_group ?? null;
         }
 
+        // Must be an Eloquent SubconOrder (not a stdClass): the consumption engine,
+        // publisher, and fabricLinesWithData() all type-hint the model.
         $subcon = $productionGroup
-            ? DB::table('subcon_orders')->where('production_group', $productionGroup)->first()
+            ? SubconOrder::where('production_group', $productionGroup)->first()
             : null;
 
+        // Live production-group total (VSM-first, local fallback) so it can't drift
+        // with stale/edited local cutting rows — matches the consumption engine.
         $totalCut = $subcon
-            ? (int) DB::table('subcon_cutting_reports')->where('order_id', $subcon->id)->sum('cutting_qty')
+            ? app(SubconProductionService::class)->totalCutForOrder($subcon)
             : 0;
 
         return [$subcon, $totalCut, $productionGroup];
@@ -498,17 +541,31 @@ class QcApprovalController extends Controller
 
             [$subcon, , $productionGroup] = $this->subconContext($row);
 
-            Mail::send('emails.qc-ho-approval', [
-                'url' => route('qc.ho-approve', ['token' => $token]),
+            // Sender + subject mirror the subcon cutting/gramasi approval email
+            // (SubconApprovalRequestMailable) so both approval emails are uniform:
+            // same From name, and subject "Approval needed: <label> — <Style — PO — group>".
+            $ref = collect([
+                trim((string) ($subcon->title ?? '')),
+                trim((string) ($subcon->order_number ?? '')),
+                trim((string) ($productionGroup ?? '')),
+            ])->filter()->implode(' — ');
+            $subject = 'Approval needed: Final Approval'.($ref !== '' ? ' — '.$ref : '');
+
+            // Queued (not inline) so the approval response isn't blocked. The
+            // console writes `verified_doc` at Verify→Send, so it's already in the
+            // DB by now; the job reads it and attaches it (same PDF as stage 1).
+            \App\Jobs\SendFinalApprovalEmail::dispatch([
+                'token' => $token,
+                'recipients' => $recipients,
+                'subject' => $subject,
                 'sessionId' => $row->session_id ?? null,
                 'projectId' => $row->project_id ?? null,
                 'productionGroup' => $productionGroup,
                 'orderNumber' => $subcon->order_number ?? null,
-            ], function ($m) use ($recipients) {
-                $m->to($recipients)->subject('HO Approval Required — Packaging Inspection');
-            });
+                'remarks' => $subcon->remarks ?? null,
+            ]);
 
-            Log::info('QC HO approval email sent', ['token' => $token, 'to' => $recipients]);
+            Log::info('QC HO approval email queued', ['token' => $token, 'to' => $recipients]);
         } catch (\Throwable $e) {
             Log::error('QC HO approval email failed', ['token' => $token, 'error' => $e->getMessage()]);
         }
