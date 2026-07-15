@@ -3,11 +3,11 @@
      regeneration, and RPA payloads — structural match, DomPDF-compatible
      (tables only, no flexbox). --}}
 @php
-    $n = fn ($v) => number_format((float) ($v ?? 0), 0, ',', '.');
-    $rp = fn ($v) => 'Rp '.number_format(round((float) ($v ?? 0)), 0, ',', '.');
-    $pct = fn ($num, $den) => $den > 0 ? number_format($num / $den * 100, 2).'%' : '0.00%';
-    $fmtCons = fn ($v) => ($v !== null && $v !== '') ? number_format((float) $v, 4, ',', '.') : '—';
-    $fmtPercent = fn ($v) => ($v !== null && $v !== '') ? number_format((float) ($v * 100), 2, ',', '.').'%' : '—';
+    $n = fn ($v) => ($v !== null && $v !== '') ? number_format((float) ($v ?? 0), 0, '.', ',') : '—';
+    $rp = fn ($v) => ($v !== null && $v !== '') ? 'Rp '.number_format(round((float) ($v ?? 0)), 0, '.', ',') : '—';
+    $pct = fn ($num, $den) => $den > 0 ? number_format($num / $den * 100, 2, '.', ',').'%' : '0.00%';
+    $fmtCons = fn ($v) => ($v !== null && $v !== '') ? number_format((float) $v, 4, '.', ',') : '—';
+    $fmtPercent = fn ($v) => ($v !== null && $v !== '') ? number_format((float) ($v * 100), 2, '.', ',').'%' : '—';
     $fmtDate = function ($v) {
         if (empty($v)) return '—';
         try { return \Carbon\Carbon::parse($v)->format('d/m/Y'); } catch (\Throwable $e) { return (string) $v; }
