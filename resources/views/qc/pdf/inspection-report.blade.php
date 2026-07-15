@@ -121,8 +121,8 @@
                     @foreach (array_chunk($checklist, 2) as $pair)
                         <tr>
                             @foreach ($pair as $label)
-                                <td style="font-size: 6pt; padding: 2px 7px; color: #0F172A; font-weight: 500; border: none;">
-                                    <span style="color: #2563EB; font-weight: bold; font-size: 7.5pt; margin-right: 3px;">&#10003;</span>{{ $label }}
+                                <td style="font-size: 6pt; padding: 2px 7px; color: #0F172A; font-weight: 500; border: none; vertical-align: middle;">
+                                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGpQS3kDdwZBDTDFMJpoJ92aI8JIUAOyU7A6CVkBMhtmOgMDAwMjLFixmYauGMUGdAlcYkyEFGCA////Y2DV5Nf/sYn///8f4QdiAQDsNEbR9M9VLgAAAABJRU5ErkJggg==" style="width: 8px; height: 8px; margin-right: 3px; display: inline-block; vertical-align: middle; margin-top: -1.5px;">{{ $label }}
                                 </td>
                             @endforeach
                             @if (count($pair) === 1)
@@ -264,7 +264,7 @@
                         $unit = isset($uMatch[1]) ? ' '.$uMatch[1] : '';
                     @endphp
                     <div style="margin-top: 1px; padding-left: 8px;">
-                        <span style="color: #94A3B8; font-weight: bold; margin-right: 4px;">↳</span>
+                        <span style="display: inline-block; width: 3px; height: 5px; border-left: 0.6px solid #94A3B8; border-bottom: 0.6px solid #94A3B8; margin-right: 3.5px; margin-left: 2px; vertical-align: middle; margin-top: -3.5px;"></span>
                         <span class="muted bold">Cutt Plan:</span> <span style="color: #0F172A;">{{ $f->cutt_plan !== null ? $n($f->cutt_plan).' Pcs' : '—' }}</span> &nbsp;
                         <span class="muted bold">Plan Cons:</span> <span style="color: #0F172A;">{{ $f->consumption_plan !== null ? $fmtCons($f->consumption_plan).$unit : '—' }}</span> &nbsp;
                         <span class="muted bold">Actual Cons:</span> <span style="color: #0F172A;">{{ $f->actual_consumption !== null ? $fmtCons($f->actual_consumption).$unit : '—' }}</span> &nbsp;
@@ -351,7 +351,7 @@
             <table style="width: 100%; border: 1.2px solid {{ $resultColor }}; border-radius: 6px; background-color: {{ $result === 'PASSED' ? '#F0FDF4' : ($result === 'FAILED' ? '#FEF2F2' : '#F8FAFC') }}; height: 72px; border-collapse: separate; border-spacing: 0; text-align: center;">
                 <tr>
                     <td style="vertical-align: middle; padding: 6px; border: none;">
-                        <div style="font-size: 5.6pt; text-transform: uppercase;" class="muted bold">&#8756; Overall Inspection Result</div>
+                        <div style="font-size: 5.6pt; text-transform: uppercase;" class="muted bold"><span style="font-family: Symbol; font-size: 6.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span> Overall Inspection Result</div>
                         <div style="font-size: 11pt; font-weight: bold; color: {{ $resultColor }}; margin-top: 2px;">{{ $result }}</div>
                     </td>
                 </tr>
@@ -369,7 +369,7 @@
                         <td style="vertical-align: top; border: none; padding: 0; text-align: center;">
                             <div style="font-size: 5.6pt; text-transform: uppercase; margin-bottom: 4px;" class="muted bold">{{ $box['label'] }}</div>
                             @if ($box['sig']['state'] === 'signed')
-                                <div class="sig-badge">&#10003; Digitally Signed</div>
+                                <div class="sig-badge" style="display: inline-flex; align-items: center; vertical-align: middle;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Digitally Signed</div>
                                 @php
                                     $stampText = !empty($box['sig']['email']) ? $shortEmail($box['sig']['email']) : '';
                                     if (empty($stampText) && $box['label'] !== 'Inspected By') {
@@ -379,7 +379,7 @@
                                 @if (!empty($stampText))<div class="muted" style="font-size: 5.2pt; margin-top: 1px;">{{ $stampText }}</div>@endif
                                 @if ($box['sig']['date'])<div class="muted" style="font-size: 5.2pt; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
                             @elseif ($box['sig']['state'] === 'rejected')
-                                <div class="sig-badge rejected">&#10007; Rejected</div>
+                                <div class="sig-badge rejected" style="display: inline-flex; align-items: center; vertical-align: middle;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAY0lEQVR4nJWQ0Q0AIQhDxQluKJnaoWSDd18mnKDxSPigtKRFgPKn6i3RVAmCCe7IpkrNwN2Rp3epfjiJ517W0JktfyyE9stsDoJThiDIPK94+JInZ6JPaFNl9RxsAVc9WgMoL8rWaChiYc43AAAAAElFTkSuQmCC" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Rejected</div>
                                 @php
                                     $stampText = !empty($box['sig']['email']) ? $shortEmail($box['sig']['email']) : '';
                                     if (empty($stampText) && $box['label'] !== 'Inspected By') {
@@ -412,7 +412,7 @@
 <table style="margin-top: 6px; border-top: 0.6px solid #CBD5E1; padding-top: 4px; width: 100%;">
     <tr>
         <td style="font-size: 5.6pt;" class="muted">Distribution by email: 1. Factory&nbsp; 2. MD Prod&nbsp; 3. PPIC/Finance&nbsp; 4. QA MP</td>
-        <td style="font-size: 5.6pt; text-align: right;" class="muted">&#9758; This is an auto-generated document. Final Inspection QC [{{ $generatedAt }} WIB]</td>
+        <td style="font-size: 5.6pt; text-align: right;" class="muted">&raquo; This is an auto-generated document. Final Inspection QC [{{ $generatedAt }} WIB]</td>
     </tr>
 </table>
 
