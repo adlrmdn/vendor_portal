@@ -151,7 +151,7 @@
                             <!-- PDF Document Tab -->
                             <div class="tab-pane fade" id="pdf-tab-pane" role="tabpanel" aria-labelledby="pdf-tab" tabindex="0">
                                 <div class="border rounded-3 overflow-hidden bg-light mb-4" style="height: 600px;">
-                                    <iframe src="{{ route('qc.document', ['token' => $token]) }}" style="width: 100%; height: 100%; border: none;"></iframe>
+                                    <iframe src="{{ route('qc.document', ['token' => $token]) }}?t={{ time() }}" style="width: 100%; height: 100%; border: none;"></iframe>
                                 </div>
                             </div>
                         </div>
