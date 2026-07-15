@@ -354,9 +354,31 @@
         </tr>
     @endif
 </table>
-<div style="font-size: 6.2pt; margin: 4px 0 6px;">
-    <span class="bold">Remarks:</span>
-    <span style="{{ $remarks ? '' : 'color: #94A3B8; font-style: italic;' }}">{{ $remarks ?: 'none' }}</span>
+@php
+    $subconRemarks = trim((string) $remarks);
+    $qcRemarks = trim((string) $session->remarks);
+
+    if (strtolower($subconRemarks) === 'none') {
+        $subconRemarks = '';
+    }
+    if (strtolower($qcRemarks) === 'none') {
+        $qcRemarks = '';
+    }
+
+    $hasSubcon = !empty($subconRemarks);
+    $hasQc = !empty($qcRemarks);
+@endphp
+<div style="font-size: 5.3pt; margin: 4px 0 6px; line-height: 1.25;">
+    <span class="bold">Remarks</span>
+    @if ($hasSubcon && $hasQc)
+        <span>: - (Subcon) {{ $subconRemarks }}<br>&nbsp;&nbsp;- (QC) {{ $qcRemarks }}</span>
+    @elseif ($hasSubcon)
+        <span>: {{ $subconRemarks }}</span>
+    @elseif ($hasQc)
+        <span>: - (QC) {{ $qcRemarks }}</span>
+    @else
+        <span style="color: #94A3B8; font-style: italic;">: none</span>
+    @endif
 </div>
 
 {{-- Section 5: Conclusions --}}
