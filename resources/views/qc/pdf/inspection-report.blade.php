@@ -457,8 +457,12 @@
 
 <table style="margin-top: 6px; border-top: 0.6px solid #CBD5E1; padding-top: 4px; width: 100%;">
     <tr>
-        <td style="font-size: 5.6pt;" class="muted">Distribution by email: 1. Factory&nbsp; 2. MD Prod&nbsp; 3. PPIC/Finance&nbsp; 4. QA MP</td>
-        <td style="font-size: 5.6pt; text-align: right;" class="muted">&raquo; This is an auto-generated document. Final Inspection QC [{{ $generatedAt }} WIB]</td>
+        <td style="font-size: 5.6pt; line-height: 1.35;" class="muted">
+            Distribution by email: 1. Factory&nbsp; 2. MD Prod&nbsp; 3. PPIC/Finance&nbsp; 4. QA MP
+            <br>
+            *MPG HO – MD Production approval makes this document eligible for shipping.
+        </td>
+        <td style="font-size: 5.6pt; text-align: right; vertical-align: top;" class="muted">&raquo; This is an auto-generated document. Final Inspection QC [{{ $generatedAt }} WIB]</td>
     </tr>
 </table>
 
