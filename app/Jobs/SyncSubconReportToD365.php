@@ -24,10 +24,11 @@ class SyncSubconReportToD365 implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    /** Retry a few times — D365/OData hiccups are usually transient. */
     public int $tries = 3;
 
     public int $backoff = 30;
+
+    public int $timeout = 200;
 
     /**
      * @param  string  $orderId  SubconOrder UUID
@@ -68,14 +69,42 @@ class SyncSubconReportToD365 implements ShouldQueue
         $result = $d365->syncReportToD365($group, $changed);
 
         if (! empty($result['errors'])) {
-            Log::warning("D365 {$this->gate} sync for {$order->order_number} returned warnings: ".implode(' ', $result['errors']));
+            $msg = implode(' ', $result['errors']);
+            Log::warning("D365 {$this->gate} sync for {$order->order_number} returned warnings: " . $msg);
+            
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => $this->gate,
+                'status' => 'failed',
+                'message' => $msg,
+            ]);
         } else {
             Log::info("D365 {$this->gate} sync completed for {$order->order_number} (".count($changed).' rows).');
+            
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => $this->gate,
+                'status' => 'success',
+                'message' => "Successfully synced " . ($this->gate === 'cutting' ? 'cutting quantities' : 'grammage weights') . " (" . count($changed) . " sizes).",
+            ]);
         }
     }
 
     public function failed(\Throwable $e): void
     {
         Log::error("D365 {$this->gate} sync failed for order {$this->orderId}: ".$e->getMessage());
+
+        $order = SubconOrder::find($this->orderId);
+        if ($order) {
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => $this->gate,
+                'status' => 'failed',
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 }

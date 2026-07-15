@@ -20,6 +20,9 @@
                 </nav>
             </div>
             <div>
+                <a href="{{ route('admin.purchase-order.view', $item->purchaseOrder->id) }}" class="btn btn-secondary me-2">
+                    <i class="fas fa-arrow-left me-2"></i>Back to PO
+                </a>
                 <span class="badge badge-{{ $item->status }} fs-6 px-3 py-2">
                     {{ ucfirst($item->status) }}
                 </span>
@@ -124,7 +127,7 @@
                             @php
                                 $activeRolls = $item->rolls->where('deleted', false);
                                 $totalQty = 0;
-                                $unit = $activeRolls->first()->unit ?? '';
+                                $unit = $activeRolls->first()->unit ?? $item->unit;
                                 foreach ($activeRolls as $r) {
                                     if ($r->unit == 'YD')
                                         $totalQty += $r->length_yd;
@@ -140,26 +143,21 @@
                         </div>
                     </div>
                     <div class="card-body">
+                        @php
+                            // All metric columns (YD / M / KG) are shown on every roll; only the
+                            // original order metric is mandatory. Non-metric order units (PCS/UNIT)
+                            // keep the legacy convention of storing their qty in the weight column.
+                            $orderUnit = strtoupper($item->unit);
+                            $isMetricItem = in_array($orderUnit, ['YD', 'M', 'KG']);
+                        @endphp
                         <form action="{{ route('admin.item.save-rolls', $item->id) }}" method="POST" id="rollsForm">
                             @csrf
 
-                            <!-- Unit Selection -->
                             <div class="row mb-4">
                                 <div class="col-md-6">
-                                    <label class="form-label fw-bold">Select Unit for Rolls</label>
-                                    <select class="form-select" id="rollUnit" name="roll_unit" required
-                                        onchange="updateAllUnits()">
-                                        <option value="">Select Unit</option>
-                                        <option value="YD" {{ old('roll_unit', $item->rolls->where('deleted', false)->first()->unit ?? $item->unit) == 'YD' ? 'selected' : '' }}>Yard (YD)
-                                        </option>
-                                        <option value="M" {{ old('roll_unit', $item->rolls->where('deleted', false)->first()->unit ?? $item->unit) == 'M' ? 'selected' : '' }}>Meter (M)
-                                        </option>
-                                         <option value="KG" {{ old('roll_unit', $item->rolls->where('deleted', false)->first()->unit ?? $item->unit) == 'KG' ? 'selected' : '' }}>Kilogram (KG)
-                                         </option>
-                                         <option value="PCS" {{ old('roll_unit', $item->rolls->where('deleted', false)->first()->unit ?? $item->unit) == 'PCS' ? 'selected' : '' }}>Pieces (PCS)
-                                         </option>
-                                    </select>
-                                    <small class="text-muted">This unit will apply to all rolls</small>
+                                    <label class="form-label fw-bold">Original Order Metric</label>
+                                    <input type="text" class="form-control fw-bold" value="{{ $orderUnit }}" disabled>
+                                    <small class="text-muted">Only the {{ $orderUnit }} quantity is mandatory per roll — other metrics are optional. YD and M fill each other automatically.</small>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label fw-bold">Number of Rolls</label>
@@ -185,8 +183,8 @@
                                     @foreach($existingRolls as $index => $roll)
                                         <div class="roll-input card mb-3" id="roll-{{ $roll->id }}" data-roll-id="{{ $roll->id }}">
                                             <div class="card-body">
-                                                <div class="row align-items-center">
-                                                    <div class="col-md-2">
+                                                <div class="row g-2 align-items-end">
+                                                    <div class="col-md-1">
                                                         <div
                                                             class="roll-number small font-monospace text-secondary lh-sm user-select-all">
                                                             @foreach(explode('-', $roll->roll_number) as $part)
@@ -202,39 +200,64 @@
                                                             </small>
                                                         @endif
                                                     </div>
-                                                    <div class="col-md-3">
+                                                    <div class="col-md-1">
+                                                        <label class="form-label">Roll No.</label>
+                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][vendor_roll_no]" value="{{ $roll->vendor_roll_no }}" placeholder="Optional">
+                                                    </div>
+                                                    <div class="col-md-1">
+                                                        <label class="form-label">Bale No.</label>
+                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][bale_no]" value="{{ $roll->bale_no }}" placeholder="Optional">
+                                                    </div>
+                                                    <div class="col-md-1">
                                                         <label class="form-label">Lot-ID</label>
                                                         <input type="text" class="form-control" name="rolls[{{ $roll->id }}][internal_id]" value="{{ $roll->internal_id }}" placeholder="Optional">
                                                     </div>
+                                                    <div class="col-md-1">
+                                                        <label class="form-label">Color</label>
+                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][color]" value="{{ $roll->color }}" placeholder="Optional">
+                                                    </div>
+                                                    @if(!$isMetricItem)
+                                                        <div class="col-md-2">
+                                                            <label class="form-label">Qty ({{ $orderUnit }}) <span class="text-danger">*</span></label>
+                                                            <input type="number" step="0.01" class="form-control roll-weight roll-primary"
+                                                                name="rolls[{{ $roll->id }}][weight]"
+                                                                value="{{ (float) $roll->weight ?: '' }}"
+                                                                placeholder="Required" oninput="updateTotalQtyBadge();" required>
+                                                        </div>
+                                                    @endif
                                                     <div class="col-md-2">
-                                                        <label class="form-label roll-qty-label">Quantity ({{ $roll->unit }})</label>
-                                                        <input type="number" step="0.01" class="form-control roll-quantity"
-                                                            name="rolls[{{ $roll->id }}][quantity]"
-                                                            value="{{ ($roll->unit == 'YD' || $roll->unit == 'M') ? ($roll->unit == 'YD' ? $roll->length_yd : $roll->length_m) : $roll->weight }}"
-                                                            placeholder="Enter quantity" oninput="calculateSecondaryMetric(this); updateTotalQtyBadge();" required>
-                                                    </div>
-                                                    <div class="col-md-2 yd-metric-col" style="{{ $roll->unit == 'YD' ? 'display: none;' : '' }}">
-                                                        <label class="form-label yd-qty-label">{{ $roll->unit == 'M' ? 'Secondary Qty (YD)' : 'Length (YD)' }}</label>
-                                                        <input type="number" step="0.01" class="form-control roll-length-yd"
+                                                        <label class="form-label">Length (YD){!! $orderUnit == 'YD' ? ' <span class="text-danger">*</span>' : '' !!}</label>
+                                                        <input type="number" step="0.01" class="form-control roll-length-yd {{ $orderUnit == 'YD' ? 'roll-primary' : '' }}"
                                                             name="rolls[{{ $roll->id }}][length_yd]"
-                                                            value="{{ $roll->length_yd }}"
-                                                            placeholder="Optional" oninput="calculatePrimaryMetric(this);">
+                                                            value="{{ (float) $roll->length_yd ?: '' }}"
+                                                            placeholder="{{ $orderUnit == 'YD' ? 'Required' : 'Optional' }}"
+                                                            oninput="syncLength(this, 'yd');" {{ $orderUnit == 'YD' ? 'required' : '' }}>
                                                     </div>
-                                                    <div class="col-md-2 m-metric-col" style="{{ $roll->unit == 'M' ? 'display: none;' : '' }}">
-                                                        <label class="form-label m-qty-label">{{ $roll->unit == 'YD' ? 'Secondary Qty (M)' : 'Length (M)' }}</label>
-                                                        <input type="number" step="0.01" class="form-control roll-length-m"
+                                                    <div class="col-md-2">
+                                                        <label class="form-label">Length (M){!! $orderUnit == 'M' ? ' <span class="text-danger">*</span>' : '' !!}</label>
+                                                        <input type="number" step="0.01" class="form-control roll-length-m {{ $orderUnit == 'M' ? 'roll-primary' : '' }}"
                                                             name="rolls[{{ $roll->id }}][length_m]"
-                                                            value="{{ $roll->length_m }}"
-                                                            placeholder="Optional" oninput="calculatePrimaryMetric(this);">
+                                                            value="{{ (float) $roll->length_m ?: '' }}"
+                                                            placeholder="{{ $orderUnit == 'M' ? 'Required' : 'Optional' }}"
+                                                            oninput="syncLength(this, 'm');" {{ $orderUnit == 'M' ? 'required' : '' }}>
                                                     </div>
+                                                    @if($isMetricItem)
+                                                        <div class="col-md-2">
+                                                            <label class="form-label">Weight (KG){!! $orderUnit == 'KG' ? ' <span class="text-danger">*</span>' : '' !!}</label>
+                                                            <input type="number" step="0.01" class="form-control roll-weight {{ $orderUnit == 'KG' ? 'roll-primary' : '' }}"
+                                                                name="rolls[{{ $roll->id }}][weight]"
+                                                                value="{{ (float) $roll->weight ?: '' }}"
+                                                                placeholder="{{ $orderUnit == 'KG' ? 'Required' : 'Optional' }}"
+                                                                oninput="updateTotalQtyBadge();" {{ $orderUnit == 'KG' ? 'required' : '' }}>
+                                                        </div>
+                                                    @endif
                                                     <div class="col-md-1 text-center">
-                                                        <button type="button" class="btn btn-danger btn-sm mt-3 remove-roll-btn"
+                                                        <button type="button" class="btn btn-danger btn-sm remove-roll-btn"
                                                             onclick="removeExistingRoll('{{ $roll->id }}')" title="Remove Roll"
                                                             tabindex="-1">
                                                             <i class="fas fa-times"></i>
                                                         </button>
                                                     </div>
-                                                    <input type="hidden" class="roll-unit" name="rolls[{{ $roll->id }}][unit]" value="{{ $roll->unit }}">
                                                 </div>
                                                 <!-- Hidden fields for roll data -->
                                                 <input type="hidden" name="rolls[{{ $roll->id }}][id]" value="{{ $roll->id }}">
@@ -252,39 +275,63 @@
                                     @if($existingRolls->count() == 0)
                                         <div class="roll-input card mb-3 new-roll" id="new-roll-0">
                                             <div class="card-body">
-                                                <div class="row align-items-center">
-                                                    <div class="col-md-2">
+                                                <div class="row g-2 align-items-end">
+                                                    <div class="col-md-1">
                                                         <h6 class="mb-0 roll-number">Roll 1</h6>
                                                     </div>
-                                                    <div class="col-md-3">
+                                                    <div class="col-md-1">
+                                                        <label class="form-label">Roll No.</label>
+                                                        <input type="text" class="form-control" name="new_rolls[0][vendor_roll_no]" placeholder="Optional">
+                                                    </div>
+                                                    <div class="col-md-1">
+                                                        <label class="form-label">Bale No.</label>
+                                                        <input type="text" class="form-control" name="new_rolls[0][bale_no]" placeholder="Optional">
+                                                    </div>
+                                                    <div class="col-md-1">
                                                         <label class="form-label">Lot-ID</label>
                                                         <input type="text" class="form-control" name="new_rolls[0][internal_id]" placeholder="Optional">
                                                     </div>
+                                                    <div class="col-md-1">
+                                                        <label class="form-label">Color</label>
+                                                        <input type="text" class="form-control" name="new_rolls[0][color]" placeholder="Optional">
+                                                    </div>
+                                                    @if(!$isMetricItem)
+                                                        <div class="col-md-2">
+                                                            <label class="form-label">Qty ({{ $orderUnit }}) <span class="text-danger">*</span></label>
+                                                            <input type="number" step="0.01" class="form-control roll-weight roll-primary"
+                                                                name="new_rolls[0][weight]" placeholder="Required"
+                                                                oninput="updateTotalQtyBadge();" required>
+                                                        </div>
+                                                    @endif
                                                     <div class="col-md-2">
-                                                        <label class="form-label roll-qty-label">Quantity ({{ $item->unit }})</label>
-                                                        <input type="number" step="0.01" class="form-control roll-quantity"
-                                                            name="new_rolls[0][quantity]" placeholder="Enter qty"
-                                                            oninput="calculateSecondaryMetric(this); updateTotalQtyBadge();" required>
+                                                        <label class="form-label">Length (YD){!! $orderUnit == 'YD' ? ' <span class="text-danger">*</span>' : '' !!}</label>
+                                                        <input type="number" step="0.01" class="form-control roll-length-yd {{ $orderUnit == 'YD' ? 'roll-primary' : '' }}"
+                                                            name="new_rolls[0][length_yd]"
+                                                            placeholder="{{ $orderUnit == 'YD' ? 'Required' : 'Optional' }}"
+                                                            oninput="syncLength(this, 'yd');" {{ $orderUnit == 'YD' ? 'required' : '' }}>
                                                     </div>
-                                                    <div class="col-md-2 yd-metric-col" style="{{ $item->unit == 'YD' ? 'display: none;' : '' }}">
-                                                        <label class="form-label yd-qty-label">{{ $item->unit == 'M' ? 'Secondary Qty (YD)' : 'Length (YD)' }}</label>
-                                                        <input type="number" step="0.01" class="form-control roll-length-yd"
-                                                            name="new_rolls[0][length_yd]" placeholder="Optional"
-                                                            oninput="calculatePrimaryMetric(this);">
+                                                    <div class="col-md-2">
+                                                        <label class="form-label">Length (M){!! $orderUnit == 'M' ? ' <span class="text-danger">*</span>' : '' !!}</label>
+                                                        <input type="number" step="0.01" class="form-control roll-length-m {{ $orderUnit == 'M' ? 'roll-primary' : '' }}"
+                                                            name="new_rolls[0][length_m]"
+                                                            placeholder="{{ $orderUnit == 'M' ? 'Required' : 'Optional' }}"
+                                                            oninput="syncLength(this, 'm');" {{ $orderUnit == 'M' ? 'required' : '' }}>
                                                     </div>
-                                                    <div class="col-md-2 m-metric-col" style="{{ $item->unit == 'M' ? 'display: none;' : '' }}">
-                                                        <label class="form-label m-qty-label">{{ $item->unit == 'YD' ? 'Secondary Qty (M)' : 'Length (M)' }}</label>
-                                                        <input type="number" step="0.01" class="form-control roll-length-m"
-                                                            name="new_rolls[0][length_m]" placeholder="Optional"
-                                                            oninput="calculatePrimaryMetric(this);">
-                                                    </div>
+                                                    @if($isMetricItem)
+                                                        <div class="col-md-2">
+                                                            <label class="form-label">Weight (KG){!! $orderUnit == 'KG' ? ' <span class="text-danger">*</span>' : '' !!}</label>
+                                                            <input type="number" step="0.01" class="form-control roll-weight {{ $orderUnit == 'KG' ? 'roll-primary' : '' }}"
+                                                                name="new_rolls[0][weight]"
+                                                                placeholder="{{ $orderUnit == 'KG' ? 'Required' : 'Optional' }}"
+                                                                oninput="updateTotalQtyBadge();" {{ $orderUnit == 'KG' ? 'required' : '' }}>
+                                                        </div>
+                                                    @endif
                                                     <div class="col-md-1 text-center">
-                                                        <button type="button" class="btn btn-danger btn-sm mt-3"
+                                                        <button type="button" class="btn btn-danger btn-sm"
                                                             onclick="removeNewRoll(0)" title="Remove Roll" tabindex="-1">
                                                             <i class="fas fa-times"></i>
                                                         </button>
                                                     </div>
-                                                    <input type="hidden" class="roll-unit" name="new_rolls[0][unit]" value="{{ $item->unit }}">
                                                 </div>
                                             </div>
                                         </div>
@@ -301,16 +348,15 @@
                                     <button type="button" class="btn btn-outline-info ms-2" onclick="document.getElementById('importFile').click()">
                                         <i class="fas fa-file-import me-2"></i>Import (Excel/PDF)
                                     </button>
-                                    <button type="button" class="btn btn-outline-danger ms-2" onclick="clearAllRolls()">
-                                        <i class="fas fa-trash-alt me-2"></i>Clear All Rolls
-                                    </button>
+                                    <a href="{{ route('admin.item.rolls-template', $item->id) }}" class="btn btn-outline-secondary ms-2">
+                                        <i class="fas fa-file-download me-2"></i>Download Template
+                                    </a>
                                     <input type="file" id="importFile" class="d-none" accept=".xlsx,.xls,.csv,.pdf" onchange="handleFileUpload(this)">
                                 </div>
                                 <div>
-                                    <a href="{{ route('admin.purchase-order.view', $item->purchaseOrder->id) }}"
-                                        class="btn btn-secondary me-2">
-                                        <i class="fas fa-arrow-left me-2"></i>Back to PO
-                                    </a>
+                                    <button type="button" class="btn btn-outline-danger me-2" onclick="clearAllRolls()">
+                                        <i class="fas fa-trash-alt me-2"></i>Clear Rolls
+                                    </button>
                                     <button type="submit" class="btn btn-success">
                                         <i class="fas fa-save me-2"></i>Save Rolls
                                     </button>
@@ -411,10 +457,13 @@
         let newRollCounter = {{ $existingRolls->count() == 0 ? 1 : 0 }};
         let removedRolls = [];
 
+        // The order metric is fixed per item: it is the only mandatory quantity.
+        const ORDER_UNIT = @json($orderUnit);
+        const IS_METRIC_ITEM = @json($isMetricItem);
+
         // Generate roll input fields based on count
         function generateRollFields() {
             const countInput = document.getElementById('rollCount');
-            const unitSelect = document.getElementById('rollUnit');
             const count = parseInt(countInput.value) || 1;
 
             if (count < 1 || count > 500) {
@@ -422,13 +471,6 @@
                 return;
             }
 
-            if (!unitSelect.value) {
-                alert('Please select a unit first');
-                unitSelect.focus();
-                return;
-            }
-
-            const selectedUnit = unitSelect.value;
             const newContainer = document.getElementById('newRollsContainer');
 
             // Clear new rolls container
@@ -449,7 +491,7 @@
 
             // Add new rolls
             for (let i = 0; i < newRollsNeeded; i++) {
-                addNewRoll(selectedUnit);
+                addNewRoll();
             }
 
             updateRollNumbers();
@@ -459,16 +501,7 @@
 
         // Add a single new roll
         function addSingleRoll() {
-            const unitSelect = document.getElementById('rollUnit');
-
-            if (!unitSelect.value) {
-                alert('Please select a unit first');
-                unitSelect.focus();
-                return;
-            }
-
-            const selectedUnit = unitSelect.value;
-            addNewRoll(selectedUnit);
+            addNewRoll();
             updateRollNumbers();
 
             // Update count input
@@ -482,8 +515,14 @@
             }
         }
 
-        // Add new roll to container
-        function addNewRoll(selectedUnit, internalId, quantity) {
+        // Add new roll to container. Imported rows pass {internal_id, quantity,
+        // vendor_roll_no, bale_no, color}; quantity is in the order metric.
+        function addNewRoll(data = {}) {
+            const internalId = data.internal_id ?? '';
+            const vendorRollNo = data.vendor_roll_no ?? '';
+            const baleNo = data.bale_no ?? '';
+            const color = data.color ?? '';
+            const quantity = data.quantity ?? null;
             const container = document.getElementById('newRollsContainer');
             if (!container) {
                 container = document.getElementById('rollsContainer');
@@ -492,75 +531,113 @@
             const rollDiv = document.createElement('div');
             rollDiv.className = 'roll-input card mb-3 new-roll';
             rollDiv.id = `new-roll-${newRollCounter}`;
-            
-            // Default lengths
-            let lengthYd = '';
-            let lengthM = '';
-            let primaryVal = '';
-            
-            if (typeof quantity !== 'undefined' && quantity !== null) {
-                primaryVal = quantity;
-                if (selectedUnit === 'YD') {
+
+            // Prefill metrics: explicit per-metric values win; a bare `quantity`
+            // goes to the order-metric column; the missing YD/M is derived.
+            let lengthYd = data.length_yd ?? '';
+            let lengthM = data.length_m ?? '';
+            let weight = data.weight ?? '';
+
+            if (quantity !== null && quantity !== '') {
+                if (ORDER_UNIT === 'YD' && lengthYd === '') {
                     lengthYd = quantity;
-                    lengthM = (quantity * 0.9144).toFixed(2);
-                } else if (selectedUnit === 'M') {
+                } else if (ORDER_UNIT === 'M' && lengthM === '') {
                     lengthM = quantity;
-                    lengthYd = (quantity / 0.9144).toFixed(2);
+                } else if (ORDER_UNIT !== 'YD' && ORDER_UNIT !== 'M' && weight === '') {
+                    weight = quantity;
                 }
             }
+            if (lengthYd !== '' && lengthM === '') {
+                lengthM = (parseFloat(lengthYd) * 0.9144).toFixed(2);
+            } else if (lengthM !== '' && lengthYd === '') {
+                lengthYd = (parseFloat(lengthM) / 0.9144).toFixed(2);
+            }
 
-            const hideYd = selectedUnit === 'YD' ? 'display: none;' : '';
-            const hideM = selectedUnit === 'M' ? 'display: none;' : '';
-            
-            const ydLabelText = selectedUnit === 'M' ? 'Secondary Qty (YD)' : 'Length (YD)';
-            const mLabelText = selectedUnit === 'YD' ? 'Secondary Qty (M)' : 'Length (M)';
+            const req = ' <span class="text-danger">*</span>';
+
+            const pcsCol = !IS_METRIC_ITEM ? `
+                         <div class="col-md-2">
+                             <label class="form-label">Qty (${ORDER_UNIT})${req}</label>
+                             <input type="number" step="0.01" class="form-control roll-weight roll-primary"
+                                    name="new_rolls[${newRollCounter}][weight]"
+                                    placeholder="Required"
+                                    oninput="updateTotalQtyBadge();"
+                                    value="${weight}"
+                                    required>
+                         </div>` : '';
+
+            const kgCol = IS_METRIC_ITEM ? `
+                         <div class="col-md-2">
+                             <label class="form-label">Weight (KG)${ORDER_UNIT === 'KG' ? req : ''}</label>
+                             <input type="number" step="0.01" class="form-control roll-weight ${ORDER_UNIT === 'KG' ? 'roll-primary' : ''}"
+                                    name="new_rolls[${newRollCounter}][weight]"
+                                    placeholder="${ORDER_UNIT === 'KG' ? 'Required' : 'Optional'}"
+                                    oninput="updateTotalQtyBadge();"
+                                    value="${weight}"
+                                    ${ORDER_UNIT === 'KG' ? 'required' : ''}>
+                         </div>` : '';
 
             rollDiv.innerHTML = `
                 <div class="card-body">
-                    <div class="row align-items-center">
-                         <div class="col-md-2">
+                    <div class="row g-2 align-items-end">
+                         <div class="col-md-1">
                              <h6 class="mb-0 roll-number">New Roll</h6>
                          </div>
-                         <div class="col-md-3">
-                             <label class="form-label">Lot-ID</label>
-                             <input type="text" class="form-control" 
-                                    name="new_rolls[${newRollCounter}][internal_id]" 
+                         <div class="col-md-1">
+                             <label class="form-label">Roll No.</label>
+                             <input type="text" class="form-control"
+                                    name="new_rolls[${newRollCounter}][vendor_roll_no]"
                                     placeholder="Optional"
-                                    value="${typeof internalId !== 'undefined' && internalId !== null ? internalId : ''}">
+                                    value="${vendorRollNo}">
+                         </div>
+                         <div class="col-md-1">
+                             <label class="form-label">Bale No.</label>
+                             <input type="text" class="form-control"
+                                    name="new_rolls[${newRollCounter}][bale_no]"
+                                    placeholder="Optional"
+                                    value="${baleNo}">
+                         </div>
+                         <div class="col-md-1">
+                             <label class="form-label">Lot-ID</label>
+                             <input type="text" class="form-control"
+                                    name="new_rolls[${newRollCounter}][internal_id]"
+                                    placeholder="Optional"
+                                    value="${internalId}">
+                         </div>
+                         <div class="col-md-1">
+                             <label class="form-label">Color</label>
+                             <input type="text" class="form-control"
+                                    name="new_rolls[${newRollCounter}][color]"
+                                    placeholder="Optional"
+                                    value="${color}">
+                         </div>
+                         ${pcsCol}
+                         <div class="col-md-2">
+                             <label class="form-label">Length (YD)${ORDER_UNIT === 'YD' ? req : ''}</label>
+                             <input type="number" step="0.01" class="form-control roll-length-yd ${ORDER_UNIT === 'YD' ? 'roll-primary' : ''}"
+                                    name="new_rolls[${newRollCounter}][length_yd]"
+                                    placeholder="${ORDER_UNIT === 'YD' ? 'Required' : 'Optional'}"
+                                    oninput="syncLength(this, 'yd');"
+                                    value="${lengthYd}"
+                                    ${ORDER_UNIT === 'YD' ? 'required' : ''}>
                          </div>
                          <div class="col-md-2">
-                             <label class="form-label roll-qty-label">Quantity (${selectedUnit})</label>
-                             <input type="number" step="0.01" class="form-control roll-quantity" 
-                                    name="new_rolls[${newRollCounter}][quantity]" 
-                                    placeholder="Enter qty" 
-                                    oninput="calculateSecondaryMetric(this); updateTotalQtyBadge();"
-                                    value="${primaryVal}"
-                                    required>
+                             <label class="form-label">Length (M)${ORDER_UNIT === 'M' ? req : ''}</label>
+                             <input type="number" step="0.01" class="form-control roll-length-m ${ORDER_UNIT === 'M' ? 'roll-primary' : ''}"
+                                    name="new_rolls[${newRollCounter}][length_m]"
+                                    placeholder="${ORDER_UNIT === 'M' ? 'Required' : 'Optional'}"
+                                    oninput="syncLength(this, 'm');"
+                                    value="${lengthM}"
+                                    ${ORDER_UNIT === 'M' ? 'required' : ''}>
                          </div>
-                         <div class="col-md-2 yd-metric-col" style="${hideYd}">
-                             <label class="form-label yd-qty-label">${ydLabelText}</label>
-                             <input type="number" step="0.01" class="form-control roll-length-yd" 
-                                    name="new_rolls[${newRollCounter}][length_yd]" 
-                                    placeholder="Optional" 
-                                    oninput="calculatePrimaryMetric(this);"
-                                    value="${lengthYd}">
-                         </div>
-                         <div class="col-md-2 m-metric-col" style="${hideM}">
-                             <label class="form-label m-qty-label">${mLabelText}</label>
-                             <input type="number" step="0.01" class="form-control roll-length-m" 
-                                    name="new_rolls[${newRollCounter}][length_m]" 
-                                    placeholder="Optional" 
-                                    oninput="calculatePrimaryMetric(this);"
-                                    value="${lengthM}">
-                         </div>
+                         ${kgCol}
                          <div class="col-md-1 text-center">
-                             <button type="button" class="btn btn-danger btn-sm mt-3" 
+                             <button type="button" class="btn btn-danger btn-sm"
                                      onclick="removeNewRoll(${newRollCounter})"
                                      title="Remove Roll" tabindex="-1">
                                  <i class="fas fa-times"></i>
                              </button>
                          </div>
-                         <input type="hidden" class="roll-unit" name="new_rolls[${newRollCounter}][unit]" value="${selectedUnit}">
                     </div>
                 </div>
             `;
@@ -641,7 +718,7 @@
             rollElement.classList.remove('marked-for-deletion');
 
             // Re-enable inputs
-            const inputs = rollElement.querySelectorAll('input:not(.delete-flag):not(.roll-unit-text)');
+            const inputs = rollElement.querySelectorAll('input:not(.delete-flag)');
             inputs.forEach(input => {
                 input.readOnly = false;
             });
@@ -739,122 +816,25 @@
             });
         }
 
-        // Update all roll units when master unit changes
-        function updateAllUnits() {
-            const masterUnit = document.getElementById('rollUnit').value;
-            const hiddenInputs = document.querySelectorAll('.roll-unit');
-            const textDisplays = document.querySelectorAll('.roll-unit-text');
+        // YD and M are interchangeable: editing one always recomputes the other.
+        function syncLength(input, which) {
+            const container = input.closest('.roll-input');
+            const ydInput = container.querySelector('.roll-length-yd');
+            const mInput = container.querySelector('.roll-length-m');
+            const val = parseFloat(input.value);
 
-            hiddenInputs.forEach(input => {
-                input.value = masterUnit;
-            });
-
-            textDisplays.forEach(display => {
-                display.value = masterUnit ? masterUnit : '';
-            });
-
-            const rollInputs = document.querySelectorAll('.roll-input');
-            rollInputs.forEach(rollEl => {
-                const ydCol = rollEl.querySelector('.yd-metric-col');
-                const mCol = rollEl.querySelector('.m-metric-col');
-                
-                const qtyLabel = rollEl.querySelector('.roll-qty-label');
-                const ydLabel = rollEl.querySelector('.yd-qty-label');
-                const mLabel = rollEl.querySelector('.m-qty-label');
-                
-                if (qtyLabel) {
-                    qtyLabel.textContent = masterUnit ? `Quantity (${masterUnit})` : 'Quantity';
-                }
-                
-                if (masterUnit === 'YD') {
-                    if (ydCol) ydCol.style.display = 'none';
-                    if (mCol) mCol.style.display = '';
-                    if (mLabel) mLabel.textContent = 'Secondary Qty (M)';
-                } else if (masterUnit === 'M') {
-                    if (ydCol) ydCol.style.display = '';
-                    if (mCol) mCol.style.display = 'none';
-                    if (ydLabel) ydLabel.textContent = 'Secondary Qty (YD)';
-                } else if (masterUnit === 'KG' || masterUnit === 'PCS') {
-                    if (ydCol) ydCol.style.display = '';
-                    if (mCol) mCol.style.display = '';
-                    if (ydLabel) ydLabel.textContent = 'Length (YD)';
-                    if (mLabel) mLabel.textContent = 'Length (M)';
-                } else {
-                    if (ydCol) ydCol.style.display = 'none';
-                    if (mCol) mCol.style.display = 'none';
-                }
-            });
+            if (which === 'yd' && mInput) {
+                mInput.value = isNaN(val) ? '' : (val * 0.9144).toFixed(2);
+            } else if (which === 'm' && ydInput) {
+                ydInput.value = isNaN(val) ? '' : (val / 0.9144).toFixed(2);
+            }
 
             updateTotalQtyBadge();
         }
 
-        function calculateSecondaryMetric(input) {
-            const container = input.closest('.roll-input');
-            const unitSelect = document.getElementById('rollUnit');
-            const unit = unitSelect.value || container.querySelector('.roll-unit').value;
-            const ydInput = container.querySelector('.roll-length-yd');
-            const mInput = container.querySelector('.roll-length-m');
-            
-            const val = parseFloat(input.value);
-            if (isNaN(val)) {
-                if (unit === 'YD' && mInput) mInput.value = '';
-                if (unit === 'M' && ydInput) ydInput.value = '';
-                return;
-            }
-            
-            if (unit === 'YD' && mInput) {
-                mInput.value = (val * 0.9144).toFixed(2);
-            } else if (unit === 'M' && ydInput) {
-                ydInput.value = (val / 0.9144).toFixed(2);
-            }
-        }
-
-        function calculatePrimaryMetric(input) {
-            const container = input.closest('.roll-input');
-            const unitSelect = document.getElementById('rollUnit');
-            const unit = unitSelect.value || container.querySelector('.roll-unit').value;
-            const primaryInput = container.querySelector('.roll-quantity');
-            const ydInput = container.querySelector('.roll-length-yd');
-            const mInput = container.querySelector('.roll-length-m');
-            
-            const val = parseFloat(input.value);
-            
-            // If editing Yards input
-            if (input.classList.contains('roll-length-yd')) {
-                if (isNaN(val)) {
-                    if (unit === 'M' && primaryInput) primaryInput.value = '';
-                    if ((unit === 'KG' || unit === 'PCS') && mInput) mInput.value = '';
-                    return;
-                }
-                
-                if (unit === 'M' && primaryInput) {
-                    primaryInput.value = (val * 0.9144).toFixed(2);
-                } else if ((unit === 'KG' || unit === 'PCS') && mInput) {
-                    mInput.value = (val * 0.9144).toFixed(2);
-                }
-            }
-            
-            // If editing Meters input
-            if (input.classList.contains('roll-length-m')) {
-                if (isNaN(val)) {
-                    if (unit === 'YD' && primaryInput) primaryInput.value = '';
-                    if ((unit === 'KG' || unit === 'PCS') && ydInput) ydInput.value = '';
-                    return;
-                }
-                
-                if (unit === 'YD' && primaryInput) {
-                    primaryInput.value = (val / 0.9144).toFixed(2);
-                } else if ((unit === 'KG' || unit === 'PCS') && ydInput) {
-                    ydInput.value = (val / 0.9144).toFixed(2);
-                }
-            }
-            
-            updateTotalQtyBadge();
-        }
-
-        // Calculate total quantity (only returns value)
+        // Calculate total quantity in the order metric (only returns value)
         function calculateTotal() {
-            const inputs = document.querySelectorAll('.roll-quantity:not([disabled])');
+            const inputs = document.querySelectorAll('.roll-primary:not([disabled])');
             let total = 0;
 
             inputs.forEach(input => {
@@ -869,21 +849,7 @@
         // Update total quantity badge
         function updateTotalQtyBadge() {
             const total = calculateTotal();
-            const unitSelect = document.getElementById('rollUnit');
-
-            let unit = unitSelect.value;
-            if (!unit) {
-                // Fallback to first existing roll unit if available, or just empty
-                const firstRollUnit = document.querySelector('.roll-unit');
-                if (firstRollUnit) {
-                    unit = firstRollUnit.value;
-                }
-            }
-
-            // Format for display
-            const displayUnit = unit ? unit : '';
-
-            document.getElementById('totalQtyBadge').textContent = `Total Qty: ${total.toFixed(2)} ${displayUnit}`;
+            document.getElementById('totalQtyBadge').textContent = `Total Qty: ${total.toFixed(2)} ${ORDER_UNIT}`;
         }
 
         // Update total rolls badge
@@ -950,19 +916,11 @@
 
         // Form validation
         document.getElementById('rollsForm').addEventListener('submit', function (e) {
-            const unitSelect = document.getElementById('rollUnit');
-            const quantityInputs = this.querySelectorAll('.roll-quantity:not([disabled])');
+            const quantityInputs = this.querySelectorAll('.roll-primary:not([disabled])');
             let isValid = true;
             let activeRolls = 0;
 
-            // Check unit is selected
-            if (!unitSelect.value) {
-                alert('Please select a unit for the rolls');
-                unitSelect.focus();
-                isValid = false;
-            }
-
-            // Check all quantities are valid (only for non-deleting, non-disabled rolls)
+            // Only the order-metric quantity is mandatory (non-deleting, non-disabled rolls)
             quantityInputs.forEach(input => {
                 const rollInput = input.closest('.roll-input');
                 if (rollInput && !rollInput.classList.contains('marked-for-deletion')) {
@@ -984,7 +942,7 @@
 
             if (!isValid) {
                 e.preventDefault();
-                alert('Please enter valid quantities for all rolls (greater than 0)');
+                alert(`Please enter a valid ${ORDER_UNIT} quantity for all rolls (greater than 0)`);
                 return false;
             }
 
@@ -1010,35 +968,30 @@
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', function () {
-            // Set initial values if editing
-            @if($existingRolls->count() > 0)
-                const firstRoll = @json($existingRolls->first());
-                if (firstRoll && document.getElementById('rollUnit').value === '') {
-                    document.getElementById('rollUnit').value = firstRoll.unit;
-                    document.getElementById('rollCount').value = {{ $existingRolls->count() }};
-                }
-            @endif
+            // Backfill a missing order-metric quantity from the other length metric
+            // (legacy rolls saved in M for a YD order, or vice versa).
+            document.querySelectorAll('.roll-input').forEach(row => {
+                const primary = row.querySelector('.roll-primary');
+                if (!primary || primary.value) return;
 
-            // Initial update
-            updateAllUnits();
-            updateTotalRollsBadge();
+                const yd = row.querySelector('.roll-length-yd');
+                const m = row.querySelector('.roll-length-m');
+
+                if (ORDER_UNIT === 'YD' && m && m.value) {
+                    primary.value = (parseFloat(m.value) / 0.9144).toFixed(2);
+                } else if (ORDER_UNIT === 'M' && yd && yd.value) {
+                    primary.value = (parseFloat(yd.value) * 0.9144).toFixed(2);
+                }
+            });
 
             // Initialize badges
             updateTotalRollsBadge();
-            calculateTotal();
+            updateTotalQtyBadge();
         });
 
         // Handle File Upload (Excel/PDF import of rolls data)
         function handleFileUpload(input) {
             if (!input.files || !input.files[0]) return;
-
-            const unitSelect = document.getElementById('rollUnit');
-            if (!unitSelect.value) {
-                alert('Please select a unit first before importing data.');
-                input.value = '';
-                unitSelect.focus();
-                return;
-            }
 
             const file = input.files[0];
             const formData = new FormData();
@@ -1062,16 +1015,15 @@
             .then(result => {
                 if (result.success) {
                     const data = result.data;
-                    const selectedUnit = unitSelect.value;
                     const container = document.getElementById('newRollsContainer');
 
                     // Clear existing new rolls
                     container.innerHTML = '';
                     newRollCounter = 0;
 
-                    // Populate with new data
+                    // Populate with new data (imported quantities are in the order metric)
                     data.forEach(roll => {
-                        addNewRoll(selectedUnit, roll.internal_id, roll.quantity);
+                        addNewRoll(roll);
                     });
 
                     updateRollNumbers();
@@ -1107,10 +1059,9 @@
                 </div>
                 <div class="modal-body text-dark">
                     <ol class="mb-0">
-                        <li class="mb-2"><strong>Select Unit:</strong> Choose the measurement unit for all rolls</li>
                         <li class="mb-2"><strong>Enter Roll Count:</strong> Enter total number of rolls and click Generate</li>
-                        <li class="mb-2"><strong>Fill Quantities:</strong> Enter quantity for each roll</li>
-                        <li class="mb-2"><strong>Optional Fill Bars:</strong> If the unit is length (Yard or Meter), you can optionally fill the secondary metric or reverse the primary unit.</li>
+                        <li class="mb-2"><strong>Fill Quantities:</strong> Only the original order metric quantity is mandatory per roll; the other metrics are optional. Yard and Meter fill each other automatically.</li>
+                        <li class="mb-2"><strong>Extra Details:</strong> Roll No., Bale No., Lot-ID and Color are optional per roll</li>
                         <li class="mb-2"><strong>Add/Remove:</strong> Use buttons to add or remove individual rolls</li>
                         <li class="mb-2"><strong>Save:</strong> Click Save Rolls to store data</li>
                         <li class="mb-2"><strong>Mark Processed:</strong> When done, mark item as processed (redirects to PO)</li>

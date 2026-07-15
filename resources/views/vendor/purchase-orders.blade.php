@@ -14,7 +14,7 @@
                         <option value="processing" {{ ($status ?? '') == 'processing' ? 'selected' : '' }}>Processing</option>
                         <option value="completed" {{ ($status ?? '') == 'completed' ? 'selected' : '' }}>Completed</option>
                     </select>
-                    <input type="text" name="search" class="form-control" placeholder="Search PO or PC..."
+                    <input type="text" name="search" class="form-control" placeholder="Search PO, PC, PLM or style name..."
                         value="{{ $search ?? '' }}">
                     <button class="btn btn-outline-secondary" type="submit">
                         <i class="fas fa-search"></i>

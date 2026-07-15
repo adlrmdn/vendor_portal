@@ -24,6 +24,7 @@ class PurchaseOrder extends Model
         'order_date',
         'delivery_date',
         'notes',
+        'reference',
     ];
 
     protected $casts = [

@@ -179,6 +179,17 @@
                             </div>
                         </div>
 
+                        <!-- Director (Authorization) Email -->
+                        <div class="mb-4">
+                            <label for="qc_director_approver_email" class="form-label-premium">Director Email Address(es)</label>
+                            <input type="text" name="qc_director_approver_email" id="qc_director_approver_email" class="form-control form-control-premium @error('qc_director_approver_email') is-invalid @enderror" value="{{ old('qc_director_approver_email', $directorApproverEmail) }}" placeholder="a@mail.com, b@mail.com">
+                            @error('qc_director_approver_email')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                            <div class="form-text text-muted mt-2">
+                                <i class="fas fa-info-circle me-1 text-primary"></i>
+                                Receives the third-stage (Director) authorization link after MD Production approves. Approval queues the Invoice &amp; Deduction RPA jobs and completes the project. Separate multiple recipients with commas. Leave blank to reuse the Final Email list.
+                            </div>
+                        </div>
+
                         <div class="d-flex justify-content-end border-top pt-3">
                             <button type="submit" class="btn btn-premium">
                                 <i class="fas fa-save me-2"></i> Save Workflow Settings

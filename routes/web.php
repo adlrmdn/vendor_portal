@@ -59,6 +59,7 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::get('/item/{id}/process', [AdminController::class, 'processItem'])->name('item.process');
     Route::post('/item/{id}/save-rolls', [AdminController::class, 'saveItemRolls'])->name('item.save-rolls');
     Route::post('/item/{id}/upload-rolls', [AdminController::class, 'uploadRollsData'])->name('item.upload-rolls');
+    Route::get('/item/{id}/rolls-template', [AdminController::class, 'downloadRollsTemplate'])->name('item.rolls-template');
     Route::post('/rolls/{roll}/delete', [AdminController::class, 'deleteRoll'])->name('roll.delete');
     Route::post('/item/{id}/mark-processed', [AdminController::class, 'markItemProcessed'])->name('item.mark-processed');
     Route::post('/item/{id}/mark-partial', [AdminController::class, 'markAsPartialShipment'])->name('item.mark-partial');
@@ -87,6 +88,7 @@ Route::middleware(['auth'])->prefix('vendor')->name('vendor.')->group(function (
     Route::get('/item/{id}/process', [VendorController::class, 'processItem'])->name('item.process');
     Route::post('/item/{id}/save-rolls', [VendorController::class, 'saveItemRolls'])->name('item.save-rolls');
     Route::post('/item/{id}/upload-rolls', [VendorController::class, 'uploadRollsData'])->name('item.upload-rolls');
+    Route::get('/item/{id}/rolls-template', [VendorController::class, 'downloadRollsTemplate'])->name('item.rolls-template');
     Route::post('/rolls/{roll}/delete', [VendorController::class, 'deleteRoll'])->name('vendor.roll.delete');
     Route::post('/item/{id}/mark-processed', [VendorController::class, 'markItemProcessed'])->name('item.mark-processed');
     Route::post('/item/{id}/mark-partial', [VendorController::class, 'markAsPartialShipment'])->name('item.mark-partial');
@@ -113,6 +115,7 @@ Route::get('/tolerance/decline/{request}', [App\Http\Controllers\ApprovalControl
 // Subcon Admin Routes
 Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->group(function () {
     Route::get('/dashboard', [SubconAdminController::class, 'dashboard'])->name('dashboard');
+    Route::get('/logs', [SubconAdminController::class, 'logs'])->name('logs');
     Route::post('/sync-orders', [SubconAdminController::class, 'syncOrders'])->name('sync-orders');
     Route::get('/sync-status', [SubconAdminController::class, 'syncStatus'])->name('sync-status');
     Route::get('/vendors', [SubconAdminController::class, 'vendors'])->name('vendors');
@@ -121,6 +124,7 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
     Route::post('/vendors/{id}/toggle-status', [SubconAdminController::class, 'toggleVendorStatus'])->name('vendors.toggle-status');
     Route::delete('/vendors/{id}', [SubconAdminController::class, 'deleteVendor'])->name('vendors.destroy');
     Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
+    Route::get('/director-approvals', [SubconAdminController::class, 'directorApprovals'])->name('director-approvals');
     Route::get('/approval-logs', [SubconAdminController::class, 'approvalLogs'])->name('approval-logs');
     Route::get('/orders', [SubconAdminController::class, 'orders'])->name('orders');
     Route::get('/orders-waiting-distribution', [SubconAdminController::class, 'waitingDistribution'])->name('orders-waiting-distribution');
@@ -156,7 +160,27 @@ Route::get('/qc/reject/{token}', [App\Http\Controllers\QcApprovalController::cla
 Route::get('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprovalForm'])->name('qc.ho-approve');
 Route::post('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprove'])->name('qc.ho-approve.submit');
 // HO rejection — writes `ho_approval_signature` with a "Rejected: …" prefix (console contract).
-Route::get('/qc/ho-decline/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoDecline'])->name('qc.ho-decline');
+// GET only renders a confirmation page; the actual write is a POST. This is deliberate:
+// the HO email goes to corporate mailboxes whose link scanners (Microsoft Safe Links /
+// antivirus) prefetch every URL via GET — a mutating GET was auto-rejecting every order
+// within a second of send. A human must click through the confirm page to POST.
+Route::get('/qc/ho-decline/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoDeclineForm'])->name('qc.ho-decline');
+Route::post('/qc/ho-decline/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoDecline'])->name('qc.ho-decline.submit');
+
+// Director authorization — third stage, emailed after MD Production approves.
+// Same `approval_token`. Read-only review form (GET) + sign-off (POST); approval
+// queues the Invoice/Deduction RPA jobs and completes the project. Rejection goes
+// back to MD Production (not to QC) — same POST-behind-confirm-page scanner guard.
+Route::get('/qc/director-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'directorApprovalForm'])->name('qc.director-approve');
+Route::post('/qc/director-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'directorApprove'])->name('qc.director-approve.submit');
+Route::get('/qc/director-decline/{token}', [App\Http\Controllers\QcApprovalController::class, 'directorDeclineForm'])->name('qc.director-decline');
+Route::post('/qc/director-decline/{token}', [App\Http\Controllers\QcApprovalController::class, 'directorDecline'])->name('qc.director-decline.submit');
+
+// Current signed inspection PDF (verified_doc) for a session — same token gate.
+Route::get('/qc/document/{token}', [App\Http\Controllers\QcApprovalController::class, 'document'])->name('qc.document');
+
+// Server-side PDF generation for active or draft session report.
+Route::get('/qc/print/{projectId}/{sessionId}', [App\Http\Controllers\QcApprovalController::class, 'printDraft'])->name('qc.print-draft');
 
 // Subcon Vendor Routes
 Route::middleware(['auth'])->prefix('subcon/vendor')->name('subcon.vendor.')->group(function () {

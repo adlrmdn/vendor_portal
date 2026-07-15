@@ -93,6 +93,15 @@ class SubconAdminController extends Controller
         ]);
     }
 
+    public function logs(Request $request)
+    {
+        $logs = \App\Models\SubconJobLog::with('order')
+            ->orderBy('created_at', 'desc')
+            ->paginate(30);
+
+        return view('subcon.admin.logs.index', compact('logs'));
+    }
+
     public function vendors()
     {
         $vendors = Vendor::where('type', 'subcon')
@@ -303,6 +312,117 @@ class SubconAdminController extends Controller
         $finalApprovals = $this->pendingFinalApprovals();
 
         return view('subcon.admin.approvals', compact('orders', 'finalApprovals'));
+    }
+
+    /**
+     * Whether this portal account is a configured Director — i.e. their email
+     * appears in the `qc_director_approver_email` workflow setting. Drives the
+     * separated "Director" approvals tab so the Director's stage never mixes
+     * into the regular admins' Approvals flow.
+     */
+    public static function isDirectorUser($user): bool
+    {
+        $email = strtolower(trim((string) ($user->email ?? '')));
+        if ($email === '') {
+            return false;
+        }
+
+        try {
+            return collect(preg_split('/[,;]+/', (string) \App\Models\Setting::getValue('qc_director_approver_email')))
+                ->map(fn ($e) => strtolower(trim($e)))
+                ->filter()
+                ->contains($email);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Separated Director tab: QMS sessions MD Production has signed that are
+     * awaiting the Director's authorization. Read-only listing — the action
+     * buttons open the existing token-based Director workflow forms, so the
+     * signature/routing contract is untouched.
+     */
+    public function directorApprovals()
+    {
+        abort_unless(self::isDirectorUser(Auth::user()), 403);
+
+        $pending = $this->pendingDirectorApprovals();
+
+        $recentDecisions = \App\Models\SubconApprovalLog::query()
+            ->where('gate', 'director')
+            ->orderByDesc('created_at')
+            ->limit(15)
+            ->get();
+
+        return view('subcon.admin.director-approvals', compact('pending', 'recentDecisions'));
+    }
+
+    /**
+     * Sessions pending Director authorization, mapped to local orders the same
+     * way as pendingFinalApprovals(). Best-effort — never 500s the tab.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function pendingDirectorApprovals(): array
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
+                || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'director_approval_signature')) {
+                return [];
+            }
+
+            $sessions = DB::connection('qms')->table('packaging_project_sessions')
+                ->whereNotNull('approval_token')
+                ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                ->where(function ($q) {
+                    $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
+                })
+                // Exclude projects completed under the old two-stage flow —
+                // authorizing those would re-queue real invoice RPA jobs.
+                ->whereNotIn('project_id', function ($q) {
+                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                })
+                ->get();
+
+            if ($sessions->isEmpty()) {
+                return [];
+            }
+
+            $pgByProject = [];
+            $projectIds = $sessions->pluck('project_id')->filter()->unique()->values()->all();
+            if (! empty($projectIds) && Schema::connection('qms')->hasTable('packaging_projects')) {
+                $pgByProject = DB::connection('qms')->table('packaging_projects')
+                    ->whereIn('project_id', $projectIds)
+                    ->pluck('production_group', 'project_id')->all();
+            }
+
+            $pgs = array_values(array_filter(array_unique(array_values($pgByProject))));
+            $ordersByPg = empty($pgs)
+                ? collect()
+                : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
+
+            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg) {
+                $pg = $pgByProject[$s->project_id] ?? null;
+                $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
+
+                return [
+                    'token' => $s->approval_token,
+                    'order_id' => $order->id ?? null,
+                    'order_number' => $order->order_number ?? ($s->project_id ?? '—'),
+                    'style' => $order->title ?? null,
+                    'vendor' => $order?->vendor?->name ?? '—',
+                    'production_group' => $pg,
+                    'version' => $s->version ?? null,
+                    'result' => $s->result ?? null,
+                    'ho_signature' => $s->ho_approval_signature ?? null,
+                ];
+            })->all();
+        } catch (\Throwable $e) {
+            Log::warning('Pending director approvals unavailable', ['error' => $e->getMessage()]);
+
+            return [];
+        }
     }
 
     /**
@@ -677,8 +797,9 @@ class SubconAdminController extends Controller
         $gramasiApproverEmail = \App\Models\Setting::getValue('subcon_gramasi_approver_email', '');
         $labelGeneratorEmail = \App\Models\Setting::getValue('subcon_label_generator_email', '');
         $finalApproverEmail = \App\Models\Setting::getValue('qc_ho_approver_email', '');
+        $directorApproverEmail = \App\Models\Setting::getValue('qc_director_approver_email', '');
 
-        return view('subcon.admin.workflow', compact('cuttingApproverEmail', 'gramasiApproverEmail', 'labelGeneratorEmail', 'finalApproverEmail'));
+        return view('subcon.admin.workflow', compact('cuttingApproverEmail', 'gramasiApproverEmail', 'labelGeneratorEmail', 'finalApproverEmail', 'directorApproverEmail'));
     }
 
     /**
@@ -706,6 +827,9 @@ class SubconAdminController extends Controller
             // Second-stage (Head Office) consumption approval — optional; when
             // blank the HO email falls back to the cutting approver list.
             'qc_ho_approver_email' => ['nullable', $multiEmail],
+            // Third-stage (Director) authorization — optional; when blank the
+            // director email falls back to the Final (HO) list.
+            'qc_director_approver_email' => ['nullable', $multiEmail],
         ]);
 
         \App\Models\Setting::updateOrCreate(
@@ -745,6 +869,16 @@ class SubconAdminController extends Controller
                 'group' => 'subcon',
                 'type' => 'string',
                 'description' => 'Final (Head Office) approver email address(es) for the second-stage consumption approval (comma-separated for multiple); falls back to the cutting approver list when blank',
+            ]
+        );
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            [
+                'value' => $request->input('qc_director_approver_email', ''),
+                'group' => 'subcon',
+                'type' => 'string',
+                'description' => 'Director email address(es) for the third-stage authorization after MD Production approves (comma-separated for multiple); falls back to the Final approver list when blank',
             ]
         );
 

@@ -15,7 +15,7 @@
                     <div class="col-md-3">
                         <label for="search" class="form-label">Search</label>
                         <div class="input-group">
-                            <input type="text" class="form-control" name="search" placeholder="PO or PC Number"
+                            <input type="text" class="form-control" name="search" placeholder="PO, PC, PLM or style name"
                                 value="{{ request('search') }}">
                             <button class="btn btn-outline-secondary" type="submit"><i class="fas fa-search"></i></button>
                         </div>
@@ -52,7 +52,7 @@
                             <button type="submit" class="btn btn-primary">
                                 <i class="fas fa-filter me-2"></i>Filter
                             </button>
-                            <a href="{{ route('admin.purchase-orders') }}" class="btn btn-secondary py-1" style="font-size: 0.8rem;">
+                            <a href="{{ route('admin.purchase-orders', ['reset' => 1]) }}" class="btn btn-secondary py-1" style="font-size: 0.8rem;">
                                 <i class="fas fa-redo me-1"></i>Reset
                             </a>
                         </div>

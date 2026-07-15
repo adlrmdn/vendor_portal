@@ -130,6 +130,14 @@ class GenerateSubconLabels implements ShouldQueue, ShouldBeUnique
 
         Log::info("Packing labels generated for {$order->order_number}; printing unlocked.");
 
+        \App\Models\SubconJobLog::create([
+            'order_id' => $order->id,
+            'order_number' => $order->order_number,
+            'job_type' => 'label_generation',
+            'status' => 'success',
+            'message' => 'Successfully generated packing instruction and unlocked printing.',
+        ]);
+
         // The DTT bot has just created the packing instruction (TOC_PI). Recompute
         // Coli/Blister on its lines per the agreed packing ruling. Best-effort —
         // printing is already unlocked, so a D365 hiccup here must not fail the job.
@@ -212,6 +220,14 @@ class GenerateSubconLabels implements ShouldQueue, ShouldBeUnique
         $order = SubconOrder::find($this->orderId);
         if ($order) {
             $order->markLabelGenFailed($e->getMessage());
+
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => 'label_generation',
+                'status' => 'failed',
+                'message' => $e->getMessage(),
+            ]);
         }
     }
 }

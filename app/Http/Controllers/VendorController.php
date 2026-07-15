@@ -48,12 +48,16 @@ class VendorController extends Controller
         $recentOrders = PurchaseOrder::where('vendor_id', $vendorId)
             ->withCount([
                 'items', // Total batches
+                // "Items" = real product lines. Exclude partial-shipment shadows
+                // (splitToPartialShipment suffixes the batch with -P2/-P3), so two
+                // styles sharing one D365 item_number count as two items, while an
+                // item split across shipments still counts as one.
                 'items as unique_items_count' => function ($query) {
-                    $query->select(DB::raw('count(distinct(item_number))'));
+                    $query->where('batch', 'not like', '%-P%');
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                        ->select(DB::raw('count(distinct(item_number))'));
+                        ->where('batch', 'not like', '%-P%');
                 },
             ])
             ->with('items:id,po_id,status') // Eager load for button logic
@@ -73,21 +77,38 @@ class VendorController extends Controller
         $query = PurchaseOrder::where('vendor_id', $vendorId)
             ->withCount([
                 'items', // Total batches
+                // "Items" = real product lines. Exclude partial-shipment shadows
+                // (splitToPartialShipment suffixes the batch with -P2/-P3), so two
+                // styles sharing one D365 item_number count as two items, while an
+                // item split across shipments still counts as one.
                 'items as unique_items_count' => function ($query) {
-                    $query->select(DB::raw('count(distinct(item_number))'));
+                    $query->where('batch', 'not like', '%-P%');
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                        ->select(DB::raw('count(distinct(item_number))'));
+                        ->where('batch', 'not like', '%-P%');
                 },
             ])
             ->with('items:id,po_id,status'); // Eager load for button logic
 
         if ($search) {
-            $query->where(function ($q) use ($search) {
+            // Smart style-name search: split the query into words and require an
+            // item whose style name (po_items.batch) contains every word, any order.
+            $styleTerms = preg_split('/\s+/', trim($search), -1, PREG_SPLIT_NO_EMPTY);
+
+            $query->where(function ($q) use ($search, $styleTerms) {
                 $q->where('po_number', 'like', '%'.$search.'%')
+                    // PC (Preliminary Contract) reference, case-insensitive
+                    ->orWhereRaw('LOWER(reference) LIKE ?', ['%'.mb_strtolower($search).'%'])
                     ->orWhereHas('items', function ($iq) use ($search) {
                         $iq->where('plm_number', 'like', '%'.$search.'%');
+                    })
+                    ->orWhereHas('items', function ($iq) use ($styleTerms) {
+                        // Style name lives in po_items.batch (e.g. "MOC Eagle Blue - FALL-26").
+                        // Case-insensitive, every word must match; portable across pgsql/sqlite.
+                        foreach ($styleTerms as $term) {
+                            $iq->whereRaw('LOWER(batch) LIKE ?', ['%'.mb_strtolower($term).'%']);
+                        }
                     });
             });
         }
@@ -151,28 +172,49 @@ class VendorController extends Controller
             abort(403);
         }
 
+        // All rolls carry the item's original order metric as their unit. Every
+        // metric column can be filled, but only the order metric is mandatory.
+        // Non-metric order units (PCS/UNIT) keep their qty in the weight column.
+        $orderUnit = strtoupper($item->unit);
+        $primaryField = match ($orderUnit) {
+            'YD' => 'length_yd',
+            'M' => 'length_m',
+            default => 'weight',
+        };
+
         // Manual validation checks
         $validator = \Validator::make($request->all(), [
             'rolls' => 'required|array|min:1',
-            'roll_unit' => 'required|in:YD,M,KG',
         ]);
 
-        $validator->after(function ($validator) use ($request) {
-            $rolls = $request->input('rolls', []);
-            foreach ($rolls as $key => $roll) {
+        $validator->after(function ($validator) use ($request, $orderUnit, $primaryField) {
+            $rowNo = 0;
+            foreach ($request->input('rolls', []) as $key => $roll) {
+                $rowNo++;
                 // Skip validation if the roll is marked for deletion
                 if (isset($roll['delete']) && $roll['delete'] == '1') {
                     continue;
                 }
 
-                // Validate quantity for non-deleted rolls
-                if (! isset($roll['quantity']) || ! is_numeric($roll['quantity']) || $roll['quantity'] < 0.01) {
-                    $validator->errors()->add("rolls.$key.quantity", 'Quantity for roll '.($key + 1).' must be a valid number greater than 0.');
+                // The order-metric quantity is the only mandatory figure
+                $primary = $roll[$primaryField] ?? null;
+                if ((! is_numeric($primary) || $primary < 0.01) && in_array($orderUnit, ['YD', 'M'])) {
+                    // YD and M are interchangeable — the other length satisfies the
+                    // requirement; the missing one is derived at save time.
+                    $sibling = $roll[$primaryField === 'length_yd' ? 'length_m' : 'length_yd'] ?? null;
+                    if (is_numeric($sibling) && $sibling >= 0.01) {
+                        $primary = $sibling;
+                    }
+                }
+                if (! is_numeric($primary) || $primary < 0.01) {
+                    $validator->errors()->add("rolls.$key.$primaryField", "Roll $rowNo: the $orderUnit quantity must be a valid number greater than 0.");
                 }
 
-                // Validate unit for non-deleted rolls
-                if (! isset($roll['unit']) || ! in_array($roll['unit'], ['YD', 'M', 'KG'])) {
-                    $validator->errors()->add("rolls.$key.unit", 'Invalid unit for roll '.($key + 1));
+                // Optional metrics must still be sane numbers when provided
+                foreach (['length_yd' => 'YD', 'length_m' => 'M', 'weight' => 'KG'] as $field => $label) {
+                    if ($field !== $primaryField && isset($roll[$field]) && $roll[$field] !== '' && (! is_numeric($roll[$field]) || $roll[$field] < 0)) {
+                        $validator->errors()->add("rolls.$key.$field", "Roll $rowNo: the $label value must be a valid non-negative number.");
+                    }
                 }
             }
         });
@@ -228,36 +270,41 @@ class VendorController extends Controller
                 }
             }
 
+            // Shared metric mapping: every metric column is stored as entered; the
+            // missing one of YD/M is derived from the other (they are interchangeable).
+            $metricData = function (array $data) use ($orderUnit) {
+                $toFloat = fn ($v) => (isset($v) && $v !== '') ? (float) $v : null;
+
+                $yd = $toFloat($data['length_yd'] ?? null);
+                $m = $toFloat($data['length_m'] ?? null);
+                $kg = $toFloat($data['weight'] ?? null);
+
+                if ($yd !== null && $m === null) {
+                    $m = round($yd * 0.9144, 2);
+                } elseif ($m !== null && $yd === null) {
+                    $yd = round($m / 0.9144, 2);
+                }
+
+                return [
+                    'unit' => $orderUnit,
+                    'length_yd' => $yd,
+                    'length_m' => $m,
+                    'weight' => $kg,
+                    'internal_id' => ($data['internal_id'] ?? '') !== '' ? $data['internal_id'] : null,
+                    'vendor_roll_no' => ($data['vendor_roll_no'] ?? '') !== '' ? $data['vendor_roll_no'] : null,
+                    'bale_no' => ($data['bale_no'] ?? '') !== '' ? $data['bale_no'] : null,
+                    'color' => ($data['color'] ?? '') !== '' ? $data['color'] : null,
+                ];
+            };
+
             // A. Process Existing Persisted Rolls (Re-sequence them)
             foreach ($existingRolls as $existingRoll) {
                 if (isset($inputMap[$existingRoll->id])) {
                     $data = $inputMap[$existingRoll->id];
 
-                    // Determine columns based on unit
-                    // User Request: "do it without setting others to 0"
-
-                    $updateData = [
+                    $updateData = $metricData($data) + [
                         'sequence' => $nextSequence,
-                        // 'roll_number' will be set below
-                        'unit' => $data['unit'],
-                        'internal_id' => $data['internal_id'] ?? null,
                     ];
-
-                    // Logic: Map input quantity to the correct column
-                    if ($data['unit'] == 'YD') {
-                        $updateData['length_yd'] = $data['quantity'];
-                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
-                        $updateData['weight'] = 0;
-                    } elseif ($data['unit'] == 'M') {
-                        $updateData['length_m'] = $data['quantity'];
-                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
-                        $updateData['weight'] = 0;
-                    } else {
-                        // KG or PCS
-                        $updateData['weight'] = $data['quantity'];
-                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
-                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
-                    }
 
                     // Generate Roll Number: PO-ITEM-SEQ
                     $rollNumber = sprintf(
@@ -284,34 +331,13 @@ class VendorController extends Controller
                     continue; // Skip deleted or already processed existing rolls
                 }
 
-                // Prepare create data
-                $createData = [
+                $createData = $metricData($data) + [
                     'item_id' => $item->id,
                     'sequence' => $nextSequence,
-                    'unit' => $data['unit'],
-                    'internal_id' => $data['internal_id'] ?? null,
                     'grade' => 'A',
                     'defects' => [],
                     'notes' => '',
-                    // Initialize specific measurement columns to 0 (optional)
-                    // We REMOVE 'length' generic column as it causes errors
-                    'length_yd' => 0,
-                    'length_m' => 0,
-                    'weight' => 0,
                 ];
-
-                // Map input quantity to the correct column
-                if ($data['unit'] == 'YD') {
-                    $createData['length_yd'] = $data['quantity'];
-                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
-                } elseif ($data['unit'] == 'M') {
-                    $createData['length_m'] = $data['quantity'];
-                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
-                } else {
-                    $createData['weight'] = $data['quantity'];
-                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
-                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
-                }
 
                 // Generate Roll Number: PO-ITEM-SEQ
                 $rollNumber = sprintf(
@@ -542,42 +568,16 @@ class VendorController extends Controller
 
         $file = $request->file('file');
         $extension = $file->getClientOriginalExtension();
-        $rollsData = [];
 
         try {
             if ($extension === 'pdf') {
                 $parser = new PdfParser;
-                $pdf = $parser->parseFile($file->getPathname());
-                $text = $pdf->getText();
-
-                // Simple AI-like heuristic: look for patterns that look like [ID] [Quantity]
-                // For now, look for lines with a number at the end
-                $lines = explode("\n", $text);
-                foreach ($lines as $line) {
-                    $line = trim($line);
-                    if (preg_match('/([A-Z0-9_-]+)?\s*(\d+(?:\.\d+)?)$/', $line, $matches)) {
-                        $rollsData[] = [
-                            'internal_id' => $matches[1] ?? '',
-                            'quantity' => (float) $matches[2],
-                        ];
-                    }
-                }
+                $text = $parser->parseFile($file->getPathname())->getText();
+                $rollsData = \App\Services\RollsImportService::parsePdfText($text);
             } else {
-                // Excel/CSV
-                $data = Excel::toArray([], $file);
-                if (! empty($data) && ! empty($data[0])) {
-                    foreach ($data[0] as $row) {
-                        // Skip header or empty rows
-                        if (! isset($row[1]) || ! is_numeric($row[1])) {
-                            continue;
-                        }
-
-                        $rollsData[] = [
-                            'internal_id' => $row[0] ?? '',
-                            'quantity' => (float) $row[1],
-                        ];
-                    }
-                }
+                // Excel/CSV — template header mapped by name, legacy [lot, qty] otherwise
+                $rows = Excel::toArray([], $file)[0] ?? [];
+                $rollsData = \App\Services\RollsImportService::parseRows($rows);
             }
 
             if (empty($rollsData)) {
@@ -593,6 +593,31 @@ class VendorController extends Controller
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => 'Error parsing file: '.$e->getMessage()]);
         }
+    }
+
+    // Download the uniform Excel template for the rolls import.
+    public function downloadRollsTemplate($itemId)
+    {
+        $item = PoItem::with('purchaseOrder')->findOrFail($itemId);
+
+        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+            abort(403);
+        }
+
+        $rows = [\App\Services\RollsImportService::templateHeader($item)];
+        $export = new class($rows) implements \Maatwebsite\Excel\Concerns\FromArray
+        {
+            public function __construct(private array $rows) {}
+
+            public function array(): array
+            {
+                return $this->rows;
+            }
+        };
+
+        $name = 'rolls-template-'.preg_replace('/[^A-Za-z0-9_-]+/', '-', $item->purchaseOrder->po_number.'-'.$item->item_number).'.xlsx';
+
+        return Excel::download($export, $name);
     }
 
     // NEW: Revert item from completed back to processing
@@ -776,6 +801,7 @@ class VendorController extends Controller
                 return $view;
             }
         }
+
         return 'vendor.pdf.packing-slip';
     }
 

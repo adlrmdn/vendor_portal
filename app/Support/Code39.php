@@ -37,13 +37,13 @@ class Code39
      *
      * @param  string  $value  Data to encode (auto-uppercased; unsupported chars dropped).
      * @param  int  $displayH  Rendered bar height in px.
-     * @param  int  $maxDisplayW  Cap on rendered width in px (keeps long codes inside the label).
+     * @param  float  $scale  Scaling factor to resize the barcode width.
      */
-    public static function html(string $value, int $displayH = 42, int $maxDisplayW = 250): string
+    public static function html(string $value, int $displayH = 42, int $maxDisplayW = 250, float $scale = 1.0): string
     {
         [$png, $modules] = self::png($value);
         $dataUri = 'data:image/png;base64,'.base64_encode($png);
-        $displayW = min($modules, $maxDisplayW);
+        $displayW = min((int) round($modules * $scale), $maxDisplayW);
 
         return '<img src="'.$dataUri.'" width="'.$displayW.'" height="'.$displayH.'" alt="'.htmlspecialchars($value).'">';
     }

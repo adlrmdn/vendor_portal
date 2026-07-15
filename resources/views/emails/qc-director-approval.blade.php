@@ -6,29 +6,21 @@
         body { font-family: Arial, Helvetica, sans-serif; color: #212529; line-height: 1.5; }
         .wrap { max-width: 600px; margin: 0 auto; padding: 24px; }
         .card { border: 1px solid #e9ecef; border-radius: 10px; padding: 24px; }
-        .tag { display: inline-block; background: #fff4e6; color: #e8590c; font-size: 12px;
+        .tag { display: inline-block; background: #e7f0ff; color: #1c4ed8; font-size: 12px;
                font-weight: 700; padding: 4px 10px; border-radius: 12px; text-transform: uppercase; letter-spacing: .5px; }
         h2 { margin: 14px 0 4px; font-size: 20px; }
         table.meta { width: 100%; border-collapse: collapse; margin: 16px 0; }
         table.meta td { padding: 6px 0; font-size: 14px; vertical-align: top; }
         table.meta td.k { color: #868e96; width: 150px; }
-        .btn-ok { display: inline-block; text-decoration: none; font-weight: 700; font-size: 14px;
-                  padding: 12px 22px; border-radius: 8px; color: #ffffff !important; background: #2b8a3e; }
         .muted { color: #868e96; font-size: 12px; margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="wrap">
         <div class="card">
-            <span class="tag">Final Approval Needed</span>
-            <h2>Final Approval</h2>
-            @if(!empty($note ?? null))
-                <div style="margin:10px 0; padding:12px 14px; background:#fff5f5; border:1px solid #ffc9c9; border-radius:8px;">
-                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:#c92a2a; margin-bottom:4px;">Returned by the Director</div>
-                    <div style="font-size:13px; color:#495057; white-space:pre-wrap;">{{ $note }}</div>
-                </div>
-            @endif
-            <p style="margin:0;color:#495057;">The vendor has confirmed this packaging inspection. It now needs final sign-off. Open the form to enter <strong>Fabric Sent</strong> and <strong>Consumption Plan</strong>, then approve.</p>
+            <span class="tag">Director Authorization Needed</span>
+            <h2>Director Authorization</h2>
+            <p style="margin:0;color:#495057;">This packaging inspection has been confirmed by the factory representative and approved by MD Production. It now needs your <strong>final authorization</strong>. The current report is attached; authorizing completes the project and queues the Invoice/Deduction RPA jobs.</p>
 
             <table class="meta">
                 @if($orderNumber)
@@ -49,11 +41,11 @@
             @endif
 
             <p>
-                <a href="{{ $url }}" class="btn btn-ok" style="display:inline-block;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:8px;color:#ffffff !important;background:#2b8a3e;">Review &amp; Approve</a>
+                <a href="{{ $url }}" style="display:inline-block;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:8px;color:#ffffff !important;background:#1a1a2e;">Review &amp; Authorize</a>
                 &nbsp;&nbsp;
-                <a href="{{ $declineUrl }}" class="btn btn-no" style="display:inline-block;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:8px;color:#ffffff !important;background:#c92a2a;">Reject</a>
+                <a href="{{ $declineUrl }}" style="display:inline-block;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:8px;color:#ffffff !important;background:#c92a2a;">Reject</a>
             </p>
-            <p class="muted" style="font-size:13px;">Approving opens a quick page to enter <strong>Fabric Sent</strong> &amp; <strong>Consumption Plan</strong>, review the calculated figures, then sign off — no login required. Or paste this link into your browser:<br>
+            <p class="muted" style="font-size:13px;">Authorizing opens a read-only summary page for sign-off — no login required. Rejecting returns the inspection to MD Production (not to the factory). Or paste this link into your browser:<br>
                 <a href="{{ $url }}">{{ $url }}</a>
             </p>
 

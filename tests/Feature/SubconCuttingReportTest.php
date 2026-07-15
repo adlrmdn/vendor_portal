@@ -654,25 +654,26 @@ class SubconCuttingReportTest extends TestCase
 
         // 5. Mock D365 OData fetches
         $this->mock(\App\Services\D365JobTransactionService::class, function ($mock) {
-            $mock->shouldReceive('fetchDTLines')
-                ->with('DST-TEST-999')
+            $mock->shouldReceive('fetchPackingInstructionGroups')
                 ->andReturn([
                     [
-                        'dataAreaId' => 'mpr',
-                        'No' => '1',
-                        'DTID' => 'DST-TEST-999',
-                        'StoreID' => '11242',
-                        'StoreName' => 'SHOWROOM MN SUPERMAL KARAWACI',
-                        'StoreProvince' => 'BANTEN',
-                        'Address' => '',
-                        'Qty' => 20,
-                        'Size' => 'M',
-                        'PackingCode' => 'PACK-001',
-                        'DODate' => '2026-04-30T12:00:00Z',
-                        'StatusDTLines' => 'Normal',
-                        'RetailVariantId' => '2508000000076',
-                        'ItemId' => 'ITEM-001',
-                    ],
+                        'packing_code' => 'PACK-001',
+                        'store_id' => '11242',
+                        'store_name' => 'SHOWROOM MN SUPERMAL KARAWACI',
+                        'status' => 'Normal',
+                        'page_count' => 1,
+                        'total_qty' => 20,
+                        'total_weight' => 3.0,
+                        'items' => [
+                            [
+                                'size' => 'M',
+                                'qty' => 20,
+                                'variant_id' => '2508000000076',
+                                'item_code' => 'ITEM-001',
+                                'gramasi_real' => 0.150,
+                            ]
+                        ]
+                    ]
                 ]);
 
             $mock->shouldReceive('fetchWarehouses')
@@ -734,25 +735,26 @@ class SubconCuttingReportTest extends TestCase
 
         // 3. Mock D365 OData fetches
         $this->mock(\App\Services\D365JobTransactionService::class, function ($mock) {
-            $mock->shouldReceive('fetchDTLines')
-                ->with('DST-TEST-888')
+            $mock->shouldReceive('fetchPackingInstructionGroups')
                 ->andReturn([
                     [
-                        'dataAreaId' => 'mpr',
-                        'No' => '1',
-                        'DTID' => 'DST-TEST-888',
-                        'StoreID' => '11242',
-                        'StoreName' => 'SHOWROOM MN SUPERMAL KARAWACI',
-                        'StoreProvince' => 'BANTEN',
-                        'Address' => '',
-                        'Qty' => 5,
-                        'Size' => 'S',
-                        'PackingCode' => '',
-                        'DODate' => '1900-01-01T12:00:00Z',
-                        'StatusDTLines' => 'Normal',
-                        'RetailVariantId' => '',
-                        'ItemId' => 'ITEM-002',
-                    ],
+                        'packing_code' => 'PACK-002',
+                        'store_id' => '11242',
+                        'store_name' => 'SHOWROOM MN SUPERMAL KARAWACI',
+                        'status' => 'Normal',
+                        'page_count' => 1,
+                        'total_qty' => 5,
+                        'total_weight' => 0.75,
+                        'items' => [
+                            [
+                                'size' => 'S',
+                                'qty' => 5,
+                                'variant_id' => 'ITEM-002-S',
+                                'item_code' => 'ITEM-002',
+                                'gramasi_real' => 0.150,
+                            ]
+                        ]
+                    ]
                 ]);
 
             $mock->shouldReceive('fetchWarehouses')

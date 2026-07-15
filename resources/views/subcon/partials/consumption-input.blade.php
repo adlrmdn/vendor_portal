@@ -106,6 +106,11 @@
                                                    class="form-control form-control-sm text-end cons-waste{{ $rc === 'retur_kain' ? ' cons-retur' : '' }}" style="width:84px;"
                                                    name="fabrics[{{ $i }}][{{ $rc }}]"
                                                    value="{{ old('fabrics.'.$i.'.'.$rc, $fl[$rc] ?? 0) }}" placeholder="0">
+                                            @if($rc === 'retur_kain' && ($fl['retur_kain_source'] ?? null) === 'qc_console')
+                                                <div class="text-info" style="font-size:.65rem;white-space:nowrap;" title="Measured by QC on the console; overrides the vendor-entered value.">
+                                                    <i class="fas fa-clipboard-check"></i> QC input
+                                                </div>
+                                            @endif
                                         @else
                                             <span class="text-muted">{{ $fmt2($fl[$rc] ?? 0) }}</span>
                                         @endif

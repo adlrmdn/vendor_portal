@@ -46,6 +46,13 @@ class PoItem extends Model
         'total_price' => 'decimal:2',
     ];
 
+    /**
+     * Per-roll delivered quantity in the roll's own unit. Rolls can now carry
+     * every metric at once (YD + M + KG), so summing all columns would double
+     * count — only the column matching the roll's unit counts.
+     */
+    public const ROLL_QUANTITY_SQL = "CASE WHEN unit = 'YD' THEN COALESCE(length_yd, 0) WHEN unit = 'M' THEN COALESCE(length_m, 0) ELSE COALESCE(weight, 0) END";
+
     public function purchaseOrder()
     {
         return $this->belongsTo(PurchaseOrder::class, 'po_id');
@@ -95,7 +102,7 @@ class PoItem extends Model
                 ->where('status', 'completed')
                 ->where('id', '!=', $this->id)
                 ->pluck('id'))
-            ->sum(\DB::raw('COALESCE(length_yd, 0) + COALESCE(length_m, 0) + COALESCE(weight, 0)'));
+            ->sum(\DB::raw(self::ROLL_QUANTITY_SQL));
 
         return max(0, $minGlobal - $otherDelivered);
     }
@@ -112,14 +119,14 @@ class PoItem extends Model
                 ->where('status', 'completed')
                 ->where('id', '!=', $this->id)
                 ->pluck('id'))
-            ->sum(\DB::raw('COALESCE(length_yd, 0) + COALESCE(length_m, 0) + COALESCE(weight, 0)'));
+            ->sum(\DB::raw(self::ROLL_QUANTITY_SQL));
 
         return max(0, $maxGlobal - $otherDelivered);
     }
 
     public function totalDeliveredQuantity()
     {
-        return (float) $this->rolls()->sum(\DB::raw('COALESCE(length_yd, 0) + COALESCE(length_m, 0) + COALESCE(weight, 0)'));
+        return (float) $this->rolls()->sum(\DB::raw(self::ROLL_QUANTITY_SQL));
     }
 
     public function isQuantityWithinTolerance()
@@ -146,7 +153,7 @@ class PoItem extends Model
 
         return (float) \DB::table('rolls')
             ->whereIn('item_id', $ids)
-            ->sum(\DB::raw('COALESCE(length_yd, 0) + COALESCE(length_m, 0) + COALESCE(weight, 0)'));
+            ->sum(\DB::raw(self::ROLL_QUANTITY_SQL));
     }
 
     public function getEffectiveUnderdelivery()

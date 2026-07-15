@@ -19,6 +19,9 @@ class Roll extends Model
         'item_id',
         'roll_number',
         'internal_id',
+        'vendor_roll_no',
+        'bale_no',
+        'color',
         'sequence',
         'length',
         'length_yd',
@@ -43,6 +46,14 @@ class Roll extends Model
         'is_printed' => 'boolean',
         'printed_at' => 'datetime',
     ];
+
+    protected static function booted()
+    {
+        static::creating(function ($roll) {
+            // pgsql has a DB-level uuid default; sqlite (dev/tests) does not.
+            $roll->id = $roll->id ?: (string) \Illuminate\Support\Str::uuid();
+        });
+    }
 
     public function item()
     {

@@ -44,62 +44,105 @@ class SubconProductionService
                 ->pluck('PLMId')
                 ->all();
 
-            if (empty($plmIds)) {
-                return [];
+            $hasGroup = false;
+            if (!empty($plmIds)) {
+                // 2. PLM activity rows (article + production group + status).
+                $activities = DB::connection('vsm')->table('plm_activity')
+                    ->whereIn('PLMId', $plmIds)
+                    ->get([
+                        'PLMId', 'ProductionGroup', 'ArticleCode', 'ArticleName',
+                        'Brand', 'Colour', 'GroupName', 'PLMActivityStatus',
+                        'Season', 'World', 'Department', 'Category', 'SubCategory',
+                    ]);
+
+                if ($activities->isNotEmpty()) {
+                    $hasGroup = true;
+                }
             }
 
-            // 2. PLM activity rows (article + production group + status).
-            $activities = DB::connection('vsm')->table('plm_activity')
-                ->whereIn('PLMId', $plmIds)
-                ->get([
-                    'PLMId', 'ProductionGroup', 'ArticleCode', 'ArticleName',
-                    'Brand', 'Colour', 'GroupName', 'PLMActivityStatus',
-                    'Season', 'World', 'Department', 'Category', 'SubCategory',
-                ]);
+            if ($hasGroup) {
+                // 3. PRG size lines for all referenced production groups, in one query.
+                $groupIds = $activities->pluck('ProductionGroup')->filter()->unique()->all();
+                $linesByGroup = empty($groupIds)
+                    ? collect()
+                    : DB::connection('vsm')->table('production_group_lines')
+                        ->whereIn('ProductionGroup', $groupIds)
+                        ->orderBy('ProductionGroup')
+                        ->orderBy('LineNum')
+                        ->get([
+                            'ProductionGroup', 'ProdId', 'ItemId', 'Size', 'Qty',
+                            'ProdStatus', 'InventSiteId', 'InventLocationId', 'SearchName',
+                        ])
+                        ->groupBy('ProductionGroup');
 
-            if ($activities->isEmpty()) {
-                return [];
+                return $activities->map(function ($a) use ($linesByGroup) {
+                    $lines = $linesByGroup->get($a->ProductionGroup, collect());
+
+                    $sortedLines = $lines->sortBy(function ($line) {
+                        return $this->sizeToRank($line->Size ?? '');
+                    })->values();
+
+                    return [
+                        'plm_id' => $a->PLMId,
+                        'production_group' => $a->ProductionGroup,
+                        'article_code' => $a->ArticleCode,
+                        'article_name' => $a->ArticleName,
+                        'brand' => $a->Brand,
+                        'colour' => $a->Colour,
+                        'group_name' => $a->GroupName,
+                        'plm_status' => $a->PLMActivityStatus,
+                        'season' => $a->Season,
+                        'world' => $a->World,
+                        'department' => $a->Department,
+                        'category' => $a->Category,
+                        'subcategory' => $a->SubCategory,
+                        'total_qty' => (float) $sortedLines->sum('Qty'),
+                        'lines' => $sortedLines->all(),
+                    ];
+                })->all();
             }
 
-            // 3. PRG size lines for all referenced production groups, in one query.
-            $groupIds = $activities->pluck('ProductionGroup')->filter()->unique()->all();
-            $linesByGroup = empty($groupIds)
-                ? collect()
-                : DB::connection('vsm')->table('production_group_lines')
-                    ->whereIn('ProductionGroup', $groupIds)
-                    ->orderBy('ProductionGroup')
+            // Fallback: look up the production_group from subcon_orders locally
+            $localOrder = DB::table('subcon_orders')->where('order_number', $poNumber)->first();
+            $fallbackGroup = $localOrder ? $localOrder->production_group : null;
+            if ($fallbackGroup) {
+                $lines = DB::connection('vsm')->table('production_group_lines')
+                    ->where('ProductionGroup', $fallbackGroup)
                     ->orderBy('LineNum')
                     ->get([
                         'ProductionGroup', 'ProdId', 'ItemId', 'Size', 'Qty',
                         'ProdStatus', 'InventSiteId', 'InventLocationId', 'SearchName',
-                    ])
-                    ->groupBy('ProductionGroup');
+                    ]);
 
-            return $activities->map(function ($a) use ($linesByGroup) {
-                $lines = $linesByGroup->get($a->ProductionGroup, collect());
+                if ($lines->isNotEmpty()) {
+                    $firstLine = $lines->first();
+                    $sortedLines = $lines->sortBy(function ($line) {
+                        return $this->sizeToRank($line->Size ?? '');
+                    })->values();
 
-                $sortedLines = $lines->sortBy(function ($line) {
-                    return $this->sizeToRank($line->Size ?? '');
-                })->values();
+                    return [
+                        [
+                            'plm_id' => '',
+                            'production_group' => $fallbackGroup,
+                            'article_code' => $firstLine->ItemId,
+                            'article_name' => $firstLine->SearchName,
+                            'brand' => null,
+                            'colour' => null,
+                            'group_name' => null,
+                            'plm_status' => null,
+                            'season' => null,
+                            'world' => null,
+                            'department' => null,
+                            'category' => null,
+                            'subcategory' => null,
+                            'total_qty' => (float) $sortedLines->sum('Qty'),
+                            'lines' => $sortedLines->all(),
+                        ]
+                    ];
+                }
+            }
 
-                return [
-                    'plm_id' => $a->PLMId,
-                    'production_group' => $a->ProductionGroup,
-                    'article_code' => $a->ArticleCode,
-                    'article_name' => $a->ArticleName,
-                    'brand' => $a->Brand,
-                    'colour' => $a->Colour,
-                    'group_name' => $a->GroupName,
-                    'plm_status' => $a->PLMActivityStatus,
-                    'season' => $a->Season,
-                    'world' => $a->World,
-                    'department' => $a->Department,
-                    'category' => $a->Category,
-                    'subcategory' => $a->SubCategory,
-                    'total_qty' => (float) $sortedLines->sum('Qty'),
-                    'lines' => $sortedLines->all(),
-                ];
-            })->all();
+            return [];
         } catch (\Throwable $e) {
             report($e);
 
@@ -486,20 +529,39 @@ class SubconProductionService
                 ->get(['PurchaseOrderNumber', 'PLMId']);
 
             $plmIds = $lines->pluck('PLMId')->unique()->all();
-            if (empty($plmIds)) {
-                return [];
-            }
-
-            $nameByPlm = DB::connection('vsm')->table('plm_activity')
-                ->whereIn('PLMId', $plmIds)
-                ->whereNotNull('ArticleName')
-                ->where('ArticleName', '!=', '')
-                ->pluck('ArticleName', 'PLMId');
 
             $namesByPo = [];
-            foreach ($lines as $l) {
-                if ($name = $nameByPlm->get($l->PLMId)) {
-                    $namesByPo[$l->PurchaseOrderNumber][] = $name;
+            if (!empty($plmIds)) {
+                $nameByPlm = DB::connection('vsm')->table('plm_activity')
+                    ->whereIn('PLMId', $plmIds)
+                    ->whereNotNull('ArticleName')
+                    ->where('ArticleName', '!=', '')
+                    ->pluck('ArticleName', 'PLMId');
+
+                foreach ($lines as $l) {
+                    if ($name = $nameByPlm->get($l->PLMId)) {
+                        $namesByPo[$l->PurchaseOrderNumber][] = $name;
+                    }
+                }
+            }
+
+            // Fallback: resolve SearchName from local production_group when PLM link is missing
+            $foundPos = array_keys($namesByPo);
+            $missingPos = array_diff($poNumbers, $foundPos);
+            if (!empty($missingPos)) {
+                $localOrders = DB::table('subcon_orders')
+                    ->whereIn('order_number', $missingPos)
+                    ->whereNotNull('production_group')
+                    ->where('production_group', '!=', '')
+                    ->get(['order_number', 'production_group']);
+
+                foreach ($localOrders as $lo) {
+                    $searchName = DB::connection('vsm')->table('production_group_lines')
+                        ->where('ProductionGroup', $lo->production_group)
+                        ->value('SearchName');
+                    if ($searchName) {
+                        $namesByPo[$lo->order_number][] = $searchName;
+                    }
                 }
             }
 

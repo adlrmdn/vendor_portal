@@ -121,27 +121,34 @@ class SendFinalApprovalEmail implements ShouldQueue
         $token = $p['token'] ?? '';
 
         try {
-            Mail::send('emails.qc-ho-approval', [
-                'url' => route('qc.ho-approve', ['token' => $token]),
-                'declineUrl' => route('qc.ho-decline', ['token' => $token]),
-                'sessionId' => $p['sessionId'] ?? null,
-                'projectId' => $p['projectId'] ?? null,
-                'productionGroup' => $p['productionGroup'] ?? null,
-                'orderNumber' => $p['orderNumber'] ?? null,
-                'remarks' => $p['remarks'] ?? null,
-            ], function ($m) use ($p, $pdf) {
-                $m->from('rpa@megaperintis.co.id', 'Mega Perintis RPA')
-                    ->to($p['recipients'] ?? [])
-                    ->subject($p['subject'] ?? 'Approval needed: Final Approval');
+            // One message per recipient: each approver gets links carrying their
+            // own address (`as`), so the approval can be attributed to the person
+            // who clicked — the shared token alone cannot identify them.
+            foreach (($p['recipients'] ?? []) as $recipient) {
+                Mail::send('emails.qc-ho-approval', [
+                    'url' => route('qc.ho-approve', ['token' => $token, 'as' => $recipient]),
+                    'declineUrl' => route('qc.ho-decline', ['token' => $token, 'as' => $recipient]),
+                    'sessionId' => $p['sessionId'] ?? null,
+                    'projectId' => $p['projectId'] ?? null,
+                    'productionGroup' => $p['productionGroup'] ?? null,
+                    'orderNumber' => $p['orderNumber'] ?? null,
+                    'remarks' => $p['remarks'] ?? null,
+                    'note' => $p['note'] ?? null,
+                ], function ($m) use ($p, $pdf, $recipient) {
+                    $m->from('rpa@megaperintis.co.id', 'Mega Perintis RPA')
+                        ->to($recipient)
+                        ->subject($p['subject'] ?? 'Approval needed: Final Approval');
 
-                if ($pdf !== null) {
-                    $name = str_replace(['/', '\\'], '-', (string) ($p['orderNumber'] ?? 'inspection'));
-                    $m->attachData($pdf, 'packaging-inspection-'.$name.'.pdf', ['mime' => 'application/pdf']);
-                }
-            });
+                    if ($pdf !== null) {
+                        $name = str_replace(['/', '\\'], '-', (string) ($p['orderNumber'] ?? 'inspection'));
+                        $m->attachData($pdf, 'packaging-inspection-'.$name.'.pdf', ['mime' => 'application/pdf']);
+                    }
+                });
+            }
 
             Log::info('QC final approval email sent', [
                 'token' => $token,
+                'recipients' => count($p['recipients'] ?? []),
                 'attached' => $pdf !== null,
             ]);
         } catch (\Throwable $e) {

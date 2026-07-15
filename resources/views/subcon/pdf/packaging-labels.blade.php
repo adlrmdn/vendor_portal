@@ -140,7 +140,7 @@
         @php $isLastLabel = ($gi === $groupCount - 1) && ($pageNo === $pageCount); @endphp
         <div class="label" style="{{ !$isLastLabel ? 'page-break-after: always;' : '' }}">
             <div class="barcode-box">
-                {!! \App\Support\Code39::html($group['packing_code'], 65, 265) !!}
+                {!! \App\Support\Code128::html($group['packing_code'], 98, 340, 2.15) !!}
                 <div class="packing-code">{{ $group['packing_code'] }}</div>
             </div>
             

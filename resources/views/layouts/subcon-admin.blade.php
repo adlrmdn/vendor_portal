@@ -37,6 +37,19 @@
                             @endif
                         </a>
                     </li>
+                    @if(\App\Http\Controllers\SubconAdminController::isDirectorUser(auth()->user()))
+                        <li>
+                            @php($pendingDirector = \App\Models\SubconOrder::pendingDirectorApprovalCount())
+                            <a href="{{ route('subcon.admin.director-approvals') }}"
+                                class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.director-approvals') ? 'active' : '' }}"
+                                data-bs-toggle="tooltip" data-bs-placement="right" title="Director Authorizations">
+                                <i class="fas fa-stamp me-2"></i> <span>Director</span>
+                                @if($pendingDirector > 0)
+                                    <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingDirector }}</span>
+                                @endif
+                            </a>
+                        </li>
+                    @endif
                     <li>
                         @php($waitingDistCount = \App\Models\SubconOrder::where('workflow_stage', \App\Models\SubconOrder::STAGE_WAITING_DISTRIBUTION)->count())
                         <a href="{{ route('subcon.admin.orders-waiting-distribution') }}"
@@ -60,6 +73,13 @@
                             class="nav-link {{ request()->routeIs('subcon.admin.vendors*') ? 'active' : '' }}"
                             data-bs-toggle="tooltip" data-bs-placement="right" title="Subcon Vendors">
                             <i class="fas fa-users me-2"></i> <span>Vendors</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('subcon.admin.logs') }}"
+                            class="nav-link {{ request()->routeIs('subcon.admin.logs*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Logs">
+                            <i class="fas fa-cog me-2"></i> <span>Logs</span>
                         </a>
                     </li>
                     @if(auth()->user()->isAdmin())

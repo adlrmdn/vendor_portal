@@ -160,14 +160,28 @@ class SyncD365Orders extends Command
                 $po->order_date = $orderDate;
                 $po->delivery_date = $deliveryDate;
                 $po->notes = $h['ReasonComment'] ?? null;
+                $po->reference = $h['VendorOrderReference'] ?? null; // PC (Preliminary Contract)
                 $po->save();
             }
             $this->info('Inserted '.count($validToInsert).' NEW POs.');
 
-            // Update totals for existing POs just in case lines changed
+            // PC (Preliminary Contract) reference per PO, keyed by PO number.
+            $refMap = [];
+            foreach ($headers as $h) {
+                $refMap[$h['PurchaseOrderNumber']] = $h['VendorOrderReference'] ?? null;
+            }
+
+            // Update totals + PC reference for existing POs (lines/ref may have changed).
             foreach ($existingPos as $poNumber => $poId) {
+                $updates = [];
                 if (isset($poTotals[$poNumber])) {
-                    PurchaseOrder::where('id', $poId)->update(['total_amount' => $poTotals[$poNumber]]);
+                    $updates['total_amount'] = $poTotals[$poNumber];
+                }
+                if (array_key_exists($poNumber, $refMap)) {
+                    $updates['reference'] = $refMap[$poNumber];
+                }
+                if (! empty($updates)) {
+                    PurchaseOrder::where('id', $poId)->update($updates);
                 }
             }
 
@@ -179,13 +193,15 @@ class SyncD365Orders extends Command
                     $reqId = $l['PurchaseRequisitionId'] ?? '';
                     $plmId = $plmMap[$reqId] ?? $reqId;
 
+                    // A PO can repeat the same ItemNumber across lines that differ
+                    // only by batch/colour, so batch is part of the item's identity.
                     PoItem::firstOrCreate([
                         'po_id' => $poId,
                         'item_number' => $l['ItemNumber'],
+                        'batch' => $l['ItemBatchNumber'] ?? null,
                     ], [
                         'id' => (string) Str::uuid(),
                         'description' => $l['LineDescription'],
-                        'batch' => $l['ItemBatchNumber'] ?? null,
                         'plm_number' => $plmId,
                         'quantity' => $l['OrderedPurchaseQuantity'] ?? 0.0,
                         'underdelivery' => $l['AllowedUnderdeliveryPercentage'] ?? 0.0,

@@ -166,6 +166,26 @@ return [
             'sslmode' => 'prefer',
         ],
 
+        // Universal RPA queue database (remote, shared with the QC Console's
+        // Rust backend and the RPA bots). The portal INSERTs rows into
+        // `rpa_queues` at approval milestones (job_trans_raf at MD Production
+        // approval; invoice/deduction at Director approval) — same payload
+        // shapes the console used to write at its "Complete & Sync" step.
+        'rpa' => [
+            'driver' => 'pgsql',
+            'url' => env('RPA_DB_URL'),
+            'host' => env('RPA_DB_HOST'),
+            'port' => env('RPA_DB_PORT', '5432'),
+            'database' => env('RPA_DB_DATABASE', 'rpa'),
+            'username' => env('RPA_DB_USERNAME', env('DB_USERNAME', 'root')),
+            'password' => env('RPA_DB_PASSWORD', env('DB_PASSWORD', '')),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => 'prefer',
+        ],
+
     ],
 
     /*

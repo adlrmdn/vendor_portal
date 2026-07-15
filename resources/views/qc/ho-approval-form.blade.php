@@ -45,6 +45,8 @@
                     <form method="POST" action="{{ route('qc.ho-approve.submit', ['token' => $token]) }}"
                           onsubmit="return confirm('Submit Head Office approval? The entered consumption will be recalculated and saved, and the inspection signed off.');">
                         @csrf
+                        {{-- Recipient marker from the per-approver email link — attributes the signature. --}}
+                        @if(request('as'))<input type="hidden" name="as" value="{{ request('as') }}">@endif
 
                         {{-- Consumption inputs (calculation+approval), same engine as the cutting gate --}}
                         @if($subcon)
@@ -67,7 +69,7 @@
                         </div>
 
                         <div class="d-flex justify-content-end gap-2 mt-4">
-                            <a href="{{ route('qc.ho-decline', ['token' => $token]) }}"
+                            <a href="{{ route('qc.ho-decline', array_filter(['token' => $token, 'as' => request('as')])) }}"
                                class="btn btn-outline-danger px-4 fw-semibold"
                                onclick="return confirm('Reject this inspection at the Head Office stage? This records a rejection and cannot be undone.');">
                                 <i class="fas fa-circle-xmark me-1"></i> Reject

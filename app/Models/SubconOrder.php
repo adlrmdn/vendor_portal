@@ -67,6 +67,36 @@ class SubconOrder extends Model
     }
 
     /**
+     * QMS sessions signed by MD Production but still awaiting the Director's
+     * authorization (stage 3). Same best-effort contract as
+     * pendingFinalApprovalCount() — never throws.
+     */
+    public static function pendingDirectorApprovalCount(): int
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
+                || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'director_approval_signature')) {
+                return 0;
+            }
+
+            return (int) DB::connection('qms')->table('packaging_project_sessions')
+                ->whereNotNull('approval_token')
+                ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                ->where(function ($q) {
+                    $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
+                })
+                // Legacy projects completed under the old two-stage flow need
+                // no Director action — keep them out of the badge.
+                ->whereNotIn('project_id', function ($q) {
+                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                })
+                ->count();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
      * Map a workflow stage to the coarse order status shown across the app.
      * pending  = nothing submitted yet (cutting entry)
      * in_progress = somewhere in the submit/approve/label pipeline
@@ -309,5 +339,10 @@ class SubconOrder extends Model
     public function cuttingReports()
     {
         return $this->hasMany(SubconCuttingReport::class, 'order_id');
+    }
+
+    public function jobLogs()
+    {
+        return $this->hasMany(SubconJobLog::class, 'order_id');
     }
 }

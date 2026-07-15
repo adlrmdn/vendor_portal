@@ -32,18 +32,22 @@ class AdminController extends Controller
             'total_pos' => PurchaseOrder::count(),
             'active_pos' => PurchaseOrder::whereIn('status', ['pending', 'processing'])->count(),
             'completed_pos' => PurchaseOrder::where('status', 'completed')->count(),
-            'total_vendors' => Vendor::where('is_active', true)->count(),
+            'total_vendors' => Vendor::where('type', 'fabric')->where('is_active', true)->count(),
         ];
 
         $recentOrders = PurchaseOrder::with(['vendor'])
             ->withCount([
                 'items', // Total batches
+                // "Items" = real product lines. Exclude partial-shipment shadows
+                // (splitToPartialShipment suffixes the batch with -P2/-P3), so two
+                // styles sharing one D365 item_number count as two items, while an
+                // item split across shipments still counts as one.
                 'items as unique_items_count' => function ($query) {
-                    $query->select(DB::raw('count(distinct(item_number))'));
+                    $query->where('batch', 'not like', '%-P%');
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                        ->select(DB::raw('count(distinct(item_number))'));
+                        ->where('batch', 'not like', '%-P%');
                 },
             ])
             ->with('items:id,po_id,status')
@@ -56,6 +60,20 @@ class AdminController extends Controller
 
     public function purchaseOrders(Request $request)
     {
+        // Sticky filters: remember the last-used search/filter so they survive
+        // navigating into a PO and back (in-app "Back" button, breadcrumb, sidebar).
+        $filterKeys = ['search', 'status', 'vendor_id', 'per_page'];
+        if ($request->has('reset')) {
+            $request->session()->forget('admin_po_filters');
+
+            return redirect()->route('admin.purchase-orders');
+        }
+        if ($request->hasAny($filterKeys)) {
+            $request->session()->put('admin_po_filters', $request->only($filterKeys));
+        } elseif ($request->session()->has('admin_po_filters')) {
+            $request->merge($request->session()->get('admin_po_filters'));
+        }
+
         $search = $request->input('search');
         $status = $request->input('status');
         $vendorId = $request->input('vendor_id');
@@ -63,21 +81,38 @@ class AdminController extends Controller
         $query = PurchaseOrder::with(['vendor'])
             ->withCount([
                 'items', // Total batches
+                // "Items" = real product lines. Exclude partial-shipment shadows
+                // (splitToPartialShipment suffixes the batch with -P2/-P3), so two
+                // styles sharing one D365 item_number count as two items, while an
+                // item split across shipments still counts as one.
                 'items as unique_items_count' => function ($query) {
-                    $query->select(DB::raw('count(distinct(item_number))'));
+                    $query->where('batch', 'not like', '%-P%');
                 },
                 'items as pending_unique_items_count' => function ($query) {
                     $query->where('status', 'pending')
-                        ->select(DB::raw('count(distinct(item_number))'));
+                        ->where('batch', 'not like', '%-P%');
                 },
             ])
             ->with('items:id,po_id,status'); // Eager load for button logic
 
         if ($search) {
-            $query->where(function ($q) use ($search) {
+            // Smart style-name search: split the query into words and require an
+            // item whose style name (po_items.batch) contains every word, any order.
+            $styleTerms = preg_split('/\s+/', trim($search), -1, PREG_SPLIT_NO_EMPTY);
+
+            $query->where(function ($q) use ($search, $styleTerms) {
                 $q->where('po_number', 'like', '%'.$search.'%')
+                    // PC (Preliminary Contract) reference, case-insensitive
+                    ->orWhereRaw('LOWER(reference) LIKE ?', ['%'.mb_strtolower($search).'%'])
                     ->orWhereHas('items', function ($iq) use ($search) {
                         $iq->where('plm_number', 'like', '%'.$search.'%');
+                    })
+                    ->orWhereHas('items', function ($iq) use ($styleTerms) {
+                        // Style name lives in po_items.batch (e.g. "MOC Eagle Blue - FALL-26").
+                        // Case-insensitive, every word must match; portable across pgsql/sqlite.
+                        foreach ($styleTerms as $term) {
+                            $iq->whereRaw('LOWER(batch) LIKE ?', ['%'.mb_strtolower($term).'%']);
+                        }
                     });
             });
         }
@@ -98,7 +133,7 @@ class AdminController extends Controller
         $purchaseOrders = $query->orderBy('created_at', 'desc')
             ->paginate($perPage)
             ->appends($request->all());
-        $vendors = Vendor::where('is_active', true)->orderBy('name')->get();
+        $vendors = Vendor::where('type', 'fabric')->where('is_active', true)->orderBy('name')->get();
 
         return view('admin.purchase-orders', compact('purchaseOrders', 'vendors', 'search', 'status', 'vendorId', 'perPage'));
     }
@@ -117,7 +152,8 @@ class AdminController extends Controller
 
     public function vendors()
     {
-        $vendors = Vendor::withCount(['purchaseOrders', 'activePurchaseOrders'])
+        $vendors = Vendor::where('type', 'fabric')
+            ->withCount(['purchaseOrders', 'activePurchaseOrders'])
             ->orderBy('name')
             ->paginate(20);
 
@@ -126,7 +162,8 @@ class AdminController extends Controller
 
     public function vendorDetail($id)
     {
-        $vendor = Vendor::with([
+        // Scope to fabric: a fabric admin must never act on a subcon vendor.
+        $vendor = Vendor::where('type', 'fabric')->with([
             'purchaseOrders' => function ($query) {
                 $query->orderBy('created_at', 'desc');
             },
@@ -168,6 +205,7 @@ class AdminController extends Controller
             'id' => \Illuminate\Support\Str::uuid(),
             'name' => $request->name,
             'vendor_code' => $request->vendor_code,
+            'type' => 'fabric',
             'is_active' => $request->has('is_active'),
             'contact_info' => [
                 'contact_person' => $request->contact_person,
@@ -182,7 +220,7 @@ class AdminController extends Controller
 
     public function updateVendor(Request $request, $id)
     {
-        $vendor = Vendor::findOrFail($id);
+        $vendor = Vendor::where('type', 'fabric')->findOrFail($id);
 
         $request->validate([
             'name' => 'required|string|max:255',
@@ -229,23 +267,46 @@ class AdminController extends Controller
     {
         $item = \App\Models\PoItem::with(['purchaseOrder', 'rolls'])->findOrFail($itemId);
 
-        // Validation (Same as Vendor)
+        // Validation (Same as Vendor): all rolls carry the item's original order
+        // metric as their unit; every metric column can be filled but only the
+        // order metric is mandatory. Non-metric order units (PCS/UNIT) keep
+        // their qty in the weight column.
+        $orderUnit = strtoupper($item->unit);
+        $primaryField = match ($orderUnit) {
+            'YD' => 'length_yd',
+            'M' => 'length_m',
+            default => 'weight',
+        };
+
         $validator = \Validator::make($request->all(), [
             'rolls' => 'required|array|min:1',
-            'roll_unit' => 'required|in:YD,M,KG',
         ]);
 
-        $validator->after(function ($validator) use ($request) {
-            $rolls = $request->input('rolls', []);
-            foreach ($rolls as $key => $roll) {
+        $validator->after(function ($validator) use ($request, $orderUnit, $primaryField) {
+            $rowNo = 0;
+            foreach ($request->input('rolls', []) as $key => $roll) {
+                $rowNo++;
                 if (isset($roll['delete']) && $roll['delete'] == '1') {
                     continue;
                 }
-                if (! isset($roll['quantity']) || ! is_numeric($roll['quantity']) || $roll['quantity'] < 0.01) {
-                    $validator->errors()->add("rolls.$key.quantity", 'Quantity for roll '.($key + 1).' must be valid.');
+
+                $primary = $roll[$primaryField] ?? null;
+                if ((! is_numeric($primary) || $primary < 0.01) && in_array($orderUnit, ['YD', 'M'])) {
+                    // YD and M are interchangeable — the other length satisfies the
+                    // requirement; the missing one is derived at save time.
+                    $sibling = $roll[$primaryField === 'length_yd' ? 'length_m' : 'length_yd'] ?? null;
+                    if (is_numeric($sibling) && $sibling >= 0.01) {
+                        $primary = $sibling;
+                    }
                 }
-                if (! isset($roll['unit']) || ! in_array($roll['unit'], ['YD', 'M', 'KG'])) {
-                    $validator->errors()->add("rolls.$key.unit", 'Invalid unit for roll '.($key + 1));
+                if (! is_numeric($primary) || $primary < 0.01) {
+                    $validator->errors()->add("rolls.$key.$primaryField", "Roll $rowNo: the $orderUnit quantity must be a valid number greater than 0.");
+                }
+
+                foreach (['length_yd' => 'YD', 'length_m' => 'M', 'weight' => 'KG'] as $field => $label) {
+                    if ($field !== $primaryField && isset($roll[$field]) && $roll[$field] !== '' && (! is_numeric($roll[$field]) || $roll[$field] < 0)) {
+                        $validator->errors()->add("rolls.$key.$field", "Roll $rowNo: the $label value must be a valid non-negative number.");
+                    }
                 }
             }
         });
@@ -292,31 +353,41 @@ class AdminController extends Controller
                 }
             }
 
+            // Shared metric mapping: every metric column is stored as entered; the
+            // missing one of YD/M is derived from the other (they are interchangeable).
+            $metricData = function (array $data) use ($orderUnit) {
+                $toFloat = fn ($v) => (isset($v) && $v !== '') ? (float) $v : null;
+
+                $yd = $toFloat($data['length_yd'] ?? null);
+                $m = $toFloat($data['length_m'] ?? null);
+                $kg = $toFloat($data['weight'] ?? null);
+
+                if ($yd !== null && $m === null) {
+                    $m = round($yd * 0.9144, 2);
+                } elseif ($m !== null && $yd === null) {
+                    $yd = round($m / 0.9144, 2);
+                }
+
+                return [
+                    'unit' => $orderUnit,
+                    'length_yd' => $yd,
+                    'length_m' => $m,
+                    'weight' => $kg,
+                    'internal_id' => ($data['internal_id'] ?? '') !== '' ? $data['internal_id'] : null,
+                    'vendor_roll_no' => ($data['vendor_roll_no'] ?? '') !== '' ? $data['vendor_roll_no'] : null,
+                    'bale_no' => ($data['bale_no'] ?? '') !== '' ? $data['bale_no'] : null,
+                    'color' => ($data['color'] ?? '') !== '' ? $data['color'] : null,
+                ];
+            };
+
             // A. Update Existing
             foreach ($existingRolls as $existingRoll) {
                 if (isset($inputMap[$existingRoll->id])) {
                     $data = $inputMap[$existingRoll->id];
 
-                    $updateData = [
+                    $updateData = $metricData($data) + [
                         'sequence' => $nextSequence,
-                        'unit' => $data['unit'],
-                        'internal_id' => $data['internal_id'] ?? null,
                     ];
-
-                    if ($data['unit'] == 'YD') {
-                        $updateData['length_yd'] = $data['quantity'];
-                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
-                        $updateData['weight'] = 0;
-                    } elseif ($data['unit'] == 'M') {
-                        $updateData['length_m'] = $data['quantity'];
-                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
-                        $updateData['weight'] = 0;
-                    } else {
-                        // KG or PCS
-                        $updateData['weight'] = $data['quantity'];
-                        $updateData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
-                        $updateData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
-                    }
 
                     $rollNumber = sprintf('%s-%s-%03d', $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
                     $updateData['roll_number'] = $rollNumber;
@@ -333,30 +404,13 @@ class AdminController extends Controller
                     continue;
                 }
 
-                $createData = [
+                $createData = $metricData($data) + [
                     'item_id' => $item->id,
                     'sequence' => $nextSequence,
-                    'unit' => $data['unit'],
-                    'internal_id' => $data['internal_id'] ?? null,
                     'grade' => 'A',
                     'defects' => [],
                     'notes' => '',
-                    'length_yd' => 0,
-                    'length_m' => 0,
-                    'weight' => 0,
                 ];
-
-                if ($data['unit'] == 'YD') {
-                    $createData['length_yd'] = $data['quantity'];
-                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : ($data['quantity'] * 0.9144);
-                } elseif ($data['unit'] == 'M') {
-                    $createData['length_m'] = $data['quantity'];
-                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : ($data['quantity'] / 0.9144);
-                } else {
-                    $createData['weight'] = $data['quantity'];
-                    $createData['length_yd'] = (isset($data['length_yd']) && $data['length_yd'] !== '') ? $data['length_yd'] : 0;
-                    $createData['length_m'] = (isset($data['length_m']) && $data['length_m'] !== '') ? $data['length_m'] : 0;
-                }
 
                 $rollNumber = sprintf('%s-%s-%03d', $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
                 $createData['roll_number'] = $rollNumber;
@@ -453,40 +507,16 @@ class AdminController extends Controller
 
         $file = $request->file('file');
         $extension = $file->getClientOriginalExtension();
-        $rollsData = [];
 
         try {
             if ($extension === 'pdf') {
                 $parser = new PdfParser;
-                $pdf = $parser->parseFile($file->getPathname());
-                $text = $pdf->getText();
-
-                $lines = explode("\n", $text);
-                foreach ($lines as $line) {
-                    $line = trim($line);
-                    if (preg_match('/([A-Z0-9_-]+)?\s*(\d+(?:\.\d+)?)$/', $line, $matches)) {
-                        $rollsData[] = [
-                            'internal_id' => $matches[1] ?? '',
-                            'quantity' => (float) $matches[2],
-                        ];
-                    }
-                }
+                $text = $parser->parseFile($file->getPathname())->getText();
+                $rollsData = \App\Services\RollsImportService::parsePdfText($text);
             } else {
-                // Excel/CSV
-                $data = Excel::toArray([], $file);
-                if (! empty($data) && ! empty($data[0])) {
-                    foreach ($data[0] as $row) {
-                        // Skip header or empty rows
-                        if (! isset($row[1]) || ! is_numeric($row[1])) {
-                            continue;
-                        }
-
-                        $rollsData[] = [
-                            'internal_id' => $row[0] ?? '',
-                            'quantity' => (float) $row[1],
-                        ];
-                    }
-                }
+                // Excel/CSV — template header mapped by name, legacy [lot, qty] otherwise
+                $rows = Excel::toArray([], $file)[0] ?? [];
+                $rollsData = \App\Services\RollsImportService::parseRows($rows);
             }
 
             if (empty($rollsData)) {
@@ -502,6 +532,27 @@ class AdminController extends Controller
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => 'Error parsing file: '.$e->getMessage()]);
         }
+    }
+
+    // Download the uniform Excel template for the rolls import (admin mirror).
+    public function downloadRollsTemplate($itemId)
+    {
+        $item = PoItem::with('purchaseOrder')->findOrFail($itemId);
+
+        $rows = [\App\Services\RollsImportService::templateHeader($item)];
+        $export = new class($rows) implements \Maatwebsite\Excel\Concerns\FromArray
+        {
+            public function __construct(private array $rows) {}
+
+            public function array(): array
+            {
+                return $this->rows;
+            }
+        };
+
+        $name = 'rolls-template-'.preg_replace('/[^A-Za-z0-9_-]+/', '-', $item->purchaseOrder->po_number.'-'.$item->item_number).'.xlsx';
+
+        return Excel::download($export, $name);
     }
 
     public function generatePackingSlip(Request $request, $poId)
@@ -573,6 +624,7 @@ class AdminController extends Controller
                 return $view;
             }
         }
+
         return 'admin.pdf.packing-slip';
     }
 
@@ -608,7 +660,15 @@ class AdminController extends Controller
 
     public function settings()
     {
-        $settings = \App\Models\Setting::orderBy('group')->orderBy('key')->get();
+        // Fabric settings only — subcon settings (group "subcon" / subcon_* keys)
+        // are managed on the subcon admin Workflow page.
+        $settings = \App\Models\Setting::where(function ($query) {
+            $query->whereNull('group')->orWhere('group', '!=', 'subcon');
+        })
+            ->where('key', 'not like', 'subcon_%')
+            ->orderBy('group')
+            ->orderBy('key')
+            ->get();
 
         return view('admin.settings', compact('settings'));
     }
