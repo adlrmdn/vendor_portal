@@ -133,7 +133,7 @@
                     @foreach (array_chunk($checklist, 2) as $pair)
                         <tr>
                             @foreach ($pair as $item)
-                                <td style="font-size: 6pt; padding: 2.5px 7px; color: {{ $item['checked'] ? '#0F172A' : '#64748B' }}; font-weight: {{ $item['checked'] ? 'bold' : 'normal' }}; border: none; vertical-align: middle;">
+                                <td style="font-size: 5.1pt; padding: 2px 6px; color: {{ $item['checked'] ? '#0F172A' : '#64748B' }}; font-weight: {{ $item['checked'] ? 'bold' : 'normal' }}; border: none; vertical-align: middle;">
                                     @if ($item['checked'])
                                         <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 8px; height: 8px; margin-right: 4px; display: inline-block; vertical-align: middle; margin-top: -1.5px;">
                                     @else
@@ -151,7 +151,7 @@
             </td>
         @endif
         <td style="vertical-align: top; border: none;">
-            <table style="width: 100%; border: 0.6px solid #E2E8F0; border-radius: 6px; background: #F8FAFC; border-collapse: separate; border-spacing: 0; padding: 3.5px 7px; font-size: 6.2pt; font-weight: 600; color: #0F172A; margin-bottom: 4px;">
+            <table style="width: 100%; border: 0.6px solid #E2E8F0; border-radius: 6px; background: #F8FAFC; border-collapse: separate; border-spacing: 0; padding: 3px 6px; font-size: 5.3pt; font-weight: 600; color: #0F172A; margin-bottom: 4px;">
                 <tr>
                     <td style="border: none; padding: 0;">SAMPLING: <strong>{{ $session->sampling_pcs ?: 0 }}</strong></td>
                     <td style="border: none; padding: 0; text-align: center;">AQL: <strong>{{ $session->aql ?: '—' }}</strong></td>
@@ -183,10 +183,10 @@
 <div class="section-title">3. Sizing &amp; Production Yield Matrix</div>
 <table style="border: 0.6px solid #E2E8F0; background: #F8FAFC; margin-bottom: 3px;">
     <tr>
-        <td style="font-size: 6.4pt; font-weight: bold; padding: 3px 6px;">CUTTING: {{ $n($session->cutting_pcs) }} PCS</td>
-        <td style="font-size: 6.4pt; font-weight: bold; padding: 3px 6px;" class="center">SEWING: {{ $n($session->sewing_pcs) }} PCS</td>
-        <td style="font-size: 6.4pt; font-weight: bold; padding: 3px 6px;" class="center">FINISHING: {{ $n($session->finishing_pcs) }} PCS</td>
-        <td style="font-size: 6.4pt; font-weight: bold; padding: 3px 6px;" class="right">PACKING: {{ $n($session->packing_pcs) }} PCS</td>
+        <td style="font-size: 5.4pt; font-weight: bold; padding: 2.5px 5px;">CUTTING: {{ $n($session->cutting_pcs) }} PCS</td>
+        <td style="font-size: 5.4pt; font-weight: bold; padding: 2.5px 5px;" class="center">SEWING: {{ $n($session->sewing_pcs) }} PCS</td>
+        <td style="font-size: 5.4pt; font-weight: bold; padding: 2.5px 5px;" class="center">FINISHING: {{ $n($session->finishing_pcs) }} PCS</td>
+        <td style="font-size: 5.4pt; font-weight: bold; padding: 2.5px 5px;" class="right">PACKING: {{ $n($session->packing_pcs) }} PCS</td>
     </tr>
 </table>
 <table class="tbl">
@@ -241,23 +241,23 @@
         <td>TOTAL</td>
         <td>{{ $n($totals['orderQty']) }}</td>
         <td>{{ $n($totals['cuttingQty']) }}</td>
-        <td>{{ $n($totals['goodGarments']) }}<br><span class="muted" style="font-size: 5pt;">({{ $pct($totals['goodGarments'], $totals['cuttingQty']) }})</span></td>
+        <td>{{ $n($totals['goodGarments']) }}<br><span class="muted" style="font-size: 4.2pt;">({{ $pct($totals['goodGarments'], $totals['cuttingQty']) }})</span></td>
         <td>{{ $totals['rejectCutting'] }}</td>
         <td>{{ $totals['rejectSewing'] }}</td>
         <td>{{ $totals['rejectPrinting'] }}</td>
         <td>{{ $totals['rejectEmbro'] }}</td>
         <td>{{ $totals['rejectWashing'] }}</td>
         <td>{{ $totals['rejectFinishing'] }}</td>
-        <td style="background: #E2E8F0;">{{ $n($totals['rejectProduksi']) }}<br><span class="muted" style="font-size: 5pt;">({{ $pct($totals['rejectProduksi'], $totals['cuttingQty']) }})</span></td>
+        <td style="background: #E2E8F0;">{{ $n($totals['rejectProduksi']) }}<br><span class="muted" style="font-size: 4.2pt;">({{ $pct($totals['rejectProduksi'], $totals['cuttingQty']) }})</span></td>
         <td>{{ $totals['rejectBahan'] }}</td>
         <td>{{ $totals['rejectBtj'] }}</td>
         <td>{{ $totals['barangHilang'] }}</td>
-        <td style="color: {{ $totals['totalReject'] > 0 ? '#DC2626' : '#0F172A' }};">{{ $n($totals['totalReject']) }}<br><span class="muted" style="font-size: 5pt;">({{ $pct($totals['totalReject'], $totals['cuttingQty']) }})</span></td>
+        <td style="color: {{ $totals['totalReject'] > 0 ? '#DC2626' : '#0F172A' }};">{{ $n($totals['totalReject']) }}<br><span class="muted" style="font-size: 4.2pt;">({{ $pct($totals['totalReject'], $totals['cuttingQty']) }})</span></td>
         <td>{{ $n($totals['wip']) }}</td>
         <td>{{ $totals['qtyI'] > 0 ? $n($totals['qtyI']) : '—' }}</td>
         <td>{{ $totals['qtyII'] > 0 ? $n($totals['qtyII']) : '—' }}</td>
         <td>{{ $totals['qtyIII'] > 0 ? $n($totals['qtyIII']) : '—' }}</td>
-        <td style="color: #059669;">{{ $n($totals['totalDeliveryFG']) }}<br><span style="font-size: 5pt; color: #059669;">({{ $pct($totals['totalDeliveryFG'], $totals['cuttingQty']) }})</span></td>
+        <td style="color: #059669;">{{ $n($totals['totalDeliveryFG']) }}<br><span style="font-size: 4.2pt; color: #059669;">({{ $pct($totals['totalDeliveryFG'], $totals['cuttingQty']) }})</span></td>
         <td style="color: #2563EB;">{{ $n($totals['goodsReceiveDelivery']) }}</td>
     </tr>
 </table>
@@ -267,7 +267,7 @@
     <table style="margin-top: 4px;">
         @foreach ($fabricLines as $f)
             <tr>
-                <td style="font-size: 5.8pt; color: #334155; border-top: {{ $loop->first ? '0.6px solid #E2E8F0' : 'none' }}; padding: 3px 1px; line-height: 1.5;">
+                <td style="font-size: 4.9pt; color: #334155; border-top: {{ $loop->first ? '0.6px solid #E2E8F0' : 'none' }}; padding: 2px 1px; line-height: 1.5;">
                     <div>
                         @if ($f->label)<span style="font-weight: 700; color: #0F172A; margin-right: 4px;">{{ $shortenFabric($f->label) }}</span>@endif
                         <span class="muted bold">Fabric Sent:</span> <span style="color: #0F172A;">{{ $f->fabric_sent !== null ? $n($f->fabric_sent) : '0' }}</span> &nbsp;
