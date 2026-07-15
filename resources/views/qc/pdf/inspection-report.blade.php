@@ -365,16 +365,16 @@
     <tr style="height: 80px;">
         <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0; height: 80px;">
             <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 80px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
-                <tr style="height: 52px;">
-                    <td style="vertical-align: top; border: none; padding: 2px 0 0 0; text-align: center; height: 52px;">
+                <tr style="height: 14px;">
+                    <td style="vertical-align: top; border: none; padding: 2px 0 0 0; text-align: center; height: 14px;">
                         <div style="font-size: 5.3pt; font-weight: bold; color: #0F172A; text-transform: uppercase; line-height: 1.1;">
                             <span style="font-family: 'DejaVu Sans', sans-serif; font-size: 6.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span>Overall Inspection Result
                         </div>
                     </td>
                 </tr>
-                <tr style="height: 20px;">
-                    <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 20px;">
-                        <div style="font-size: 12pt; font-weight: bold; color: {{ $resultColor }}; line-height: 1;">
+                <tr style="height: 58px;">
+                    <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 58px;">
+                        <div style="font-size: 13pt; font-weight: bold; color: {{ $resultColor }}; line-height: 1;">
                             {{ $result }}
                         </div>
                     </td>
