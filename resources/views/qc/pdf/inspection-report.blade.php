@@ -87,34 +87,34 @@
 <div class="section-title">1. Inspection Overview</div>
 <table class="tbl">
     <colgroup>
-        <col style="width: 13%;">
-        <col style="width: 10%;">
-        <col style="width: 8%;">
+        <col style="width: 12%;">
+        <col style="width: 9%;">
+        <col style="width: 7%;">
         <col style="width: 14%;">
-        <col style="width: 8%;">
-        <col style="width: 15%;">
-        <col style="width: 16%;">
-        <col style="width: 16%;">
+        <col style="width: 7%;">
+        <col style="width: 17%;">
+        <col style="width: 17%;">
+        <col style="width: 17%;">
     </colgroup>
     <tr>
-        <th style="width: 13%;">Vendor</th><td colspan="5">{{ $project->po_vendor ?: '—' }}</td>
-        <th style="width: 12%;">PO Number</th><td>{{ $project->po_info ?: '—' }}</td>
+        <th style="width: 12%;">Vendor</th><td colspan="5">{{ $project->po_vendor ?: '—' }}</td>
+        <th style="width: 17%;">PO Number</th><td>{{ $project->po_info ?: '—' }}</td>
     </tr>
     <tr>
         <th>Article Name</th><td colspan="5">{{ $project->article_name ?: '—' }}</td>
         <th>Qty Order</th><td>{{ $project->po_qty ? $n($project->po_qty) : '—' }}</td>
     </tr>
     <tr>
-        <th>Inspection Date</th><td>{{ $fmtDate($session->inspection_date) }}</td>
-        <th>Available Qty</th><td>{{ $session->qty_available ? $n($session->qty_available) : '—' }}</td>
-        <th>Total Store</th><td>{{ $session->total_store ?: '—' }}</td>
-        <th>Store Inspected</th><td>{{ $session->store_inspected ?: '—' }}</td>
+        <th style="white-space: nowrap;">Inspection Date</th><td style="white-space: nowrap;">{{ $fmtDate($session->inspection_date) }}</td>
+        <th style="white-space: nowrap;">Available Qty</th><td style="white-space: nowrap;">{{ $session->qty_available ? $n($session->qty_available) : '—' }}</td>
+        <th style="white-space: nowrap;">Total Store</th><td style="white-space: nowrap;">{{ $session->total_store ?: '—' }}</td>
+        <th style="white-space: nowrap;">Store Inspected</th><td style="white-space: nowrap;">{{ $session->store_inspected ?: '—' }}</td>
     </tr>
     <tr>
-        <th>Delivery Plan</th><td>{{ $fmtDate($project->po_plan_date) }}</td>
-        <th>Season</th><td>{{ $project->season ?: '—' }}</td>
-        <th>PLM ID</th><td>{{ $project->plm_id ?: '—' }}</td>
-        <th>Production Group</th><td>{{ $project->production_group ?: '—' }}</td>
+        <th style="white-space: nowrap;">Delivery Plan</th><td style="white-space: nowrap;">{{ $fmtDate($project->po_plan_date) }}</td>
+        <th style="white-space: nowrap;">Season</th><td style="white-space: nowrap;">{{ $project->season ?: '—' }}</td>
+        <th style="white-space: nowrap;">PLM ID</th><td style="white-space: nowrap;">{{ $project->plm_id ?: '—' }}</td>
+        <th style="white-space: nowrap;">Production Group</th><td style="white-space: nowrap;">{{ $project->production_group ?: '—' }}</td>
     </tr>
 </table>
 
