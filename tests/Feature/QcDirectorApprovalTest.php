@@ -98,7 +98,8 @@ class QcDirectorApprovalTest extends TestCase
             factory_representative TEXT, inspector TEXT, version TEXT, result TEXT,
             approval_token TEXT, approval_email TEXT, approved_by TEXT, approved_at TEXT,
             approval_source TEXT, approval_status TEXT, approval_signature TEXT,
-            ho_approval_signature TEXT, director_approval_signature TEXT, inspector_email TEXT)');
+            ho_approval_signature TEXT, director_approval_signature TEXT, inspector_email TEXT,
+            remarks TEXT, retur_kain REAL)');
         $qms->statement('CREATE TABLE packaging_project_reports (
             report_id TEXT PRIMARY KEY, session_id TEXT, project_id TEXT, size_val TEXT,
             line_no INTEGER DEFAULT 0, global_display_order INTEGER DEFAULT 0,
