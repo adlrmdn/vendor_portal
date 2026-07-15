@@ -361,10 +361,6 @@
 
 {{-- Section 5: Conclusions --}}
 <div class="section-title">5. Conclusions</div>
-<div style="border: 0.6px solid #CBD5E1; border-radius: 6px; padding: 5px; background-color: #F8FAFC; margin-top: 3px;">
-    <div style="font-size: 4.8pt; text-transform: uppercase; margin-bottom: 2px;" class="muted bold">Inspector Remarks &amp; Notes</div>
-    <div style="line-height: 1.2; color: #334155;">{{ $session->remarks ?: 'No remarks or special notes entered for this inspection cycle.' }}</div>
-</div>
 <table style="width: 100%; border-collapse: collapse; border: none; margin-top: 3px;">
     <tr style="height: 68px;">
         <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0; height: 68px;">
