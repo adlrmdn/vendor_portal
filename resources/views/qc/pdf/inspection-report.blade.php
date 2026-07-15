@@ -50,10 +50,10 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600;1,700&display=swap');
         @page { margin: 34pt 28pt 28pt 28pt; }
-        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0F172A; font-size: 7.2pt; margin: 0; }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0F172A; font-size: 5.5pt; margin: 0; }
         table { border-collapse: collapse; width: 100%; }
-        .tbl th, .tbl td { border: 0.6px solid #CBD5E1; padding: 2px 3px; font-size: 6.2pt; }
-        .tbl th { background-color: #F8FAFC; color: #0F172A; font-weight: 500; text-transform: uppercase; font-size: 5.8pt; letter-spacing: 0.02em; }
+        .tbl th, .tbl td { border: 0.6px solid #CBD5E1; padding: 2px 3px; font-size: 5.5pt; }
+        .tbl th { background-color: #F8FAFC; color: #0F172A; font-weight: 500; text-transform: uppercase; font-size: 5.5pt; letter-spacing: 0.02em; }
         .section-title { font-size: 7.5pt; font-weight: bold; color: #0F172A; border-bottom: 1.5px solid rgba(15, 23, 42, 0.12); margin: 8px 0 4px; padding-bottom: 2px; text-transform: uppercase; letter-spacing: 0.03em; }
         .muted { color: #64748B; }
         .center { text-align: center; }
@@ -361,20 +361,24 @@
 
 {{-- Section 5: Conclusions --}}
 <div class="section-title">5. Conclusions</div>
-<table style="width: 100%; border-collapse: collapse; border: none; margin-top: 4px;">
-    <tr style="height: 80px;">
-        <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0; height: 80px;">
-            <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 80px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
-                <tr style="height: 14px;">
-                    <td style="vertical-align: top; border: none; padding: 2px 0 0 0; text-align: center; height: 14px;">
-                        <div style="font-size: 5.3pt; font-weight: bold; color: #0F172A; text-transform: uppercase; line-height: 1.1;">
-                            <span style="font-family: 'DejaVu Sans', sans-serif; font-size: 6.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span>Overall Inspection Result
+<div style="border: 0.6px solid #CBD5E1; border-radius: 6px; padding: 5px; background-color: #F8FAFC; margin-top: 3px;">
+    <div style="font-size: 4.8pt; text-transform: uppercase; margin-bottom: 2px;" class="muted bold">Inspector Remarks &amp; Notes</div>
+    <div style="line-height: 1.2; color: #334155;">{{ $session->remarks ?: 'No remarks or special notes entered for this inspection cycle.' }}</div>
+</div>
+<table style="width: 100%; border-collapse: collapse; border: none; margin-top: 3px;">
+    <tr style="height: 68px;">
+        <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0; height: 68px;">
+            <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 68px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 3px; box-sizing: border-box;">
+                <tr style="height: 12px;">
+                    <td style="vertical-align: top; border: none; padding: 1px 0 0 0; text-align: center; height: 12px;">
+                        <div style="font-size: 4.5pt; font-weight: bold; color: #0F172A; text-transform: uppercase; line-height: 1.1;">
+                            <span style="font-family: 'DejaVu Sans', sans-serif; font-size: 5.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span>Overall Inspection Result
                         </div>
                     </td>
                 </tr>
-                <tr style="height: 58px;">
-                    <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 58px;">
-                        <div style="font-size: 13pt; font-weight: bold; color: {{ $resultColor }}; line-height: 1;">
+                <tr style="height: 50px;">
+                    <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 50px;">
+                        <div style="font-size: 11pt; font-weight: bold; color: {{ $resultColor }}; line-height: 1;">
                             {{ $result }}
                         </div>
                     </td>
@@ -387,11 +391,11 @@
             ['label' => 'Approved By', 'sig' => $signatures['ho'], 'role' => 'MPG HO - MD Production', 'name' => $signatures['ho']['name']],
             ['label' => 'Authorized By', 'sig' => $signatures['director'], 'role' => 'Director', 'name' => $signatures['director']['name']],
         ] as $box)
-            <td style="width: 20%; vertical-align: top; border: none; padding: {{ $loop->last ? '0' : '0 5px 0 0' }}; height: 80px;">
-                <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 80px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
-                    <tr style="height: 52px;">
-                        <td style="vertical-align: top; border: none; padding: 2px 0 0 0; text-align: center; height: 52px;">
-                            <div style="font-size: 5.6pt; text-transform: uppercase; margin-bottom: 2px; line-height: 1.1;" class="muted bold">{{ $box['label'] }}</div>
+            <td style="width: 20%; vertical-align: top; border: none; padding: {{ $loop->last ? '0' : '0 5px 0 0' }}; height: 68px;">
+                <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 68px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 3px; box-sizing: border-box;">
+                    <tr style="height: 44px;">
+                        <td style="vertical-align: top; border: none; padding: 1px 0 0 0; text-align: center; height: 44px;">
+                            <div style="font-size: 4.8pt; text-transform: uppercase; margin-bottom: 2px; line-height: 1.1;" class="muted bold">{{ $box['label'] }}</div>
                             @if ($box['sig']['state'] === 'signed')
                                 <div class="sig-badge" style="display: inline-flex; align-items: center; vertical-align: middle; line-height: 1;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Digitally Signed</div>
                                 @php
@@ -400,8 +404,8 @@
                                         $stampText = $box['sig']['name'];
                                     }
                                 @endphp
-                                @if (!empty($stampText))<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $stampText }}</div>@endif
-                                @if ($box['sig']['date'])<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
+                                @if (!empty($stampText))<div class="muted" style="font-size: 4.2pt; line-height: 1; margin-top: 1px;">{{ $stampText }}</div>@endif
+                                @if ($box['sig']['date'])<div class="muted" style="font-size: 4.2pt; line-height: 1; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
                             @elseif ($box['sig']['state'] === 'rejected')
                                 <div class="sig-badge rejected" style="display: inline-flex; align-items: center; vertical-align: middle; line-height: 1;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAY0lEQVR4nJWQ0Q0AIQhDxQluKJnaoWSDd18mnKDxSPigtKRFgPKn6i3RVAmCCe7IpkrNwN2Rp3epfjiJ517W0JktfyyE9stsDoJThiDIPK94+JInZ6JPaFNl9RxsAVc9WgMoL8rWaChiYc43AAAAAElFTkSuQmCC" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Rejected</div>
                                 @php
@@ -410,20 +414,20 @@
                                         $stampText = $box['sig']['name'];
                                     }
                                 @endphp
-                                @if (!empty($stampText))<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $stampText }}</div>@endif
-                                @if ($box['sig']['date'])<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
+                                @if (!empty($stampText))<div class="muted" style="font-size: 4.2pt; line-height: 1; margin-top: 1px;">{{ $stampText }}</div>@endif
+                                @if ($box['sig']['date'])<div class="muted" style="font-size: 4.2pt; line-height: 1; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
                             @else
                                 <div class="sig-badge pending" style="margin-top: 4px; line-height: 1;">{{ $box['label'] === 'Authorized By' ? 'Awaiting Authorization' : 'Awaiting Approval' }}</div>
                             @endif
                         </td>
                     </tr>
-                    <tr style="height: 20px;">
-                        <td style="vertical-align: bottom; border: none; border-top: 0.6px dashed #CBD5E1; padding: 1px 0 0 0; text-align: center; height: 20px;">
+                    <tr style="height: 17px;">
+                        <td style="vertical-align: bottom; border: none; border-top: 0.6px dashed #CBD5E1; padding: 1px 0 0 0; text-align: center; height: 17px;">
                             <div>
                                 @if ($box['name'])
-                                    <div style="font-size: 6.2pt; font-weight: bold; line-height: 1.1; margin-bottom: 0px;">{{ $box['name'] }}</div>
+                                    <div style="font-size: 5.3pt; font-weight: bold; line-height: 1.1; margin-bottom: 0px;">{{ $box['name'] }}</div>
                                 @endif
-                                <div class="muted" style="font-size: 5.2pt; text-transform: uppercase; line-height: 1;">{{ $box['role'] }}</div>
+                                <div class="muted" style="font-size: 4.4pt; text-transform: uppercase; line-height: 1;">{{ $box['role'] }}</div>
                             </div>
                         </td>
                     </tr>
