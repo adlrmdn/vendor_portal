@@ -41,6 +41,7 @@ class QcReportPdfService
 
             return Pdf::loadView('qc.pdf.inspection-report', $ctx)
                 ->setPaper('a4', 'portrait')
+                ->setOption('isRemoteEnabled', true)
                 ->output();
         } catch (\Throwable $e) {
             Log::error('QC report PDF render failed', [
@@ -288,7 +289,7 @@ class QcReportPdfService
             'logoData' => is_file($logoPath)
                 ? 'data:image/png;base64,'.base64_encode((string) file_get_contents($logoPath))
                 : null,
-            'checklist' => $this->checkedChecklist($session),
+            'checklist' => $this->checklistData($session),
             'signatures' => [
                 'inspector' => $this->inspectorSignature($session),
                 'factory' => $this->factorySignature($session),
@@ -304,8 +305,8 @@ class QcReportPdfService
         return self::CYCLE_NAMES[$cycle] ?? ('Cycle '.$cycle);
     }
 
-    /** @return list<string> checked checklist labels incl. the two "other" slots */
-    private function checkedChecklist(object $session): array
+    /** @return list<array{label:string,checked:bool}> checked checklist items */
+    private function checklistData(object $session): array
     {
         $fields = [
             'check_wash' => 'Washing',
@@ -322,12 +323,19 @@ class QcReportPdfService
         $out = [];
         foreach ($fields as $field => $label) {
             if (! empty($session->{$field})) {
-                $out[] = $label;
+                $out[] = [
+                    'label' => $label,
+                    'checked' => true,
+                ];
             }
         }
         foreach ([1, 2] as $n) {
-            if (! empty($session->{'check_other_'.$n}) && trim((string) ($session->{'check_other_'.$n.'_label'} ?? '')) !== '') {
-                $out[] = trim((string) $session->{'check_other_'.$n.'_label'});
+            $label = trim((string) ($session->{'check_other_'.$n.'_label'} ?? ''));
+            if ($label !== '' && ! empty($session->{'check_other_'.$n})) {
+                $out[] = [
+                    'label' => $label,
+                    'checked' => true,
+                ];
             }
         }
 

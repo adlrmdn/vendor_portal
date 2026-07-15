@@ -12,6 +12,7 @@
         if (empty($v)) return '—';
         try { return \Carbon\Carbon::parse($v)->format('d/m/Y'); } catch (\Throwable $e) { return (string) $v; }
     };
+    $shortenFabric = fn ($s) => (! $s || strlen((string) $s) <= 48) ? (string) $s : trim(substr((string) $s, 0, 25)).' ... '.trim(substr((string) $s, -20));
     $shortLabel = fn ($s) => (! $s || strlen($s) <= 42) ? $s : rtrim(substr($s, 0, 28)).' ... '.ltrim(substr($s, -13));
     // Signature-box email: no wrapping room — truncate like 'fitri.yeni@megape...'.
     $shortEmail = fn ($e) => (! $e || strlen($e) <= 24) ? $e : substr($e, 0, 21).'...';
@@ -47,8 +48,9 @@
 <head>
     <meta charset="utf-8">
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600;1,700&display=swap');
         @page { margin: 34pt 28pt 28pt 28pt; }
-        body { font-family: Helvetica, Arial, sans-serif; color: #0F172A; font-size: 7.2pt; margin: 0; }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0F172A; font-size: 7.2pt; margin: 0; }
         table { border-collapse: collapse; width: 100%; }
         .tbl th, .tbl td { border: 0.6px solid #CBD5E1; padding: 2px 3px; font-size: 6.2pt; }
         .tbl th { background-color: #F8FAFC; color: #0F172A; font-weight: 500; text-transform: uppercase; font-size: 5.8pt; letter-spacing: 0.02em; }
@@ -69,13 +71,13 @@
     <tr>
         <td style="width: 45%; vertical-align: bottom;">
             @if ($logoData)
-                <img src="{{ $logoData }}" style="height: 76px;">
+                <img src="{{ $logoData }}" style="height: 85px;">
             @endif
         </td>
         <td style="width: 55%; text-align: right; vertical-align: bottom; padding-bottom: 3px;">
-            <div style="font-size: 11pt; font-weight: bold;">{{ $cycleName }} Inspection</div>
-            <div style="font-size: 6pt;" class="muted">and</div>
-            <div style="font-size: 11pt; font-weight: bold;">Official Report (Berita Acara)</div>
+            <div style="font-size: 12.5pt; font-weight: bold; color: #0F172A;">{{ $cycleName }} Inspection</div>
+            <div style="font-size: 7.5pt; color: #0F172A; font-weight: bold; margin: 1px 0;">and</div>
+            <div style="font-size: 12.5pt; font-weight: bold; color: #0F172A;">Official Report (Berita Acara)</div>
             <div style="font-size: 6.2pt; font-weight: bold;" class="muted">QUALITY CONTROL SYSTEM</div>
         </td>
     </tr>
@@ -84,8 +86,18 @@
 {{-- Section 1: Overview --}}
 <div class="section-title">1. Inspection Overview</div>
 <table class="tbl">
+    <colgroup>
+        <col style="width: 13%;">
+        <col style="width: 10%;">
+        <col style="width: 8%;">
+        <col style="width: 14%;">
+        <col style="width: 8%;">
+        <col style="width: 15%;">
+        <col style="width: 16%;">
+        <col style="width: 16%;">
+    </colgroup>
     <tr>
-        <th style="width: 12%;">Vendor</th><td colspan="5">{{ $project->po_vendor ?: '—' }}</td>
+        <th style="width: 13%;">Vendor</th><td colspan="5">{{ $project->po_vendor ?: '—' }}</td>
         <th style="width: 12%;">PO Number</th><td>{{ $project->po_info ?: '—' }}</td>
     </tr>
     <tr>
@@ -120,9 +132,14 @@
                     </tr>
                     @foreach (array_chunk($checklist, 2) as $pair)
                         <tr>
-                            @foreach ($pair as $label)
-                                <td style="font-size: 6pt; padding: 2px 7px; color: #0F172A; font-weight: 500; border: none; vertical-align: middle;">
-                                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGpQS3kDdwZBDTDFMJpoJ92aI8JIUAOyU7A6CVkBMhtmOgMDAwMjLFixmYauGMUGdAlcYkyEFGCA////Y2DV5Nf/sYn///8f4QdiAQDsNEbR9M9VLgAAAABJRU5ErkJggg==" style="width: 8px; height: 8px; margin-right: 3px; display: inline-block; vertical-align: middle; margin-top: -1.5px;">{{ $label }}
+                            @foreach ($pair as $item)
+                                <td style="font-size: 6pt; padding: 2.5px 7px; color: {{ $item['checked'] ? '#0F172A' : '#64748B' }}; font-weight: {{ $item['checked'] ? 'bold' : 'normal' }}; border: none; vertical-align: middle;">
+                                    @if ($item['checked'])
+                                        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 8px; height: 8px; margin-right: 4px; display: inline-block; vertical-align: middle; margin-top: -1.5px;">
+                                    @else
+                                        <span style="width: 6px; height: 6px; border: 0.8px solid #CBD5E1; border-radius: 1.5px; background: #FFFFFF; display: inline-block; vertical-align: middle; margin-right: 4.5px; margin-top: -1.5px;"></span>
+                                    @endif
+                                    {{ $item['label'] }}
                                 </td>
                             @endforeach
                             @if (count($pair) === 1)
@@ -252,7 +269,7 @@
             <tr>
                 <td style="font-size: 5.8pt; color: #334155; border-top: {{ $loop->first ? '0.6px solid #E2E8F0' : 'none' }}; padding: 3px 1px; line-height: 1.5;">
                     <div>
-                        @if ($f->label)<span style="font-weight: 700; color: #0F172A; margin-right: 4px;">{{ $f->label }}</span>@endif
+                        @if ($f->label)<span style="font-weight: 700; color: #0F172A; margin-right: 4px;">{{ $shortenFabric($f->label) }}</span>@endif
                         <span class="muted bold">Fabric Sent:</span> <span style="color: #0F172A;">{{ $f->fabric_sent !== null ? $n($f->fabric_sent) : '0' }}</span> &nbsp;
                         <span class="muted bold">Short Roll:</span> <span style="color: #0F172A;">{{ $f->short_roll !== null ? $n($f->short_roll) : '0' }}</span> &nbsp;
                         <span class="muted bold">Sisa Kain (utuh):</span> <span style="color: #0F172A;">{{ $f->sisa_kain !== null ? $n($f->sisa_kain) : '0' }}</span> &nbsp;
@@ -281,10 +298,10 @@
 <div class="section-title">4. Deductions &amp; Remarks</div>
 <table class="tbl">
     <tr>
-        <th style="width: 30%;">Description</th>
+        <th style="width: 35%;">Description</th>
         <th style="width: 15%;" class="center">Price/Pcs</th>
-        <th style="width: 25%;">Reason</th>
-        <th style="width: 15%;" class="center">Qty</th>
+        <th style="width: 27%;">Reason</th>
+        <th style="width: 8%;" class="center">Qty</th>
         <th style="width: 15%;" class="center">Amount</th>
     </tr>
     @if (! $hasAnyDeduction)
@@ -312,8 +329,7 @@
             @php
                 preg_match('/\(([A-Z]+)\)\s*$/', (string) $f->label, $unitMatch);
                 $unit = strtolower($unitMatch[1] ?? 'unit');
-                $lbl = (string) $f->label;
-                $formattedLabel = strlen($lbl) <= 42 ? $lbl : trim(substr($lbl, 0, 28)).' ... '.trim(substr($lbl, -13));
+                $formattedLabel = $shortenFabric($f->label);
             @endphp
             <tr>
                 <td>Fabric Overconsumption{{ $f->label ? ' — '.$formattedLabel : '' }}</td>
@@ -347,12 +363,18 @@
 <div class="section-title">5. Conclusions</div>
 <table style="width: 100%; border-collapse: collapse; border: none; margin-top: 4px;">
     <tr>
-        <td style="width: 23%; vertical-align: top; border: none; padding: 0 4px 0 0;">
-            <table style="width: 100%; border: 1.2px solid {{ $resultColor }}; border-radius: 6px; background-color: {{ $result === 'PASSED' ? '#F0FDF4' : ($result === 'FAILED' ? '#FEF2F2' : '#F8FAFC') }}; height: 72px; border-collapse: separate; border-spacing: 0; text-align: center;">
-                <tr>
-                    <td style="vertical-align: middle; padding: 6px; border: none;">
-                        <div style="font-size: 5.6pt; text-transform: uppercase;" class="muted bold"><span style="font-family: Symbol; font-size: 6.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span> Overall Inspection Result</div>
-                        <div style="font-size: 11pt; font-weight: bold; color: {{ $resultColor }}; margin-top: 2px;">{{ $result }}</div>
+        <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0;">
+            <table style="width: 100%; border: 0.6px solid {{ $resultColor }}; border-radius: 6px; background-color: {{ $result === 'PASSED' ? '#F0FDF4' : ($result === 'FAILED' ? '#FEF2F2' : '#F8FAFC') }}; height: 72px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
+                <tr style="height: 38px;">
+                    <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 38px;">
+                        <div style="font-size: 5.6pt; text-transform: uppercase;" class="muted bold">
+                            <span style="font-family: 'DejaVu Sans', sans-serif; font-size: 6.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span>Overall Inspection Result
+                        </div>
+                    </td>
+                </tr>
+                <tr style="height: 26px;">
+                    <td style="vertical-align: middle; border: none; border-top: 0.6px dashed #CBD5E1; padding: 2px 0 0 0; text-align: center; height: 26px;">
+                        <div style="font-size: 11pt; font-weight: bold; color: {{ $resultColor }};">{{ $result }}</div>
                     </td>
                 </tr>
             </table>
@@ -363,10 +385,10 @@
             ['label' => 'Approved By', 'sig' => $signatures['ho'], 'role' => 'MPG HO - MD Production', 'name' => $signatures['ho']['name']],
             ['label' => 'Authorized By', 'sig' => $signatures['director'], 'role' => 'Director', 'name' => $signatures['director']['name']],
         ] as $box)
-            <td style="width: 19.25%; vertical-align: top; border: none; padding: 0 0 0 5px;">
+            <td style="width: 20%; vertical-align: top; border: none; padding: {{ $loop->last ? '0' : '0 5px 0 0' }};">
                 <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 72px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
-                    <tr>
-                        <td style="vertical-align: top; border: none; padding: 0; text-align: center;">
+                    <tr style="height: 38px;">
+                        <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 38px;">
                             <div style="font-size: 5.6pt; text-transform: uppercase; margin-bottom: 4px;" class="muted bold">{{ $box['label'] }}</div>
                             @if ($box['sig']['state'] === 'signed')
                                 <div class="sig-badge" style="display: inline-flex; align-items: center; vertical-align: middle;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Digitally Signed</div>
@@ -393,9 +415,9 @@
                             @endif
                         </td>
                     </tr>
-                    <tr>
-                        <td style="vertical-align: bottom; border: none; padding: 0; text-align: center; height: 1px;">
-                            <div style="border-top: 0.6px dashed #CBD5E1; padding-top: 2.5px; margin-top: 4px;">
+                    <tr style="height: 26px;">
+                        <td style="vertical-align: bottom; border: none; border-top: 0.6px dashed #CBD5E1; padding: 2px 0 0 0; text-align: center; height: 26px;">
+                            <div>
                                 @if ($box['name'])
                                     <div style="font-size: 6.2pt; font-weight: bold; line-height: 1.1; margin-bottom: 1px;">{{ $box['name'] }}</div>
                                 @endif
