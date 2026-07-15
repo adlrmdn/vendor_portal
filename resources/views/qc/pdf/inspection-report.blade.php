@@ -362,12 +362,12 @@
 {{-- Section 5: Conclusions --}}
 <div class="section-title">5. Conclusions</div>
 <table style="width: 100%; border-collapse: collapse; border: none; margin-top: 4px;">
-    <tr style="height: 72px;">
-        <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0; height: 72px;">
-            <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 72px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
-                <tr style="height: 38px;">
-                    <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 38px;">
-                        <div style="font-size: 5.6pt; text-transform: uppercase;" class="muted bold">
+    <tr style="height: 80px;">
+        <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0; height: 80px;">
+            <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 80px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
+                <tr style="height: 46px;">
+                    <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 46px;">
+                        <div style="font-size: 5.3pt; font-weight: bold; color: #0F172A; text-transform: uppercase; line-height: 1.1;">
                             <span style="font-family: 'DejaVu Sans', sans-serif; font-size: 6.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span>Overall Inspection Result
                         </div>
                     </td>
@@ -387,33 +387,33 @@
             ['label' => 'Approved By', 'sig' => $signatures['ho'], 'role' => 'MPG HO - MD Production', 'name' => $signatures['ho']['name']],
             ['label' => 'Authorized By', 'sig' => $signatures['director'], 'role' => 'Director', 'name' => $signatures['director']['name']],
         ] as $box)
-            <td style="width: 20%; vertical-align: top; border: none; padding: {{ $loop->last ? '0' : '0 5px 0 0' }}; height: 72px;">
-                <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 72px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
-                    <tr style="height: 38px;">
-                        <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 38px;">
-                            <div style="font-size: 5.6pt; text-transform: uppercase; margin-bottom: 4px;" class="muted bold">{{ $box['label'] }}</div>
+            <td style="width: 20%; vertical-align: top; border: none; padding: {{ $loop->last ? '0' : '0 5px 0 0' }}; height: 80px;">
+                <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 80px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
+                    <tr style="height: 46px;">
+                        <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 46px;">
+                            <div style="font-size: 5.6pt; text-transform: uppercase; margin-bottom: 2px; line-height: 1.1;" class="muted bold">{{ $box['label'] }}</div>
                             @if ($box['sig']['state'] === 'signed')
-                                <div class="sig-badge" style="display: inline-flex; align-items: center; vertical-align: middle;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Digitally Signed</div>
+                                <div class="sig-badge" style="display: inline-flex; align-items: center; vertical-align: middle; line-height: 1;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Digitally Signed</div>
                                 @php
                                     $stampText = !empty($box['sig']['email']) ? $shortEmail($box['sig']['email']) : '';
                                     if (empty($stampText) && $box['label'] !== 'Inspected By') {
                                         $stampText = $box['sig']['name'];
                                     }
                                 @endphp
-                                @if (!empty($stampText))<div class="muted" style="font-size: 5.2pt; margin-top: 1px;">{{ $stampText }}</div>@endif
-                                @if ($box['sig']['date'])<div class="muted" style="font-size: 5.2pt; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
+                                @if (!empty($stampText))<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $stampText }}</div>@endif
+                                @if ($box['sig']['date'])<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
                             @elseif ($box['sig']['state'] === 'rejected')
-                                <div class="sig-badge rejected" style="display: inline-flex; align-items: center; vertical-align: middle;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAY0lEQVR4nJWQ0Q0AIQhDxQluKJnaoWSDd18mnKDxSPigtKRFgPKn6i3RVAmCCe7IpkrNwN2Rp3epfjiJ517W0JktfyyE9stsDoJThiDIPK94+JInZ6JPaFNl9RxsAVc9WgMoL8rWaChiYc43AAAAAElFTkSuQmCC" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Rejected</div>
+                                <div class="sig-badge rejected" style="display: inline-flex; align-items: center; vertical-align: middle; line-height: 1;"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAY0lEQVR4nJWQ0Q0AIQhDxQluKJnaoWSDd18mnKDxSPigtKRFgPKn6i3RVAmCCe7IpkrNwN2Rp3epfjiJ517W0JktfyyE9stsDoJThiDIPK94+JInZ6JPaFNl9RxsAVc9WgMoL8rWaChiYc43AAAAAElFTkSuQmCC" style="width: 7px; height: 7px; margin-right: 2px; vertical-align: middle; margin-top: -1px; display: inline-block;"> Rejected</div>
                                 @php
                                     $stampText = !empty($box['sig']['email']) ? $shortEmail($box['sig']['email']) : '';
                                     if (empty($stampText) && $box['label'] !== 'Inspected By') {
                                         $stampText = $box['sig']['name'];
                                     }
                                 @endphp
-                                @if (!empty($stampText))<div class="muted" style="font-size: 5.2pt; margin-top: 1px;">{{ $stampText }}</div>@endif
-                                @if ($box['sig']['date'])<div class="muted" style="font-size: 5.2pt; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
+                                @if (!empty($stampText))<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $stampText }}</div>@endif
+                                @if ($box['sig']['date'])<div class="muted" style="font-size: 5.0pt; line-height: 1; margin-top: 1px;">{{ $box['sig']['date'] }}</div>@endif
                             @else
-                                <div class="sig-badge pending" style="margin-top: 6px;">{{ $box['label'] === 'Authorized By' ? 'Awaiting Authorization' : 'Awaiting Approval' }}</div>
+                                <div class="sig-badge pending" style="margin-top: 4px; line-height: 1;">{{ $box['label'] === 'Authorized By' ? 'Awaiting Authorization' : 'Awaiting Approval' }}</div>
                             @endif
                         </td>
                     </tr>
