@@ -364,18 +364,18 @@
 <table style="width: 100%; border-collapse: collapse; border: none; margin-top: 4px;">
     <tr style="height: 72px;">
         <td style="width: 20%; vertical-align: top; border: none; padding: 0 5px 0 0; height: 72px;">
-            <table style="width: 100%; border: 0.6px solid {{ $resultColor }}; border-radius: 6px; background-color: {{ $result === 'PASSED' ? '#F0FDF4' : ($result === 'FAILED' ? '#FEF2F2' : '#F8FAFC') }}; height: 72px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
+            <table style="width: 100%; border: 0.6px solid #CBD5E1; border-radius: 6px; background-color: #F8FAFC; height: 72px; border-collapse: separate; border-spacing: 0; margin: 0; padding: 4px; box-sizing: border-box;">
                 <tr style="height: 38px;">
                     <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 38px;">
                         <div style="font-size: 5.6pt; text-transform: uppercase;" class="muted bold">
-                            Overall Inspection Result
+                            <span style="font-family: 'DejaVu Sans', sans-serif; font-size: 6.5pt; font-weight: bold; margin-right: 2px;">&#8756;</span>Overall Inspection Result
                         </div>
                     </td>
                 </tr>
                 <tr style="height: 26px;">
                     <td style="vertical-align: middle; border: none; padding: 0; text-align: center; height: 26px;">
-                        <div style="font-size: 11pt; font-weight: bold; color: {{ $resultColor }}; line-height: 1;">
-                            <span style="font-family: 'DejaVu Sans', sans-serif; font-size: 11pt; font-weight: bold; margin-right: 3px;">&#8756;</span>{{ $result }}
+                        <div style="font-size: 13pt; font-weight: bold; color: {{ $resultColor }}; line-height: 1;">
+                            {{ $result }}
                         </div>
                     </td>
                 </tr>
