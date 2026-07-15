@@ -373,9 +373,9 @@
     @if ($hasSubcon && $hasQc)
         <span>: - (Subcon) {{ $subconRemarks }}<br>&nbsp;&nbsp;- (QC) {{ $qcRemarks }}</span>
     @elseif ($hasSubcon)
-        <span>: {{ $subconRemarks }}</span>
+        <span>: (Subcon) {{ $subconRemarks }}</span>
     @elseif ($hasQc)
-        <span>: - (QC) {{ $qcRemarks }}</span>
+        <span>: (QC) {{ $qcRemarks }}</span>
     @else
         <span style="color: #94A3B8; font-style: italic;">: none</span>
     @endif
