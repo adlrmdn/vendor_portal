@@ -30,6 +30,9 @@ class SendQcNotificationEmail implements ShouldQueue
 
     public int $backoff = 10;
 
+    /** One SMTP send with the ~3-5 MB inspection PDF takes ~30s through Gmail. */
+    public int $timeout = 120;
+
     /** @param array<string,mixed> $payload */
     public function __construct(public array $payload) {}
 
@@ -58,8 +61,7 @@ class SendQcNotificationEmail implements ShouldQueue
 
         try {
             Mail::send($p['view'], $p['viewData'] ?? [], function ($m) use ($p, $pdf) {
-                $m->from('rpa@megaperintis.co.id', 'Mega Perintis RPA')
-                    ->to($p['recipients'] ?? [])
+                $m->to($p['recipients'] ?? [])
                     ->subject($p['subject'] ?? 'QC Packaging Notification');
 
                 if ($pdf !== null) {

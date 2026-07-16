@@ -35,6 +35,13 @@ class SendFinalApprovalEmail implements ShouldQueue
     public int $backoff = 5;
 
     /**
+     * One SMTP send with the ~3-5 MB inspection PDF takes ~30s through Gmail;
+     * leave generous headroom but stay under queue.connections.database.retry_after
+     * (210s) so a running job is never re-reserved by a second worker.
+     */
+    public int $timeout = 120;
+
+    /**
      * @param  array<string,mixed>  $payload  token, recipients[], subject, sessionId,
      *                                        projectId, productionGroup, orderNumber, remarks
      */
@@ -42,6 +49,18 @@ class SendFinalApprovalEmail implements ShouldQueue
 
     public function handle(): void
     {
+        // Fan out: one job per approver. A single send with the attachment takes
+        // ~30s, so 8 recipients in one job blows any sane worker timeout — and a
+        // mid-loop retry would re-send to the recipients already served.
+        $recipients = array_values(array_filter((array) ($this->payload['recipients'] ?? [])));
+        if (count($recipients) > 1) {
+            foreach ($recipients as $recipient) {
+                static::dispatch(array_merge($this->payload, ['recipients' => [$recipient]]));
+            }
+
+            return;
+        }
+
         $projectId = $this->payload['projectId'] ?? null;
         $pdf = null;
 
@@ -135,8 +154,9 @@ class SendFinalApprovalEmail implements ShouldQueue
                     'remarks' => $p['remarks'] ?? null,
                     'note' => $p['note'] ?? null,
                 ], function ($m) use ($p, $pdf, $recipient) {
-                    $m->from('rpa@megaperintis.co.id', 'Mega Perintis RPA')
-                        ->to($recipient)
+                    // Sender comes from the configured system address (mail.from);
+                    // a hardcoded non-alias From is rewritten/refused by Gmail SMTP.
+                    $m->to($recipient)
                         ->subject($p['subject'] ?? 'Approval needed: Final Approval');
 
                     if ($pdf !== null) {

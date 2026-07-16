@@ -1063,8 +1063,7 @@ class QcApprovalController extends Controller
                 'sessionId' => $row->session_id ?? null,
             ], function ($m) use ($to, $subcon, $stage) {
                 $ref = trim((string) ($subcon->order_number ?? ''));
-                $m->from('rpa@megaperintis.co.id', 'Mega Perintis RPA')
-                    ->to($to)
+                $m->to($to)
                     ->subject('Inspection rejected by '.$stage.($ref !== '' ? ' — '.$ref : ''));
             });
 
