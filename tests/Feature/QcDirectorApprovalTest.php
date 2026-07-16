@@ -516,6 +516,41 @@ class QcDirectorApprovalTest extends TestCase
         $this->assertStringStartsWith('Digitally Signed: Fitri Yeni <fitri.yeni@megaputragarment.co.id>', $sig);
     }
 
+    public function test_ho_approval_notifies_the_earlier_participants(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_approval_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))->assertOk();
+
+        // QC inspector + factory representative are told MD Production approved.
+        Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
+            return ($job->payload['view'] ?? null) === 'emails.qc-stage-update'
+                && ($job->payload['viewData']['stage'] ?? null) === 'MD Production'
+                && ($job->payload['recipients'] ?? []) === ['qc-inspector@example.test', 'factoryrep@example.test'];
+        });
+    }
+
+    public function test_factory_approval_notifies_the_inspector(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        $this->seedFreshUnapprovedSession();
+
+        $this->get(route('qc.approve', ['token' => $this->token]))->assertOk();
+
+        Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
+            return ($job->payload['view'] ?? null) === 'emails.qc-stage-update'
+                && ($job->payload['viewData']['stage'] ?? null) === 'Factory Representative'
+                && ($job->payload['recipients'] ?? []) === ['qc-inspector@example.test'];
+        });
+    }
+
     public function test_director_authorization_is_attributed_to_the_logged_in_account(): void
     {
         Queue::fake();

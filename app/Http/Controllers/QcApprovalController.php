@@ -107,6 +107,15 @@ class QcApprovalController extends Controller
         // roll back or hide the vendor confirmation that already committed.
         $this->sendHoApprovalRequest($token, $row);
 
+        // Tell the QC inspector their inspection moved forward.
+        $this->sendStageProgressNotification(
+            $row,
+            'Factory Representative',
+            $signer,
+            'It is now awaiting MD Production approval.',
+            [$row->inspector_email ?? ''],
+        );
+
         return view('qc.approval-result', [
             'state' => 'success',
             'message' => 'Approval recorded. The QC Console will update automatically.',
@@ -448,6 +457,16 @@ class QcApprovalController extends Controller
         $this->refreshVerifiedDoc($row);
         app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
         $this->sendDirectorApprovalRequest($token, $row);
+
+        // Tell the earlier participants (QC inspector + factory representative)
+        // that MD Production approved and the Director stage is underway.
+        $this->sendStageProgressNotification(
+            $row,
+            'MD Production',
+            $hoActor,
+            'It is now awaiting Director authorization.',
+            [$row->inspector_email ?? '', $row->approval_email ?? ''],
+        );
 
         return view('qc.approval-result', [
             'state' => 'success',
@@ -1137,6 +1156,58 @@ class QcApprovalController extends Controller
      * chain — QC inspector, Factory Representative, MD Production list, and
      * Director list — deduplicated.
      */
+    /**
+     * Progress notification to the EARLIER participants when a later stage
+     * approves: the QC inspector when the factory representative confirms, the
+     * inspector + factory representative when MD Production approves. (Director
+     * authorization already notifies everyone via sendCompletionNotification.)
+     * Best-effort — never blocks the approval that already committed.
+     *
+     * @param  list<string>  $recipients
+     */
+    private function sendStageProgressNotification(object $row, string $stage, string $actor, string $nextStep, array $recipients): void
+    {
+        try {
+            $recipients = collect($recipients)
+                ->map(fn ($e) => trim((string) $e))
+                ->filter(fn ($e) => $e !== '' && filter_var($e, FILTER_VALIDATE_EMAIL))
+                ->unique(fn ($e) => strtolower($e))
+                ->values()->all();
+
+            if (empty($recipients)) {
+                return;
+            }
+
+            [$subcon, , $productionGroup] = $this->subconContext($row);
+
+            $ref = collect([
+                trim((string) ($subcon->order_number ?? '')),
+                trim((string) ($productionGroup ?? '')),
+            ])->filter()->implode(' — ');
+
+            \App\Jobs\SendQcNotificationEmail::dispatch([
+                'view' => 'emails.qc-stage-update',
+                'recipients' => $recipients,
+                'subject' => 'Inspection approved by '.$stage.($ref !== '' ? ' — '.$ref : ''),
+                'projectId' => $row->project_id ?? null,
+                'attachmentName' => 'packaging-inspection-'.($subcon->order_number ?? 'inspection'),
+                'viewData' => [
+                    'stage' => $stage,
+                    'actor' => $actor,
+                    'nextStep' => $nextStep,
+                    'orderNumber' => $subcon->order_number ?? null,
+                    'productionGroup' => $productionGroup,
+                    'projectId' => $row->project_id ?? null,
+                    'sessionId' => $row->session_id ?? null,
+                ],
+            ]);
+
+            Log::info('QC stage progress notification queued', ['stage' => $stage, 'to' => $recipients]);
+        } catch (\Throwable $e) {
+            Log::error('QC stage progress notification failed', ['stage' => $stage, 'error' => $e->getMessage()]);
+        }
+    }
+
     private function sendCompletionNotification(object $row, ?object $subcon, ?string $productionGroup): void
     {
         try {
