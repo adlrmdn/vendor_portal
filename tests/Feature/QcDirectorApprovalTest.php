@@ -98,7 +98,8 @@ class QcDirectorApprovalTest extends TestCase
             factory_representative TEXT, inspector TEXT, version TEXT, result TEXT,
             approval_token TEXT, approval_email TEXT, approved_by TEXT, approved_at TEXT,
             approval_source TEXT, approval_status TEXT, approval_signature TEXT,
-            ho_approval_signature TEXT, director_approval_signature TEXT, inspector_email TEXT,
+            ho_approval_signature TEXT, ho_validation_signature TEXT,
+            director_approval_signature TEXT, inspector_email TEXT,
             remarks TEXT, retur_kain REAL)');
         $qms->statement('CREATE TABLE packaging_project_reports (
             report_id TEXT PRIMARY KEY, session_id TEXT, project_id TEXT, size_val TEXT,
@@ -173,6 +174,7 @@ class QcDirectorApprovalTest extends TestCase
             'approved_at' => now()->subHour(),
             'approval_signature' => 'Digitally Signed: factoryrep@example.test [UTC+07:00: 2026-07-14 10:00:00]',
             'ho_approval_signature' => 'Digitally Signed: MPG HO - MD Production [UTC+07:00: 2026-07-14 11:00:00]',
+            'ho_validation_signature' => 'Digitally Signed: MPG HO - MD Production [UTC+07:00: 2026-07-14 11:05:00]',
         ], $sessionOverrides));
     }
 
@@ -330,8 +332,10 @@ class QcDirectorApprovalTest extends TestCase
         $session = DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)->first();
         $this->assertStringStartsWith('Rejected: MPG Director', $session->director_approval_signature);
-        // Back to MD Production: HO signature cleared, factory-rep signature kept.
+        // Back to MD Production: HO signature + validation cleared (both steps
+        // of the gate redone), factory-rep signature kept.
         $this->assertNull($session->ho_approval_signature);
+        $this->assertNull($session->ho_validation_signature);
         $this->assertNotNull($session->approval_signature);
         $this->assertSame('approved', $session->approval_status);
 
@@ -358,21 +362,27 @@ class QcDirectorApprovalTest extends TestCase
             ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
         );
 
-        // Director rejected earlier: ho cleared, director stamp 'Rejected:'.
+        // Director rejected earlier: ho + validation cleared, director stamp 'Rejected:'.
         DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)
             ->update([
                 'ho_approval_signature' => null,
+                'ho_validation_signature' => null,
                 'director_approval_signature' => 'Rejected: MPG Director [UTC+07:00: 2026-07-14 12:00:00]',
             ]);
 
-        $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))->assertOk();
+        // Step 1 — Review & Approve: signs + queues RAF, then bounces back to
+        // the form (which now renders the validate-and-send step).
+        $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))
+            ->assertRedirect(route('qc.ho-approve', ['token' => $this->token]));
 
         $session = DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)->first();
         $this->assertStringStartsWith('Digitally Signed: MPG HO - MD Production', $session->ho_approval_signature);
         // Rerun wipes the stale Director rejection so the new Director link is live.
         $this->assertNull($session->director_approval_signature);
+        // …and starts a fresh validate-and-send cycle.
+        $this->assertNull($session->ho_validation_signature);
 
         // MD Prod approval queues the RAF RPA job (status 'pending').
         $raf = DB::connection('rpa')->table('rpa_queues')
@@ -380,10 +390,95 @@ class QcDirectorApprovalTest extends TestCase
         $this->assertNotNull($raf);
         $this->assertSame('pending', $raf->status);
 
-        // And chains the Director authorization email.
+        // The Director is NOT notified at approve any more…
+        Queue::assertNotPushed(SendQcNotificationEmail::class, function ($job) {
+            return $job->payload['view'] === 'emails.qc-director-approval';
+        });
+
+        // Step 2 — Validate & Send: records the validation signature and only
+        // now chains the Director authorization email.
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('the Director has been notified', false);
+
+        $session = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)->first();
+        $this->assertStringStartsWith('Digitally Signed: MPG HO - MD Production', $session->ho_validation_signature);
+
         Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
             return $job->payload['view'] === 'emails.qc-director-approval';
         });
+    }
+
+    public function test_ho_send_is_idempotent_and_requires_prior_approval(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        // Not approved yet → send refuses.
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_approval_signature' => null, 'ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('has not been approved by MD Production yet');
+        Queue::assertNotPushed(SendQcNotificationEmail::class);
+
+        // Approved → first send goes through, second short-circuits.
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_approval_signature' => 'Digitally Signed: MPG HO - MD Production [UTC+07:00: 2026-07-14 11:00:00]']);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('the Director has been notified', false);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('already been sent to the Director');
+
+        // Exactly one Director request despite the double click.
+        $this->assertSame(1, collect(Queue::pushedJobs()[SendQcNotificationEmail::class] ?? [])
+            ->filter(fn ($p) => $p['job']->payload['view'] === 'emails.qc-director-approval')->count());
+    }
+
+    public function test_director_form_requires_validate_and_send_first(): void
+    {
+        // Approved but not yet validated & sent → the Director stage stays shut.
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null]);
+
+        $this->get(route('qc.director-approve', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('has not validated');
+    }
+
+    public function test_ho_form_renders_validate_step_after_approval(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_approval_signature' => null, 'ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))
+            ->assertRedirect(route('qc.ho-approve', ['token' => $this->token]));
+
+        // The same form now renders step 2: read-only + Validate & Send button
+        // + the live RAF run status (queued as 'pending' by the approve).
+        $this->get(route('qc.ho-approve', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('Validate &amp; Send Approval', false)
+            ->assertSee('RAF production run is still pending', false)
+            ->assertDontSee('Review &amp; Approve', false);
     }
 
     // ---------------------------------------------------------------
@@ -509,7 +604,7 @@ class QcDirectorApprovalTest extends TestCase
         // The per-recipient email link carries `as`; the form posts it back.
         $this->post(route('qc.ho-approve.submit', ['token' => $this->token]), [
             'as' => 'fitri.yeni@megaputragarment.co.id',
-        ])->assertOk();
+        ])->assertRedirect();
 
         $sig = (string) DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)->value('ho_approval_signature');
@@ -523,9 +618,16 @@ class QcDirectorApprovalTest extends TestCase
 
         DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)
-            ->update(['ho_approval_signature' => null, 'director_approval_signature' => null]);
+            ->update(['ho_approval_signature' => null, 'ho_validation_signature' => null, 'director_approval_signature' => null]);
 
-        $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))->assertOk();
+        // The stage-progress notice fires at Validate & Send (that is when the
+        // Director stage actually opens), not at Review & Approve.
+        $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))->assertRedirect();
+        Queue::assertNotPushed(SendQcNotificationEmail::class, function ($job) {
+            return ($job->payload['view'] ?? null) === 'emails.qc-stage-update';
+        });
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))->assertOk();
 
         // QC inspector + factory representative are told MD Production approved.
         Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
@@ -626,6 +728,7 @@ class QcDirectorApprovalTest extends TestCase
                 'approved_by' => null,
                 'approved_at' => null,
                 'ho_approval_signature' => null,
+                'ho_validation_signature' => null,
                 'director_approval_signature' => null,
             ]);
     }

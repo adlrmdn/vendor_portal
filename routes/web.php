@@ -159,6 +159,7 @@ Route::get('/qc/reject/{token}', [App\Http\Controllers\QcApprovalController::cla
 // it); GET renders the form, POST commits fabric/deduction lines + the HO signature.
 Route::get('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprovalForm'])->name('qc.ho-approve');
 Route::post('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprove'])->name('qc.ho-approve.submit');
+Route::post('/qc/ho-send/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoSendApproval'])->name('qc.ho-send.submit');
 // HO rejection — writes `ho_approval_signature` with a "Rejected: …" prefix (console contract).
 // GET only renders a confirmation page; the actual write is a POST. This is deliberate:
 // the HO email goes to corporate mailboxes whose link scanners (Microsoft Safe Links /

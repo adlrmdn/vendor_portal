@@ -256,16 +256,27 @@ class QcApprovalController extends Controller
             ]);
         }
 
-        if (! empty($row->ho_approval_signature ?? null)) {
-            $rejected = str_starts_with((string) $row->ho_approval_signature, 'Rejected:');
+        $hoSig = trim((string) ($row->ho_approval_signature ?? ''));
+        $validateMode = false;
+        if ($hoSig !== '') {
+            $rejected = str_starts_with($hoSig, 'Rejected:');
+            $sent = trim((string) ($row->ho_validation_signature ?? '')) !== ''
+                || trim((string) ($row->director_approval_signature ?? '')) !== '';
 
-            return view('qc.approval-result', [
-                'state' => $rejected ? 'rejected' : 'already',
-                'message' => $rejected
-                    ? 'This inspection has already been rejected by Head Office.'
-                    : 'This inspection has already received Head Office approval.',
-                'signature' => $row->ho_approval_signature,
-            ]);
+            if ($rejected || $sent) {
+                return view('qc.approval-result', [
+                    'state' => $rejected ? 'rejected' : 'already',
+                    'message' => $rejected
+                        ? 'This inspection has already been rejected by Head Office.'
+                        : 'This inspection has already received Head Office approval and been sent to the Director.',
+                    'signature' => $row->ho_approval_signature,
+                ]);
+            }
+
+            // Approved but not yet sent — step 2 of the MD gate: the same page
+            // renders read-only with the RAF run status and a single
+            // "Validate & Send Approval" button (hoSendApproval).
+            $validateMode = true;
         }
 
         // HO gate is calculation+approval: re-expose the same consumption inputs
@@ -280,7 +291,7 @@ class QcApprovalController extends Controller
         // and 0 is treated the same, keeping the stored snapshot value. HO can
         // still revise it before signing; their submitted value is what persists.
         $qcReturKain = (float) ($row->retur_kain ?? 0);
-        if ($qcReturKain > 0 && ! empty($fabricLines)) {
+        if (! $validateMode && $qcReturKain > 0 && ! empty($fabricLines)) {
             $fabricLines[0]['retur_kain'] = $qcReturKain;
             $fabricLines[0]['retur_kain_source'] = 'qc_console';
         }
@@ -297,7 +308,10 @@ class QcApprovalController extends Controller
             $cuttingReports = \App\Models\SubconCuttingReport::where('order_id', $subcon->id)->get()->keyBy('prod_id');
         }
 
-        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports'));
+        // Step-2 extras: live RAF run status (best-effort, remote RPA DB).
+        $rafStatus = $validateMode ? $this->rafJobStatus((string) $row->project_id) : null;
+
+        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'validateMode', 'rafStatus'));
     }
 
     /**
@@ -414,6 +428,10 @@ class QcApprovalController extends Controller
                     if (Schema::connection('qms')->hasColumn(self::TABLE, 'director_approval_signature')) {
                         $update['director_approval_signature'] = null;
                     }
+                    // Every (re-)approval starts a fresh validate-and-send cycle.
+                    if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')) {
+                        $update['ho_validation_signature'] = null;
+                    }
                     DB::connection('qms')->table(self::TABLE)
                         ->where('approval_token', $token)
                         ->where(function ($q) {
@@ -452,10 +470,113 @@ class QcApprovalController extends Controller
         ]);
 
         // MD Production approved → refresh the signed PDF (now carrying both
-        // signatures), queue the RAF RPA job, and chain the Director stage.
-        // All best-effort: the approval above has already committed.
+        // signatures) and queue the RAF RPA job. The Director is NOT notified
+        // here any more: MD Production reviews the numbers once RAF has run and
+        // presses "Validate & Send Approval" (hoSendApproval) to open stage 3.
+        // Both best-effort: the approval above has already committed.
         $this->refreshVerifiedDoc($row);
         app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
+
+        // Back to the same form, which now renders the validate-and-send step.
+        return redirect()->route('qc.ho-approve', array_filter([
+            'token' => $token,
+            'as' => $request->input('as'),
+        ]))->with('qc_ho_approved', true);
+    }
+
+    /**
+     * Stage 2b — "Validate & Send Approval". Review & Approve (hoApprove) signs
+     * and queues the RAF production run but no longer notifies the Director;
+     * this second, explicit send is MD Production vouching for the numbers
+     * after the RAF run. Idempotent via `ho_validation_signature` (same
+     * 'Digitally Signed:' contract as the other signature columns).
+     */
+    public function hoSendApproval(Request $request, string $token)
+    {
+        $row = $this->findByToken($token);
+
+        if (! $row) {
+            return view('qc.approval-result', [
+                'state' => 'invalid',
+                'message' => 'This approval link is invalid or has expired.',
+            ]);
+        }
+
+        $hoSig = (string) ($row->ho_approval_signature ?? '');
+        if (str_starts_with($hoSig, 'Rejected:')) {
+            return view('qc.approval-result', [
+                'state' => 'rejected',
+                'message' => 'This inspection has already been rejected by Head Office and can no longer be sent.',
+                'signature' => $hoSig,
+            ]);
+        }
+        if (! str_contains($hoSig, 'Digitally Signed:')) {
+            return view('qc.approval-result', [
+                'state' => 'invalid',
+                'message' => 'This inspection has not been approved by MD Production yet — Review & Approve it first, then Validate & Send.',
+            ]);
+        }
+        if (trim((string) ($row->director_approval_signature ?? '')) !== '') {
+            return view('qc.approval-result', [
+                'state' => 'already',
+                'message' => 'This inspection has already been actioned by the Director.',
+                'signature' => $row->director_approval_signature,
+            ]);
+        }
+
+        $actor = $this->actorLabel($request, self::HO_SIGNER);
+        $signature = 'Digitally Signed: '.$actor
+            .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
+
+        if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')) {
+            try {
+                $affected = DB::connection('qms')->table(self::TABLE)
+                    ->where('approval_token', $token)
+                    ->where(function ($q) {
+                        $q->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
+                    })
+                    ->update(['ho_validation_signature' => $signature]);
+            } catch (\Throwable $e) {
+                Log::error('QC HO send write failed', ['token' => $token, 'error' => $e->getMessage()]);
+
+                return view('qc.approval-result', [
+                    'state' => 'invalid',
+                    'message' => 'Could not record the send. Please try again, or contact support if this persists.',
+                ]);
+            }
+
+            if ($affected === 0) {
+                return view('qc.approval-result', [
+                    'state' => 'already',
+                    'message' => 'This approval has already been sent to the Director.',
+                    'signature' => $row->ho_validation_signature,
+                ]);
+            }
+        } else {
+            // Column missing (console DDL race) — send anyway, but without the
+            // idempotency marker a double click could re-email the Director.
+            Log::warning('QC HO send: ho_validation_signature column missing — send not idempotent', ['token' => $token]);
+        }
+
+        Log::info('QC HO validation signed — sending to Director', ['token' => $token, 'project_id' => $row->project_id]);
+
+        [$subcon, , $productionGroup] = $this->subconContext($row);
+        \App\Models\SubconApprovalLog::record([
+            'order_id' => $subcon->id ?? null,
+            'order_number' => $subcon->order_number ?? ($row->project_id ?? null),
+            'vendor_name' => $subcon?->vendor?->name,
+            'gate' => 'final',
+            'decision' => 'approved',
+            'actor' => $actor,
+            'source' => $request->user() ? 'portal' : 'email',
+            'note' => 'Numbers validated — approval sent to the Director for authorization.',
+        ]);
+
+        // Re-render the document at SEND time so the Director's attachment
+        // carries the numbers as they stand now (post-RAF), not as of the
+        // approve click. Best-effort — the emails fall back to the stored copy.
+        $this->refreshVerifiedDoc($row);
+
         $this->sendDirectorApprovalRequest($token, $row);
 
         // Tell the earlier participants (QC inspector + factory representative)
@@ -463,14 +584,14 @@ class QcApprovalController extends Controller
         $this->sendStageProgressNotification(
             $row,
             'MD Production',
-            $hoActor,
+            $actor,
             'It is now awaiting Director authorization.',
             [$row->inspector_email ?? '', $row->approval_email ?? ''],
         );
 
         return view('qc.approval-result', [
             'state' => 'success',
-            'message' => 'Head Office approval recorded. The Director has been notified for final authorization.',
+            'message' => 'Approval sent — the Director has been notified for final authorization.',
             'signature' => $signature,
         ]);
     }
@@ -706,13 +827,13 @@ class QcApprovalController extends Controller
     public function printDraft(Request $request, string $projectId, string $sessionId, QcReportPdfService $reportPdf)
     {
         $fresh = $reportPdf->renderDataUri($projectId, $sessionId);
-        
+
         if (! $fresh) {
             abort(404, 'Could not render inspection report PDF.');
         }
-        
+
         $bytes = $this->dataUriToPdfBytes((string) $fresh);
-        
+
         if ($bytes === null) {
             abort(404, 'Inspection document bytes are unavailable.');
         }
@@ -915,16 +1036,22 @@ class QcApprovalController extends Controller
         $signature = 'Rejected: '.$directorActor
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
 
+        $reset = [
+            'director_approval_signature' => $signature,
+            'ho_approval_signature' => null, // back to MD Production
+        ];
+        // Back to MD Production means redoing BOTH steps of the gate.
+        if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')) {
+            $reset['ho_validation_signature'] = null;
+        }
+
         try {
             $affected = DB::connection('qms')->table(self::TABLE)
                 ->where('approval_token', $token)
                 ->where(function ($q) {
                     $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
                 })
-                ->update([
-                    'director_approval_signature' => $signature,
-                    'ho_approval_signature' => null, // back to MD Production
-                ]);
+                ->update($reset);
         } catch (\Throwable $e) {
             Log::error('QC director reject write failed', ['token' => $token, 'error' => $e->getMessage()]);
 
@@ -1000,6 +1127,23 @@ class QcApprovalController extends Controller
             ]);
         }
 
+        // Two-step MD gate: approval alone no longer opens the Director stage —
+        // MD Production must also press "Validate & Send Approval" after the
+        // RAF production run. (Rows signed under the single-step flow were
+        // backfilled as validated by the 2026-07-17 migration.)
+        try {
+            if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')
+                && trim((string) ($row->ho_validation_signature ?? '')) === '') {
+                return view('qc.approval-result', [
+                    'state' => 'invalid',
+                    'message' => 'This inspection is not ready for Director authorization — MD Production has approved it but has not validated & sent it yet.',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Column check unreadable — fall through; the signature guard above
+            // and the idempotent director write still protect the stage.
+        }
+
         // Legacy safety net: projects completed under the old two-stage flow
         // (console "Complete & Sync") have an HO signature but no director
         // stamp. Authorizing one would re-queue a REAL invoice RPA job for an
@@ -1020,6 +1164,29 @@ class QcApprovalController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * Live status of the queued RAF production job for the validate-and-send
+     * page ('pending'|'processing'|'completed'|'failed'|null). Best-effort —
+     * the RPA DB is remote and unreachable must never break the page.
+     */
+    private function rafJobStatus(?string $projectId): ?string
+    {
+        if (! $projectId) {
+            return null;
+        }
+        try {
+            $status = DB::connection('rpa')->table('rpa_queues')
+                ->where('entity_id', $projectId)
+                ->where('rpa_type', 'job_trans_raf')
+                ->orderByDesc('id')
+                ->value('status');
+
+            return $status !== null ? (string) $status : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     /** Latest session version label for the RPA payloads (console-compatible). */
