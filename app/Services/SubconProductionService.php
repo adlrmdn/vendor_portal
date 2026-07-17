@@ -197,6 +197,11 @@ class SubconProductionService
             foreach ($lines as $ln) {
                 $desc = trim((string) ($ln->LineDescription ?? ''));
                 $unit = trim((string) ($ln->PurchaseUnitSymbol ?? ''));
+                // PCS lines on fabric POs are trims/accessories, not fabric —
+                // they have no consumption to reconcile.
+                if (strcasecmp($unit, 'PCS') === 0) {
+                    continue;
+                }
                 $key = $desc.'|'.$unit;
                 if (! isset($grouped[$key])) {
                     $grouped[$key] = ['description' => $desc, 'unit' => $unit ?: null, 'fabric_sent' => 0.0, 'total_amount' => 0.0, 'po_numbers' => [], 'item_numbers' => []];
@@ -358,6 +363,11 @@ class SubconProductionService
 
         $lines = [];
         foreach ($labels as $label) {
+            // PCS = trims, not fabric. Also drops reconciliation rows snapshotted
+            // before the exclusion existed (kept in the DB, just not surfaced).
+            if (preg_match('/\(PCS\)\s*$/i', $label)) {
+                continue;
+            }
             $r = $recon->get($label);
             $priced = $pricing[$label] ?? ['price' => ($vsm[$label]['fabric_price'] ?? null), 'currency' => null];
 
