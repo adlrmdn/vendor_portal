@@ -22,7 +22,7 @@ use Illuminate\Support\Facades\Log;
  * the in-app admin button and the signed email link so neither click blocks on
  * the (up-to-30s) DTT call. Failures are retried a few times, then logged.
  */
-class GenerateSubconLabels implements ShouldQueue, ShouldBeUnique
+class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
@@ -149,7 +149,16 @@ class GenerateSubconLabels implements ShouldQueue, ShouldBeUnique
         }
     }
 
-    /** Best-effort resolution of distribution_id from VSM → D365 TOC_DT. */
+    /**
+     * Best-effort resolution of distribution_id from VSM → D365 TOC_DT.
+     *
+     * Primary path: PLM 'SO Intercompany' activity → TOC_DT by SOID.
+     * Fallback: the PLM 'Budget Buying' activity carries the DST number
+     * directly (it names the same TOC_DT document the SO path resolves to) —
+     * used when the SO Intercompany activity was left unfilled in D365. The
+     * candidate is verified against TOC_DT (must exist, be Confirmed, and
+     * match the PLM's ArticleCode when both sides carry one) before use.
+     */
     private function resolveDistributionId(SubconOrder $order): void
     {
         if (! empty($order->distribution_id)) {
@@ -167,6 +176,7 @@ class GenerateSubconLabels implements ShouldQueue, ShouldBeUnique
                 return;
             }
 
+            // Primary: SO Intercompany → TOC_DT by SOID.
             $soId = DB::connection('vsm')->table('plm_trans')
                 ->where('PLMId', $plmId)
                 ->where('ActivityName', 'SO Intercompany')
@@ -174,41 +184,84 @@ class GenerateSubconLabels implements ShouldQueue, ShouldBeUnique
                 ->where('ActivityNo', '!=', '')
                 ->value('ActivityNo');
 
-            if (! $soId) {
-                return;
-            }
-
-            $tenantId = config('services.d365.tenant_id');
-            $clientId = config('services.d365.client_id');
-            $clientSecret = config('services.d365.client_secret');
-            $resource = config('services.d365.resource');
-
-            $authResponse = Http::asForm()->post("https://login.microsoftonline.com/{$tenantId}/oauth2/v2.0/token", [
-                'grant_type' => 'client_credentials',
-                'client_id' => $clientId,
-                'client_secret' => $clientSecret,
-                'scope' => "{$resource}/.default",
-            ]);
-
-            $token = $authResponse->successful() ? ($authResponse->json()['access_token'] ?? null) : null;
-            if (! $token) {
-                return;
-            }
-
-            $filter = "SOID eq '{$soId}'";
-            $queryUrl = "{$resource}/data/TOC_DT?\$filter=".rawurlencode($filter).'&cross-company=true';
-            $queryResponse = Http::withToken($token)->acceptJson()->get($queryUrl);
-
-            if ($queryResponse->successful()) {
-                $dst = $queryResponse->json()['value'][0]['DistributionID'] ?? null;
-                if ($dst) {
-                    $order->distribution_id = $dst;
+            if ($soId) {
+                $row = $this->fetchTocDt("SOID eq '{$soId}'");
+                if (! empty($row['DistributionID'])) {
+                    $order->distribution_id = $row['DistributionID'];
                     $order->save();
+
+                    return;
                 }
             }
+
+            // Fallback: Budget Buying names the DST document directly.
+            $candidate = (string) DB::connection('vsm')->table('plm_trans')
+                ->where('PLMId', $plmId)
+                ->where('ActivityName', 'Budget Buying')
+                ->whereNotNull('ActivityNo')
+                ->where('ActivityNo', '!=', '')
+                ->value('ActivityNo');
+
+            if (! str_contains($candidate, '/DST/')) {
+                return;
+            }
+
+            $row = $this->fetchTocDt("DistributionID eq '{$candidate}'");
+            if (empty($row['DistributionID']) || ($row['DocumentStatus'] ?? '') !== 'Confirmed') {
+                return;
+            }
+
+            $article = (string) DB::connection('vsm')->table('plm_activity')
+                ->where('PLMId', $plmId)->value('ArticleCode');
+            if ($article !== '' && ($row['ArticleID'] ?? '') !== '' && $row['ArticleID'] !== $article) {
+                Log::warning("Distribution fallback rejected for {$order->order_number}: {$candidate} carries article {$row['ArticleID']}, PLM says {$article}.");
+
+                return;
+            }
+
+            Log::info("Distribution ID for {$order->order_number} resolved via Budget Buying fallback: {$candidate} (SO Intercompany unfilled in PLM).");
+            $order->distribution_id = $row['DistributionID'];
+            $order->save();
         } catch (\Throwable $e) {
             Log::warning("Failed to resolve distribution ID for order {$order->order_number}: ".$e->getMessage());
         }
+    }
+
+    /** First TOC_DT row (cross-company) matching the OData filter, or null. */
+    private function fetchTocDt(string $filter): ?array
+    {
+        $resource = config('services.d365.resource');
+        $token = $this->d365Token();
+        if (! $token) {
+            return null;
+        }
+
+        $queryUrl = "{$resource}/data/TOC_DT?\$filter=".rawurlencode($filter).'&cross-company=true';
+        $response = Http::withToken($token)->acceptJson()->get($queryUrl);
+
+        return $response->successful() ? ($response->json()['value'][0] ?? null) : null;
+    }
+
+    /** Client-credentials token for the D365 OData API (cached per job run). */
+    private ?string $d365Token = null;
+
+    private function d365Token(): ?string
+    {
+        if ($this->d365Token !== null) {
+            return $this->d365Token;
+        }
+
+        $tenantId = config('services.d365.tenant_id');
+        $resource = config('services.d365.resource');
+
+        $authResponse = Http::asForm()->post("https://login.microsoftonline.com/{$tenantId}/oauth2/v2.0/token", [
+            'grant_type' => 'client_credentials',
+            'client_id' => config('services.d365.client_id'),
+            'client_secret' => config('services.d365.client_secret'),
+            'scope' => "{$resource}/.default",
+        ]);
+
+        return $this->d365Token = ($authResponse->successful() ? ($authResponse->json()['access_token'] ?? null) : null);
     }
 
     public function failed(\Throwable $e): void

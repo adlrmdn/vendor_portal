@@ -25,6 +25,12 @@
         <env name="CACHE_STORE" value="array"/>
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value="database/database_test.sqlite"/>
+        <!-- Pin the label RPA to the address the tests fake. The container's
+             .env points at the REAL DTT bot (http://172.17.0.1:8071) — without
+             this pin, Http::fake('http://localhost:8071/...') never matches and
+             every "label generation" test fires a real Playwright D365 run. -->
+        <env name="LABEL_GENERATOR_URL" value="http://localhost:8071/process"/>
+        <env name="LABEL_GENERATOR_API_KEY" value="test-key"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
