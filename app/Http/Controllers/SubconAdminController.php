@@ -375,6 +375,12 @@ class SubconAdminController extends Controller
             $sessions = DB::connection('qms')->table('packaging_project_sessions')
                 ->whereNotNull('approval_token')
                 ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                // Two-step MD gate: only sessions MD has validated & sent are
+                // actually awaiting the Director (mirrors directorStageGuard).
+                ->when(
+                    Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature'),
+                    fn ($q) => $q->whereNotNull('ho_validation_signature')->where('ho_validation_signature', '!=', '')
+                )
                 ->where(function ($q) {
                     $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
                 })
@@ -468,11 +474,32 @@ class SubconAdminController extends Controller
                 return [];
             }
 
+            $hasValidationCol = Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature');
+
             $sessions = DB::connection('qms')->table('packaging_project_sessions')
                 ->whereNotNull('approval_token')
                 ->where('approval_status', 'approved')
-                ->where(function ($q) {
-                    $q->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
+                ->where(function ($q) use ($hasValidationCol) {
+                    // Step 1 pending: no HO signature yet.
+                    $q->where(function ($qq) {
+                        $qq->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
+                    });
+                    // Step 2 pending: approved but not yet validated & sent to
+                    // the Director (and not already director-actioned).
+                    if ($hasValidationCol) {
+                        $q->orWhere(function ($qq) {
+                            $qq->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                                ->where(function ($v) {
+                                    $v->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
+                                })
+                                ->where(function ($d) {
+                                    $d->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
+                                })
+                                ->whereNotIn('project_id', function ($p) {
+                                    $p->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                                });
+                        });
+                    }
                 })
                 ->get();
 
@@ -499,6 +526,8 @@ class SubconAdminController extends Controller
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
 
+                $hoSigned = str_starts_with((string) ($s->ho_approval_signature ?? ''), 'Digitally Signed:');
+
                 return [
                     'token' => $s->approval_token,
                     'order_id' => $order->id ?? null,
@@ -507,6 +536,9 @@ class SubconAdminController extends Controller
                     'vendor' => $order?->vendor?->name ?? '—',
                     'production_group' => $pg,
                     'approved_at' => $s->approved_at ?? null,
+                    // Which step of the MD gate is pending: 'approve' → Review &
+                    // Approve, 'send' → Validate & Send Approval.
+                    'step' => $hoSigned ? 'send' : 'approve',
                 ];
             })->all();
         } catch (\Throwable $e) {

@@ -460,6 +460,32 @@ class QcDirectorApprovalTest extends TestCase
             ->assertSee('has not validated');
     }
 
+    public function test_validate_pending_session_moves_tabs_from_director_to_final(): void
+    {
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        // Approved but not yet validated & sent.
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null]);
+
+        // Not awaiting the Director…
+        $this->actingAs($this->makeSubconAdmin('director@example.test', 'Director'))
+            ->get(route('subcon.admin.director-approvals'))
+            ->assertOk()
+            ->assertDontSee(route('qc.director-approve', ['token' => $this->token]), false);
+
+        // …but offered on the Final Approvals tab as the Validate & Send step.
+        $this->actingAs($this->makeSubconAdmin('admin2@example.test', 'Admin Two'))
+            ->get(route('subcon.admin.approvals'))
+            ->assertOk()
+            ->assertSee('Validate &amp; Send', false)
+            ->assertSee(route('qc.ho-approve', ['token' => $this->token]), false);
+    }
+
     public function test_ho_form_renders_validate_step_after_approval(): void
     {
         Queue::fake();

@@ -86,20 +86,32 @@
                             </td>
                             <td>{{ $fa['vendor'] }}</td>
                             <td>
-                                <span class="badge bg-primary-subtle text-primary border border-primary border-opacity-25">Final Approval</span>
+                                @if(($fa['step'] ?? 'approve') === 'send')
+                                    <span class="badge bg-success-subtle text-success border border-success border-opacity-25">Final Approval — Validate &amp; Send</span>
+                                @else
+                                    <span class="badge bg-primary-subtle text-primary border border-primary border-opacity-25">Final Approval</span>
+                                @endif
                             </td>
                             <td class="small text-muted">{{ $fa['approved_at'] ? \Illuminate\Support\Carbon::parse($fa['approved_at'])->diffForHumans() : '—' }}</td>
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
-                                    {{-- Final approval needs fabric-consumption review, so route to the form
-                                         (no one-click) — opened in a new tab so the approvals list stays put. --}}
-                                    <a href="{{ route('qc.ho-approve', ['token' => $fa['token']]) }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
-                                        <i class="fas fa-check me-1"></i> Review &amp; Approve
-                                    </a>
-                                    <a href="{{ route('qc.ho-decline', ['token' => $fa['token']]) }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener"
-                                       onclick="return confirm('Reject this inspection at the Final approval stage? This records a rejection and cannot be undone.');">
-                                        <i class="fas fa-times me-1"></i> Reject
-                                    </a>
+                                    @if(($fa['step'] ?? 'approve') === 'send')
+                                        {{-- Step 2: approved + RAF queued — the form renders read-only
+                                             with the Validate & Send Approval button. --}}
+                                        <a href="{{ route('qc.ho-approve', ['token' => $fa['token']]) }}" class="btn btn-sm btn-primary" target="_blank" rel="noopener">
+                                            <i class="fas fa-paper-plane me-1"></i> Validate &amp; Send
+                                        </a>
+                                    @else
+                                        {{-- Final approval needs fabric-consumption review, so route to the form
+                                             (no one-click) — opened in a new tab so the approvals list stays put. --}}
+                                        <a href="{{ route('qc.ho-approve', ['token' => $fa['token']]) }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
+                                            <i class="fas fa-check me-1"></i> Review &amp; Approve
+                                        </a>
+                                        <a href="{{ route('qc.ho-decline', ['token' => $fa['token']]) }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener"
+                                           onclick="return confirm('Reject this inspection at the Final approval stage? This records a rejection and cannot be undone.');">
+                                            <i class="fas fa-times me-1"></i> Reject
+                                        </a>
+                                    @endif
                                 </div>
                             </td>
                         </tr>
