@@ -37,6 +37,17 @@
                             @endif
                         </a>
                     </li>
+                    <li>
+                        @php($pendingValidateSend = \App\Models\SubconOrder::pendingValidateSendCount())
+                        <a href="{{ route('subcon.admin.report-validations') }}"
+                            class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.report-validations') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Report Validations">
+                            <i class="fas fa-file-circle-check me-2"></i> <span>Report Validation</span>
+                            @if($pendingValidateSend > 0)
+                                <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingValidateSend }}</span>
+                            @endif
+                        </a>
+                    </li>
                     @if(\App\Http\Controllers\SubconAdminController::isDirectorUser(auth()->user()))
                         <li>
                             @php($pendingDirector = \App\Models\SubconOrder::pendingDirectorApprovalCount())

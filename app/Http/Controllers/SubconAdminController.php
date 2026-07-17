@@ -315,6 +315,101 @@ class SubconAdminController extends Controller
     }
 
     /**
+     * Report Validation tab: sessions MD Production has approved (step 1 —
+     * RAF run queued) that still await the "Validate & Send Approval" step.
+     * Read-only listing; the buttons open the token-based validate form.
+     */
+    public function reportValidations()
+    {
+        $pending = $this->pendingValidateSends();
+
+        return view('subcon.admin.report-validations', compact('pending'));
+    }
+
+    /**
+     * Sessions approved by MD Production but not yet validated & sent to the
+     * Director, mapped to local orders like pendingDirectorApprovals(). Each
+     * row carries the live RAF run status (one batched read from the remote
+     * RPA DB, best-effort). Never 500s the tab.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function pendingValidateSends(): array
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
+                || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature')) {
+                return [];
+            }
+
+            $sessions = DB::connection('qms')->table('packaging_project_sessions')
+                ->whereNotNull('approval_token')
+                ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                ->where(function ($q) {
+                    $q->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
+                })
+                ->where(function ($q) {
+                    $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
+                })
+                ->whereNotIn('project_id', function ($q) {
+                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                })
+                ->get();
+
+            if ($sessions->isEmpty()) {
+                return [];
+            }
+
+            $pgByProject = [];
+            $projectIds = $sessions->pluck('project_id')->filter()->unique()->values()->all();
+            if (! empty($projectIds) && Schema::connection('qms')->hasTable('packaging_projects')) {
+                $pgByProject = DB::connection('qms')->table('packaging_projects')
+                    ->whereIn('project_id', $projectIds)
+                    ->pluck('production_group', 'project_id')->all();
+            }
+
+            // Live RAF run status per project — one batched query, best-effort.
+            $rafByProject = [];
+            try {
+                $rafByProject = DB::connection('rpa')->table('rpa_queues')
+                    ->whereIn('entity_id', $projectIds)
+                    ->where('rpa_type', 'job_trans_raf')
+                    ->orderBy('id')
+                    ->pluck('status', 'entity_id')->all();
+            } catch (\Throwable $e) {
+                // Remote RPA DB unreachable — statuses just render as unknown.
+            }
+
+            $pgs = array_values(array_filter(array_unique(array_values($pgByProject))));
+            $ordersByPg = empty($pgs)
+                ? collect()
+                : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
+
+            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $rafByProject) {
+                $pg = $pgByProject[$s->project_id] ?? null;
+                $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
+
+                return [
+                    'token' => $s->approval_token,
+                    'order_id' => $order->id ?? null,
+                    'order_number' => $order->order_number ?? ($s->project_id ?? '—'),
+                    'style' => $order->title ?? null,
+                    'vendor' => $order?->vendor?->name ?? '—',
+                    'production_group' => $pg,
+                    'version' => $s->version ?? null,
+                    'result' => $s->result ?? null,
+                    'ho_signature' => $s->ho_approval_signature ?? null,
+                    'raf_status' => $rafByProject[$s->project_id] ?? null,
+                ];
+            })->all();
+        } catch (\Throwable $e) {
+            Log::warning('Pending report validations unavailable', ['error' => $e->getMessage()]);
+
+            return [];
+        }
+    }
+
+    /**
      * Whether this portal account is a configured Director — i.e. their email
      * appears in the `qc_director_approver_email` workflow setting. Drives the
      * separated "Director" approvals tab so the Director's stage never mixes
@@ -474,32 +569,11 @@ class SubconAdminController extends Controller
                 return [];
             }
 
-            $hasValidationCol = Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature');
-
             $sessions = DB::connection('qms')->table('packaging_project_sessions')
                 ->whereNotNull('approval_token')
                 ->where('approval_status', 'approved')
-                ->where(function ($q) use ($hasValidationCol) {
-                    // Step 1 pending: no HO signature yet.
-                    $q->where(function ($qq) {
-                        $qq->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
-                    });
-                    // Step 2 pending: approved but not yet validated & sent to
-                    // the Director (and not already director-actioned).
-                    if ($hasValidationCol) {
-                        $q->orWhere(function ($qq) {
-                            $qq->where('ho_approval_signature', 'like', 'Digitally Signed:%')
-                                ->where(function ($v) {
-                                    $v->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
-                                })
-                                ->where(function ($d) {
-                                    $d->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
-                                })
-                                ->whereNotIn('project_id', function ($p) {
-                                    $p->select('project_id')->from('packaging_projects')->where('status', 'completed');
-                                });
-                        });
-                    }
+                ->where(function ($q) {
+                    $q->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
                 })
                 ->get();
 
@@ -526,8 +600,6 @@ class SubconAdminController extends Controller
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
 
-                $hoSigned = str_starts_with((string) ($s->ho_approval_signature ?? ''), 'Digitally Signed:');
-
                 return [
                     'token' => $s->approval_token,
                     'order_id' => $order->id ?? null,
@@ -536,9 +608,6 @@ class SubconAdminController extends Controller
                     'vendor' => $order?->vendor?->name ?? '—',
                     'production_group' => $pg,
                     'approved_at' => $s->approved_at ?? null,
-                    // Which step of the MD gate is pending: 'approve' → Review &
-                    // Approve, 'send' → Validate & Send Approval.
-                    'step' => $hoSigned ? 'send' : 'approve',
                 ];
             })->all();
         } catch (\Throwable $e) {

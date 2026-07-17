@@ -473,9 +473,14 @@ class QcApprovalController extends Controller
         // signatures) and queue the RAF RPA job. The Director is NOT notified
         // here any more: MD Production reviews the numbers once RAF has run and
         // presses "Validate & Send Approval" (hoSendApproval) to open stage 3.
-        // Both best-effort: the approval above has already committed.
+        // All best-effort: the approval above has already committed.
         $this->refreshVerifiedDoc($row);
         app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
+
+        // Email the Validate & Send link to the MD Production list so step 2
+        // is reachable from the inbox too (not just the redirect below and the
+        // Report Validation tab).
+        $this->sendValidateSendRequest($token, $row, $hoActor);
 
         // Back to the same form, which now renders the validate-and-send step.
         return redirect()->route('qc.ho-approve', array_filter([
@@ -1256,6 +1261,64 @@ class QcApprovalController extends Controller
             Log::info('QC reject notification sent to inspector', ['to' => $to, 'stage' => $stage]);
         } catch (\Throwable $e) {
             Log::warning('QC reject notification failed', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Chain step after MD Production's Review & Approve: email the Validate &
+     * Send link (same token — the ho-approve form renders the validate step)
+     * to the MD Production list, so step 2 of the gate is reachable from the
+     * inbox. Same recipient resolution as sendHoApprovalRequest; attaches the
+     * just-refreshed verified_doc.
+     */
+    private function sendValidateSendRequest(string $token, object $row, string $approvedBy): void
+    {
+        try {
+            $to = Setting::getValue('qc_ho_approver_email');
+            if (trim((string) $to) === '') {
+                $to = Setting::getValue('subcon_cutting_approver_email');
+            }
+            $recipients = collect(preg_split('/[,;]+/', (string) $to))
+                ->map(fn ($e) => trim($e))->filter()->values()->all();
+
+            if (empty($recipients)) {
+                Log::warning('QC validate-send email skipped: no recipient configured', ['token' => $token]);
+
+                return;
+            }
+
+            [$subcon, , $productionGroup] = $this->subconContext($row);
+
+            $ref = collect([
+                trim((string) ($subcon->title ?? '')),
+                trim((string) ($subcon->order_number ?? '')),
+                trim((string) ($productionGroup ?? '')),
+            ])->filter()->implode(' — ');
+
+            // One job per recipient: each link carries the recipient's address
+            // (`as`) so the send is attributed to the person who clicked.
+            foreach ($recipients as $recipient) {
+                \App\Jobs\SendQcNotificationEmail::dispatch([
+                    'view' => 'emails.qc-validate-send',
+                    'recipients' => [$recipient],
+                    'subject' => 'Validation needed: Validate & Send Approval'.($ref !== '' ? ' — '.$ref : ''),
+                    'projectId' => $row->project_id ?? null,
+                    'attachmentName' => 'packaging-inspection-'.($subcon->order_number ?? 'inspection'),
+                    'viewData' => [
+                        'url' => route('qc.ho-approve', ['token' => $token, 'as' => $recipient]),
+                        'sessionId' => $row->session_id ?? null,
+                        'projectId' => $row->project_id ?? null,
+                        'productionGroup' => $productionGroup,
+                        'orderNumber' => $subcon->order_number ?? null,
+                        'remarks' => $subcon->remarks ?? null,
+                        'approvedBy' => $approvedBy,
+                    ],
+                ]);
+            }
+
+            Log::info('QC validate-send email queued', ['token' => $token, 'to' => $recipients]);
+        } catch (\Throwable $e) {
+            Log::error('QC validate-send email failed', ['token' => $token, 'error' => $e->getMessage()]);
         }
     }
 

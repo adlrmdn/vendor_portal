@@ -124,6 +124,7 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
     Route::post('/vendors/{id}/toggle-status', [SubconAdminController::class, 'toggleVendorStatus'])->name('vendors.toggle-status');
     Route::delete('/vendors/{id}', [SubconAdminController::class, 'deleteVendor'])->name('vendors.destroy');
     Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
+    Route::get('/report-validations', [SubconAdminController::class, 'reportValidations'])->name('report-validations');
     Route::get('/director-approvals', [SubconAdminController::class, 'directorApprovals'])->name('director-approvals');
     Route::get('/approval-logs', [SubconAdminController::class, 'approvalLogs'])->name('approval-logs');
     Route::get('/orders', [SubconAdminController::class, 'orders'])->name('orders');

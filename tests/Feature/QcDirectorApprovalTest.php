@@ -460,17 +460,21 @@ class QcDirectorApprovalTest extends TestCase
             ->assertSee('has not validated');
     }
 
-    public function test_validate_pending_session_moves_tabs_from_director_to_final(): void
+    public function test_validate_pending_session_lists_on_report_validation_tab_only(): void
     {
         \App\Models\Setting::updateOrCreate(
             ['key' => 'qc_director_approver_email'],
             ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
         );
 
-        // Approved but not yet validated & sent.
+        // Approved but not yet validated & sent (RAF job queued as pending).
         DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)
             ->update(['ho_validation_signature' => null]);
+        DB::connection('rpa')->table('rpa_queues')->insert([
+            'entity_type' => 'packaging_project', 'entity_id' => $this->projectId,
+            'rpa_type' => 'job_trans_raf', 'status' => 'pending', 'payload' => '{}',
+        ]);
 
         // Not awaiting the Director…
         $this->actingAs($this->makeSubconAdmin('director@example.test', 'Director'))
@@ -478,14 +482,48 @@ class QcDirectorApprovalTest extends TestCase
             ->assertOk()
             ->assertDontSee(route('qc.director-approve', ['token' => $this->token]), false);
 
-        // …but offered on the Final Approvals tab as the Validate & Send step.
+        // …not on the Final Approvals tab (that lists step-1 only)…
         $this->actingAs($this->makeSubconAdmin('admin2@example.test', 'Admin Two'))
             ->get(route('subcon.admin.approvals'))
             ->assertOk()
+            ->assertDontSee(route('qc.ho-approve', ['token' => $this->token]), false);
+
+        // …but on the Report Validation tab, with the RAF status, the Report
+        // button (fresh-rendered PDF) and the Validate & Send action.
+        $this->get(route('subcon.admin.report-validations'))
+            ->assertOk()
+            ->assertSee('Report Validations')
+            ->assertSee('Pending')
+            ->assertSee(route('qc.document', ['token' => $this->token]), false)
             ->assertSee('Validate &amp; Send', false)
-            ->assertSee(route('qc.ho-approve', ['token' => $this->token]), false)
-            // Report button — the same fresh-rendered PDF the Director tab links.
-            ->assertSee(route('qc.document', ['token' => $this->token]), false);
+            ->assertSee(route('qc.ho-approve', ['token' => $this->token]), false);
+    }
+
+    public function test_review_and_approve_emails_the_validate_and_send_link(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_ho_approver_email'],
+            ['value' => 'md1@example.test, md2@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_approval_signature' => null, 'ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))->assertRedirect();
+
+        // One Validate & Send email per MD recipient, each link attributed via `as`.
+        foreach (['md1@example.test', 'md2@example.test'] as $recipient) {
+            Queue::assertPushed(SendQcNotificationEmail::class, function ($job) use ($recipient) {
+                return ($job->payload['view'] ?? null) === 'emails.qc-validate-send'
+                    && ($job->payload['recipients'] ?? []) === [$recipient]
+                    && str_contains((string) ($job->payload['viewData']['url'] ?? ''), route('qc.ho-approve', ['token' => $this->token]))
+                    && str_contains((string) ($job->payload['viewData']['url'] ?? ''), urlencode($recipient));
+            });
+        }
     }
 
     public function test_ho_form_renders_validate_step_after_approval(): void

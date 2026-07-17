@@ -67,6 +67,37 @@ class SubconOrder extends Model
     }
 
     /**
+     * QMS sessions approved by MD Production (step 1) but still awaiting the
+     * "Validate & Send Approval" step — the Report Validation tab badge. Same
+     * best-effort contract as pendingFinalApprovalCount() — never throws.
+     */
+    public static function pendingValidateSendCount(): int
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
+                || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature')) {
+                return 0;
+            }
+
+            return (int) DB::connection('qms')->table('packaging_project_sessions')
+                ->whereNotNull('approval_token')
+                ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                ->where(function ($q) {
+                    $q->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
+                })
+                ->where(function ($q) {
+                    $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
+                })
+                ->whereNotIn('project_id', function ($q) {
+                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                })
+                ->count();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
      * QMS sessions signed by MD Production but still awaiting the Director's
      * authorization (stage 3). Same best-effort contract as
      * pendingFinalApprovalCount() — never throws.
