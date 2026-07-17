@@ -657,6 +657,59 @@ class QcDirectorApprovalTest extends TestCase
         $this->assertSame(0, DB::connection('rpa')->table('rpa_queues')->count());
     }
 
+    public function test_removed_project_is_not_listed_counted_or_actionable(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        // Deleted in the QC console after MD signed it.
+        DB::connection('qms')->table('packaging_projects')
+            ->where('project_id', $this->projectId)
+            ->update(['status' => 'removed']);
+
+        // Off the Director tab and its badge…
+        $this->assertSame(0, \App\Models\SubconOrder::pendingDirectorApprovalCount());
+        $this->actingAs($this->makeSubconAdmin('director@example.test', 'Director'))
+            ->get(route('subcon.admin.director-approvals'))
+            ->assertOk()
+            ->assertDontSee(route('qc.director-approve', ['token' => $this->token]), false);
+
+        // …the Director link refuses…
+        $this->post(route('qc.director-approve.submit', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('has been removed');
+
+        // …and Validate & Send refuses too (no pointless Director email).
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null]);
+        $this->assertSame(0, \App\Models\SubconOrder::pendingValidateSendCount());
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('has been removed');
+        Queue::assertNotPushed(SendQcNotificationEmail::class);
+    }
+
+    public function test_director_badge_matches_the_tab(): void
+    {
+        // Approved but NOT validated & sent → in neither the badge nor the tab.
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null]);
+        $this->assertSame(0, \App\Models\SubconOrder::pendingDirectorApprovalCount());
+
+        // Validated & sent → in both.
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => 'Digitally Signed: MPG HO - MD Production [UTC+07:00: 2026-07-17 10:00:00]']);
+        $this->assertSame(1, \App\Models\SubconOrder::pendingDirectorApprovalCount());
+    }
+
     public function test_ho_approval_is_attributed_to_the_email_recipient(): void
     {
         Queue::fake();

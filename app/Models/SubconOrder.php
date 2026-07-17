@@ -40,6 +40,13 @@ class SubconOrder extends Model
     }
 
     /**
+     * QMS project statuses that need no further workflow action: completed
+     * (invoiced) and removed (deleted in the QC console, incl. the
+     * removed_completed variant). Every pending list/badge excludes these.
+     */
+    public const QMS_INACTIVE_PROJECT_STATUSES = ['completed', 'removed', 'removed_completed'];
+
+    /**
      * Count of QC-console packaging sessions that passed stage-1 confirmation but
      * still await Final (HO) sign-off — the "Final Approval" rows surfaced in the
      * subcon Approvals tab. Best-effort read from the QMS DB, fully guarded so it
@@ -59,6 +66,10 @@ class SubconOrder extends Model
                 ->where('approval_status', 'approved')
                 ->where(function ($q) {
                     $q->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
+                })
+                ->whereNotIn('project_id', function ($q) {
+                    $q->select('project_id')->from('packaging_projects')
+                        ->whereIn('status', self::QMS_INACTIVE_PROJECT_STATUSES);
                 })
                 ->count();
         } catch (\Throwable $e) {
@@ -89,7 +100,8 @@ class SubconOrder extends Model
                     $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
                 })
                 ->whereNotIn('project_id', function ($q) {
-                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                    $q->select('project_id')->from('packaging_projects')
+                        ->whereIn('status', self::QMS_INACTIVE_PROJECT_STATUSES);
                 })
                 ->count();
         } catch (\Throwable $e) {
@@ -113,13 +125,20 @@ class SubconOrder extends Model
             return (int) DB::connection('qms')->table('packaging_project_sessions')
                 ->whereNotNull('approval_token')
                 ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                // Two-step MD gate: only validated & sent sessions are actually
+                // awaiting the Director (keeps the badge in sync with the tab).
+                ->when(
+                    Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature'),
+                    fn ($q) => $q->whereNotNull('ho_validation_signature')->where('ho_validation_signature', '!=', '')
+                )
                 ->where(function ($q) {
                     $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
                 })
-                // Legacy projects completed under the old two-stage flow need
+                // Completed (legacy two-stage) or console-removed projects need
                 // no Director action — keep them out of the badge.
                 ->whereNotIn('project_id', function ($q) {
-                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                    $q->select('project_id')->from('packaging_projects')
+                        ->whereIn('status', self::QMS_INACTIVE_PROJECT_STATUSES);
                 })
                 ->count();
         } catch (\Throwable $e) {

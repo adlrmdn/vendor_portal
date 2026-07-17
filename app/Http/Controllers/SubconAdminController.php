@@ -352,7 +352,8 @@ class SubconAdminController extends Controller
                     $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
                 })
                 ->whereNotIn('project_id', function ($q) {
-                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                    $q->select('project_id')->from('packaging_projects')
+                        ->whereIn('status', SubconOrder::QMS_INACTIVE_PROJECT_STATUSES);
                 })
                 ->get();
 
@@ -479,10 +480,12 @@ class SubconAdminController extends Controller
                 ->where(function ($q) {
                     $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
                 })
-                // Exclude projects completed under the old two-stage flow —
-                // authorizing those would re-queue real invoice RPA jobs.
+                // Exclude projects completed under the old two-stage flow
+                // (authorizing those would re-queue real invoice RPA jobs) and
+                // projects removed in the QC console.
                 ->whereNotIn('project_id', function ($q) {
-                    $q->select('project_id')->from('packaging_projects')->where('status', 'completed');
+                    $q->select('project_id')->from('packaging_projects')
+                        ->whereIn('status', SubconOrder::QMS_INACTIVE_PROJECT_STATUSES);
                 })
                 ->get();
 
@@ -574,6 +577,10 @@ class SubconAdminController extends Controller
                 ->where('approval_status', 'approved')
                 ->where(function ($q) {
                     $q->whereNull('ho_approval_signature')->orWhere('ho_approval_signature', '');
+                })
+                ->whereNotIn('project_id', function ($q) {
+                    $q->select('project_id')->from('packaging_projects')
+                        ->whereIn('status', SubconOrder::QMS_INACTIVE_PROJECT_STATUSES);
                 })
                 ->get();
 

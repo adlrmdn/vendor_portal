@@ -529,6 +529,25 @@ class QcApprovalController extends Controller
             ]);
         }
 
+        // Don't ask the Director about projects that need no action any more
+        // (completed under the legacy flow, or removed in the QC console).
+        try {
+            $status = (string) DB::connection('qms')->table('packaging_projects')
+                ->where('project_id', (string) ($row->project_id ?? ''))
+                ->value('status');
+            if ($status === 'completed' || str_starts_with($status, 'removed')) {
+                return view('qc.approval-result', [
+                    'state' => $status === 'completed' ? 'already' : 'invalid',
+                    'message' => $status === 'completed'
+                        ? 'This project is already completed — nothing to send to the Director.'
+                        : 'This project has been removed in the QC console — nothing to send to the Director.',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Status unreadable — fall through; the Director-side guard still
+            // refuses inactive projects.
+        }
+
         $actor = $this->actorLabel($request, self::HO_SIGNER);
         $signature = 'Digitally Signed: '.$actor
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
@@ -1153,14 +1172,21 @@ class QcApprovalController extends Controller
         // (console "Complete & Sync") have an HO signature but no director
         // stamp. Authorizing one would re-queue a REAL invoice RPA job for an
         // already-invoiced project — treat completed as already actioned.
+        // Projects removed in the QC console need no authorization either.
         try {
-            $status = DB::connection('qms')->table('packaging_projects')
+            $status = (string) DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', (string) ($row->project_id ?? ''))
                 ->value('status');
             if ($status === 'completed') {
                 return view('qc.approval-result', [
                     'state' => 'already',
                     'message' => 'This project is already completed — no Director authorization is needed.',
+                ]);
+            }
+            if (str_starts_with($status, 'removed')) {
+                return view('qc.approval-result', [
+                    'state' => 'invalid',
+                    'message' => 'This project has been removed in the QC console — no Director authorization is needed.',
                 ]);
             }
         } catch (\Throwable $e) {
