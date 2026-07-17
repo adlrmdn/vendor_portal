@@ -95,6 +95,11 @@
                             <td class="small text-muted">{{ $fa['approved_at'] ? \Illuminate\Support\Carbon::parse($fa['approved_at'])->diffForHumans() : '—' }}</td>
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
+                                    {{-- Same as the Director tab: the inspection PDF, rendered
+                                         fresh from current data on every open. --}}
+                                    <a href="{{ route('qc.document', ['token' => $fa['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
+                                        <i class="fas fa-file-pdf me-1"></i> Report
+                                    </a>
                                     @if(($fa['step'] ?? 'approve') === 'send')
                                         {{-- Step 2: approved + RAF queued — the form renders read-only
                                              with the Validate & Send Approval button. --}}

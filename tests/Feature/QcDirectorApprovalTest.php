@@ -483,7 +483,9 @@ class QcDirectorApprovalTest extends TestCase
             ->get(route('subcon.admin.approvals'))
             ->assertOk()
             ->assertSee('Validate &amp; Send', false)
-            ->assertSee(route('qc.ho-approve', ['token' => $this->token]), false);
+            ->assertSee(route('qc.ho-approve', ['token' => $this->token]), false)
+            // Report button — the same fresh-rendered PDF the Director tab links.
+            ->assertSee(route('qc.document', ['token' => $this->token]), false);
     }
 
     public function test_ho_form_renders_validate_step_after_approval(): void
