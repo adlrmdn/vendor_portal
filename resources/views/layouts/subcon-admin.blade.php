@@ -38,6 +38,17 @@
                         </a>
                     </li>
                     <li>
+                        @php($waitingDistCount = \App\Models\SubconOrder::where('workflow_stage', \App\Models\SubconOrder::STAGE_WAITING_DISTRIBUTION)->count())
+                        <a href="{{ route('subcon.admin.orders-waiting-distribution') }}"
+                            class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.orders-waiting-distribution*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Generate Labels">
+                            <i class="fas fa-print me-2"></i> <span>Generate Labels</span>
+                            @if($waitingDistCount > 0)
+                                <span class="badge bg-info rounded-pill text-dark ms-auto">{{ $waitingDistCount }}</span>
+                            @endif
+                        </a>
+                    </li>
+                    <li>
                         @php($pendingValidateSend = \App\Models\SubconOrder::pendingValidateSendCount())
                         <a href="{{ route('subcon.admin.report-validations') }}"
                             class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.report-validations') ? 'active' : '' }}"
@@ -61,17 +72,6 @@
                             </a>
                         </li>
                     @endif
-                    <li>
-                        @php($waitingDistCount = \App\Models\SubconOrder::where('workflow_stage', \App\Models\SubconOrder::STAGE_WAITING_DISTRIBUTION)->count())
-                        <a href="{{ route('subcon.admin.orders-waiting-distribution') }}"
-                            class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.orders-waiting-distribution*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Generate Labels">
-                            <i class="fas fa-print me-2"></i> <span>Generate Labels</span>
-                            @if($waitingDistCount > 0)
-                                <span class="badge bg-info rounded-pill text-dark ms-auto">{{ $waitingDistCount }}</span>
-                            @endif
-                        </a>
-                    </li>
                     <li>
                         <a href="{{ route('subcon.admin.workflow') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.workflow*') ? 'active' : '' }}"
