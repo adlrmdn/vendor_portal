@@ -260,7 +260,7 @@ class SubconVendorController extends Controller
         }
 
         $data = $request->validate([
-            'blister_capacity' => 'required|integer|min:1',
+            'blister_capacity' => 'nullable|integer|min:1',
             'sack_capacity' => 'nullable|integer|min:1',
             'reports' => 'required|array',
             'reports.*.prod_id' => 'required|string',
@@ -284,7 +284,10 @@ class SubconVendorController extends Controller
                 );
             }
 
-            $order->blister_capacity = $data['blister_capacity'];
+            // Optional now — keep the previously saved value when left blank.
+            $order->blister_capacity = ! empty($data['blister_capacity'])
+                ? (int) $data['blister_capacity']
+                : ($order->blister_capacity ?: null);
             // Sack (karung) capacity for the Pemalang distribution warehouses;
             // falls back to the standard 50 when left blank.
             $order->sack_capacity = ! empty($data['sack_capacity'])

@@ -279,7 +279,7 @@
 
                     @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'editable' => false])
 
-                    @include('subcon.partials.blister-input', ['order' => $order, 'editable' => true, 'required' => true])
+                    @include('subcon.partials.blister-input', ['order' => $order, 'editable' => true, 'required' => false])
                 </form>
 
                 <div class="card mt-4 shadow-sm border-0" style="border-radius: 12px; overflow: hidden; border: 1px solid rgba(0,0,0,0.08);">
