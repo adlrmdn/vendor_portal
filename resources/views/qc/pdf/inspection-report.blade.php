@@ -162,7 +162,7 @@
                 <tr><th style="width: 80%;">Defect Type &amp; Description</th><th class="center">Major</th><th class="center">Minor</th></tr>
                 @forelse ($defectGroups as $d)
                     <tr>
-                        <td>[{{ (int) $session->cycle_number >= 2 ? $cycleName.'|'.$d['type'] : $d['type'] }}] {{ $d['desc'] }}</td>
+                        <td>[{{ $d['type'] }}] {{ $d['desc'] }}</td>
                         <td class="center {{ $d['major'] > 0 ? 'bold' : '' }}">{{ $d['major'] }}</td>
                         <td class="center {{ $d['minor'] > 0 ? 'bold' : '' }}">{{ $d['minor'] }}</td>
                     </tr>

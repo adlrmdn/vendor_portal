@@ -245,20 +245,17 @@ class QcReportPdfService
             Log::warning('QC report PDF: deduction lines read failed', ['error' => $e->getMessage()]);
         }
 
-        // Defect photos: cumulative up to the active cycle (matches the console);
-        // only data-URI images are embeddable server-side.
+        // Defect photos: filter strictly by active session to avoid mixing 1st final and 2nd final defect data
         $defectImages = collect();
         try {
-            $sessionCycles = $sessions->pluck('cycle_number', 'session_id');
             $defectImages = $qms->table('packaging_defect_images')
                 ->where('project_id', $projectId)->orderBy('captured_at')->get()
-                ->filter(function ($img) use ($sessionCycles, $activeCycle) {
-                    if (empty($img->session_id)) {
-                        return true;
+                ->filter(function ($img) use ($sessionId, $sessions) {
+                    if (! empty($img->session_id)) {
+                        return $img->session_id === $sessionId;
                     }
-                    $cycle = $sessionCycles[$img->session_id] ?? null;
 
-                    return $cycle !== null && (int) $cycle <= $activeCycle;
+                    return $sessions->count() <= 1;
                 })->values();
         } catch (\Throwable $e) {
             Log::warning('QC report PDF: defect images read failed', ['error' => $e->getMessage()]);
