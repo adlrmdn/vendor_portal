@@ -141,4 +141,16 @@ class RollsImportServiceTest extends TestCase
         $this->assertNull(RollsImportService::toNumber('LOT-1'));
         $this->assertNull(RollsImportService::toNumber(''));
     }
+
+    public function test_to_number_strips_invisible_characters_from_pasted_data()
+    {
+        // Non-breaking space (thousands separator in some Excel locales),
+        // zero-width space, and a BOM — all commonly slip in when a vendor
+        // copy-pastes quantities from a PDF or web page. Left unstripped,
+        // these fail the digit regex and silently reject the row.
+        $this->assertSame(121.0, RollsImportService::toNumber("121.00\u{00A0}"));
+        $this->assertSame(1234.56, RollsImportService::toNumber("1\u{00A0}234.56"));
+        $this->assertSame(121.0, RollsImportService::toNumber("121\u{200B}.00"));
+        $this->assertSame(121.0, RollsImportService::toNumber("\u{FEFF}121.00"));
+    }
 }

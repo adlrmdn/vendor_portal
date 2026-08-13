@@ -271,7 +271,12 @@ class RollsImportService
         if (! is_string($v)) {
             return null;
         }
-        $s = str_replace(' ', '', trim($v));
+        // Strip regular whitespace plus invisible unicode characters that
+        // commonly slip in from copy-pasted PDF/web/spreadsheet data — a
+        // non-breaking space (thousands separator in some Excel locales),
+        // zero-width space, or BOM otherwise fails the digit regex below and
+        // silently drops/rejects the row's quantity downstream.
+        $s = preg_replace('/[\s\x{00A0}\x{200B}\x{200C}\x{200D}\x{2060}\x{FEFF}]+/u', '', $v);
         if ($s === '' || ! preg_match('/^-?[\d.,]+$/', $s)) {
             return null;
         }
