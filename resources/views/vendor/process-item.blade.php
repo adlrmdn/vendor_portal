@@ -194,43 +194,52 @@
                                             <div class="card-body">
                                                 <div class="row g-2 align-items-end">
                                                     <div class="col-md-1">
+                                                        @php
+                                                            // roll_number = {PO}-{item#}-{seq}, where {PO} itself
+                                                            // is now hyphen-separated (e.g. "PO-2607-01046") — so
+                                                            // the last two segments are peeled off first and
+                                                            // everything left over is the PO chunk, keeping the
+                                                            // badge to its original 3 stacked lines.
+                                                            $rollNumParts = explode('-', $roll->roll_number);
+                                                            $rollSeq = array_pop($rollNumParts);
+                                                            $rollItemNo = array_pop($rollNumParts);
+                                                            $rollPoChunk = implode('-', $rollNumParts);
+                                                        @endphp
                                                         <div
                                                             class="roll-number small font-monospace text-secondary lh-sm user-select-all">
-                                                            @foreach(explode('-', $roll->roll_number) as $part)
-                                                                <div>{{ $part }}</div>
-                                                            @endforeach
+                                                            <div>{{ $rollPoChunk }}</div>
+                                                            <div>{{ $rollItemNo }}</div>
+                                                            <div>{{ $rollSeq }}</div>
                                                         </div>
-                                                        @if($roll->qr_code_path)
-                                                            <small>
-                                                                <a href="{{ asset('storage/' . $roll->qr_code_path) }}" target="_blank"
-                                                                    class="text-primary">
-                                                                    <i class="fas fa-qrcode"></i> View QR
-                                                                </a>
-                                                            </small>
-                                                        @endif
+                                                        <small>
+                                                            <a href="{{ route('vendor.roll.qr', $roll) }}" target="_blank"
+                                                                class="text-primary">
+                                                                <i class="fas fa-qrcode"></i> View QR
+                                                            </a>
+                                                        </small>
                                                     </div>
                                                     <div class="col-md-1">
                                                         <label class="form-label">Roll No.</label>
-                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][vendor_roll_no]" value="{{ $roll->vendor_roll_no }}" placeholder="Optional">
+                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][vendor_roll_no]" value="{{ old('rolls.'.$roll->id.'.vendor_roll_no', $roll->vendor_roll_no) }}" placeholder="Optional">
                                                     </div>
                                                     <div class="col-md-1">
                                                         <label class="form-label">Bale No.</label>
-                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][bale_no]" value="{{ $roll->bale_no }}" placeholder="Optional">
+                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][bale_no]" value="{{ old('rolls.'.$roll->id.'.bale_no', $roll->bale_no) }}" placeholder="Optional">
                                                     </div>
                                                     <div class="col-md-1">
                                                         <label class="form-label">Lot-ID</label>
-                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][internal_id]" value="{{ $roll->internal_id }}" placeholder="Optional">
+                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][internal_id]" value="{{ old('rolls.'.$roll->id.'.internal_id', $roll->internal_id) }}" placeholder="Optional">
                                                     </div>
                                                     <div class="col-md-1">
                                                         <label class="form-label">Color</label>
-                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][color]" value="{{ $roll->color }}" placeholder="Optional">
+                                                        <input type="text" class="form-control" name="rolls[{{ $roll->id }}][color]" value="{{ old('rolls.'.$roll->id.'.color', $roll->color) }}" placeholder="Optional">
                                                     </div>
                                                     @if(!$isMetricItem)
                                                         <div class="col-md-2">
                                                             <label class="form-label">Qty ({{ $orderUnit }}) <span class="text-danger">*</span></label>
                                                             <input type="number" step="0.01" class="form-control roll-weight roll-primary"
                                                                 name="rolls[{{ $roll->id }}][weight]"
-                                                                value="{{ (float) $roll->weight ?: '' }}"
+                                                                value="{{ old('rolls.'.$roll->id.'.weight', (float) $roll->weight ?: '') }}"
                                                                 placeholder="Required" oninput="updateTotalQtyBadge();" required>
                                                         </div>
                                                     @endif
@@ -238,7 +247,7 @@
                                                         <label class="form-label">Length (YD){!! $orderUnit == 'YD' ? ' <span class="text-danger">*</span>' : '' !!}</label>
                                                         <input type="number" step="0.01" class="form-control roll-length-yd {{ $orderUnit == 'YD' ? 'roll-primary' : '' }}"
                                                             name="rolls[{{ $roll->id }}][length_yd]"
-                                                            value="{{ (float) $roll->length_yd ?: '' }}"
+                                                            value="{{ old('rolls.'.$roll->id.'.length_yd', (float) $roll->length_yd ?: '') }}"
                                                             placeholder="{{ $orderUnit == 'YD' ? 'Required' : 'Optional' }}"
                                                             oninput="syncLength(this, 'yd');" {{ $orderUnit == 'YD' ? 'required' : '' }}>
                                                     </div>
@@ -246,7 +255,7 @@
                                                         <label class="form-label">Length (M){!! $orderUnit == 'M' ? ' <span class="text-danger">*</span>' : '' !!}</label>
                                                         <input type="number" step="0.01" class="form-control roll-length-m {{ $orderUnit == 'M' ? 'roll-primary' : '' }}"
                                                             name="rolls[{{ $roll->id }}][length_m]"
-                                                            value="{{ (float) $roll->length_m ?: '' }}"
+                                                            value="{{ old('rolls.'.$roll->id.'.length_m', (float) $roll->length_m ?: '') }}"
                                                             placeholder="{{ $orderUnit == 'M' ? 'Required' : 'Optional' }}"
                                                             oninput="syncLength(this, 'm');" {{ $orderUnit == 'M' ? 'required' : '' }}>
                                                     </div>
@@ -255,7 +264,7 @@
                                                             <label class="form-label">Weight (KG){!! $orderUnit == 'KG' ? ' <span class="text-danger">*</span>' : '' !!}</label>
                                                             <input type="number" step="0.01" class="form-control roll-weight {{ $orderUnit == 'KG' ? 'roll-primary' : '' }}"
                                                                 name="rolls[{{ $roll->id }}][weight]"
-                                                                value="{{ (float) $roll->weight ?: '' }}"
+                                                                value="{{ old('rolls.'.$roll->id.'.weight', (float) $roll->weight ?: '') }}"
                                                                 placeholder="{{ $orderUnit == 'KG' ? 'Required' : 'Optional' }}"
                                                                 oninput="updateTotalQtyBadge();" {{ $orderUnit == 'KG' ? 'required' : '' }}>
                                                         </div>
