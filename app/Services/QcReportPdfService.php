@@ -129,6 +129,17 @@ class QcReportPdfService
 
             return (float) ($line->session_qty ?? 0);
         };
+        // Partial-delivery cycle groups — mirrors the console's job_trans_raf
+        // RAF grouping (queue_job_trans_raf_internal): final_1 = cycles [1,2]
+        // (Pre Final + 1st Final summed), final_2 = cycle [3], final_3 = [4].
+        $qtyByCycleGroup = function (array $cycles, string $size) use ($qtyByCycle): float {
+            $sum = 0.0;
+            foreach ($cycles as $cycle) {
+                $sum += $qtyByCycle($cycle, $size);
+            }
+
+            return $sum;
+        };
 
         // Yield-matrix rows — 1:1 port of PrintReport's rowData block.
         $rows = [];
@@ -167,9 +178,9 @@ class QcReportPdfService
             }
             $goodGarments = $otherGood + (float) ($line->session_qty ?? 0);
 
-            $qtyI = $qtyByCycle(2, $size);
-            $qtyII = $qtyByCycle(3, $size);
-            $qtyIII = $qtyByCycle(4, $size);
+            $qtyI = $qtyByCycleGroup([1, 2], $size);
+            $qtyII = $qtyByCycleGroup([3], $size);
+            $qtyIII = $qtyByCycleGroup([4], $size);
             $totalDeliveryFG = $goodGarments;
             $wip = max(0, $cuttingQty - $totalDeliveryFG - $totalReject);
             $goodsReceiveDelivery = $goodGarments + $rBahan + $rejectProduksi;
