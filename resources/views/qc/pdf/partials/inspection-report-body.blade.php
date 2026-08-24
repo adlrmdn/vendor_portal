@@ -46,7 +46,7 @@
 {{-- Header --}}
 <table style="border-bottom: 1.5px solid #0F172A; margin-bottom: 5px;">
     <tr>
-        <td style="width: 45%; vertical-align: bottom; padding-bottom: 3px;">
+        <td style="width: 45%; vertical-align: top;">
             @if ($logoData)
                 <img src="{{ $logoData }}" style="height: 50px;">
             @endif
