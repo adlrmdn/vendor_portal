@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\SubconOrder;
+use App\Services\RpaQueueService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -15,7 +16,7 @@ class ReconcileRpaQueuePos extends Command
 
     protected $description = 'Safety net for RpaQueueService::matchesLocalOrder() self-heal: scans already-queued invoice/deduction rows for a PO/qty that has since drifted from the synced SubconOrder (e.g. D365 reissued the PO after the row was queued) and reports or corrects them.';
 
-    public function handle(): int
+    public function handle(RpaQueueService $rpa): int
     {
         $query = DB::connection('rpa')->table('rpa_queues')
             ->whereIn('rpa_type', ['invoice', 'deduction'])
@@ -103,6 +104,18 @@ class ReconcileRpaQueuePos extends Command
                     'status' => 'pending',
                     'updated_at' => now(),
                 ]);
+
+                // The queued PDF (signed_doc — invoice's is the QC inspection
+                // report itself; deduction's is the debit-note-combined
+                // report) was rendered before this correction and still
+                // prints the stale PO Number/Qty Order, even though the
+                // payload's PO/amount fields above are now right. Re-render
+                // it from the just-corrected packaging_projects row.
+                $regenerated = $row->rpa_type === 'invoice'
+                    ? $rpa->regenerateInvoiceDoc((int) $row->id)
+                    : $rpa->regenerateDeductionDocs((int) $row->id);
+
+                $this->line('    document '.($regenerated ? 'regenerated' : 'regeneration skipped — see log'));
             }
         }
 

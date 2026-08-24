@@ -438,19 +438,57 @@ class RpaQueueService
     }
 
     /**
-     * Guards invoice/deduction queuing against a packaging_project whose
-     * po_info/po_vendor/po_qty never got reconciled against the real order —
-     * e.g. a project_id that started life as test/placeholder data (see the
-     * TEST_LIVE_DOWNLOAD_123 incident: a QC Console test fixture's row was
-     * never cleaned up, a real inspection cycle was carried out against it
-     * for weeks, and Director approval queued a real invoice at 1/17th the
-     * correct amount because packaging_projects.po_qty was still the test's
-     * placeholder "100" instead of the real order quantity). Cross-checks
-     * against the locally-synced SubconOrder for the same production_group
-     * (the actual source of truth, synced straight from D365) and refuses to
-     * queue — logging loudly instead — on any PO-number or quantity mismatch.
-     * No local order yet is not a mismatch (order sync can lag QC by design).
+     * Re-renders the invoice job's signed_doc (the QC inspection report PDF —
+     * invoice has no document of its own, see queueInvoice()) from the
+     * project's current po_info/po_qty/etc. Companion to
+     * regenerateDeductionDocs() for the invoice side: needed after a
+     * matchesLocalOrder() self-heal or an rpa:reconcile-po --fix corrects a
+     * stale PO/qty, so the PO Number/Qty Order printed in the already-queued
+     * report reflect the correction, not just the payload's PO/amount fields.
      */
+    public function regenerateInvoiceDoc(int $rowId): bool
+    {
+        $row = DB::connection('rpa')->table('rpa_queues')->where('id', $rowId)->where('rpa_type', 'invoice')->first();
+        if (! $row) {
+            Log::warning('RPA invoice regenerate: row not found', ['id' => $rowId]);
+
+            return false;
+        }
+
+        $entityId = (string) $row->entity_id;
+
+        $session = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('project_id', $entityId)
+            ->whereNotNull('director_approval_signature')->where('director_approval_signature', '!=', '')
+            ->orderByDesc('cycle_number')
+            ->first();
+        if (! $session) {
+            Log::warning('RPA invoice regenerate: no director-approved session found', ['id' => $rowId, 'entity' => $entityId]);
+
+            return false;
+        }
+
+        $signedDoc = $this->reportPdf->renderDataUri($entityId, (string) $session->session_id);
+        if ($signedDoc === null) {
+            Log::warning('RPA invoice regenerate: PDF render failed', ['id' => $rowId, 'entity' => $entityId]);
+
+            return false;
+        }
+
+        $payload = json_decode($row->payload ?? '', true) ?: [];
+        $payload['signed_doc'] = $signedDoc;
+        $payload = $this->offloadSignedDocToS3('invoice', $entityId, $payload);
+
+        DB::connection('rpa')->table('rpa_queues')->where('id', $rowId)->update([
+            'payload' => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            'updated_at' => now(),
+        ]);
+
+        Log::info('RPA invoice document regenerated', ['id' => $rowId, 'entity' => $entityId]);
+
+        return true;
+    }
+
     /**
      * Guards invoice/deduction queuing against a packaging_project whose
      * po_info/po_qty is a stale snapshot (captured once at project creation,
