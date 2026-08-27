@@ -103,46 +103,80 @@ class SubconProductionService
             }
 
             // Fallback: look up the production_group from subcon_orders locally
+            // (only resolves for a PO already synced — see forProductionGroup()
+            // for the PLM-less path that also works on first creation).
             $localOrder = DB::table('subcon_orders')->where('order_number', $poNumber)->first();
             $fallbackGroup = $localOrder ? $localOrder->production_group : null;
             if ($fallbackGroup) {
-                $lines = DB::connection('vsm')->table('production_group_lines')
-                    ->where('ProductionGroup', $fallbackGroup)
-                    ->orderBy('LineNum')
-                    ->get([
-                        'ProductionGroup', 'ProdId', 'ItemId', 'Size', 'Qty',
-                        'ProdStatus', 'InventSiteId', 'InventLocationId', 'SearchName',
-                    ]);
-
-                if ($lines->isNotEmpty()) {
-                    $firstLine = $lines->first();
-                    $sortedLines = $lines->sortBy(function ($line) {
-                        return $this->sizeToRank($line->Size ?? '');
-                    })->values();
-
-                    return [
-                        [
-                            'plm_id' => '',
-                            'production_group' => $fallbackGroup,
-                            'article_code' => $firstLine->ItemId,
-                            'article_name' => $firstLine->SearchName,
-                            'brand' => null,
-                            'colour' => null,
-                            'group_name' => null,
-                            'plm_status' => null,
-                            'season' => null,
-                            'world' => null,
-                            'department' => null,
-                            'category' => null,
-                            'subcategory' => null,
-                            'total_qty' => (float) $sortedLines->sum('Qty'),
-                            'lines' => $sortedLines->all(),
-                        ]
-                    ];
+                $group = $this->forProductionGroup($fallbackGroup);
+                if (! empty($group)) {
+                    return $group;
                 }
             }
 
             return [];
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * Same shape as one forPo() entry, but resolved directly from a known
+     * production group ID instead of via the PO's PLM link. Standalone CMT
+     * production groups (no PLM) have no other path to their size lines —
+     * forPo() only reaches this via a local subcon_orders lookup, which is
+     * empty for a PO not yet synced. The sync command calls this directly
+     * with D365's TOC_ProductionGroup header field so title/sizes_count are
+     * correct on first creation, not just on the next sync pass.
+     *
+     * @return array<int, array{
+     *   plm_id: string, production_group: ?string, article_code: ?string,
+     *   article_name: ?string, brand: ?string, colour: ?string,
+     *   group_name: ?string, plm_status: ?string, total_qty: float,
+     *   lines: array<int, object>
+     * }>
+     */
+    public function forProductionGroup(string $productionGroup): array
+    {
+        try {
+            $lines = DB::connection('vsm')->table('production_group_lines')
+                ->where('ProductionGroup', $productionGroup)
+                ->orderBy('LineNum')
+                ->get([
+                    'ProductionGroup', 'ProdId', 'ItemId', 'Size', 'Qty',
+                    'ProdStatus', 'InventSiteId', 'InventLocationId', 'SearchName',
+                ]);
+
+            if ($lines->isEmpty()) {
+                return [];
+            }
+
+            $firstLine = $lines->first();
+            $sortedLines = $lines->sortBy(function ($line) {
+                return $this->sizeToRank($line->Size ?? '');
+            })->values();
+
+            return [
+                [
+                    'plm_id' => '',
+                    'production_group' => $productionGroup,
+                    'article_code' => $firstLine->ItemId,
+                    'article_name' => $firstLine->SearchName,
+                    'brand' => null,
+                    'colour' => null,
+                    'group_name' => null,
+                    'plm_status' => null,
+                    'season' => null,
+                    'world' => null,
+                    'department' => null,
+                    'category' => null,
+                    'subcategory' => null,
+                    'total_qty' => (float) $sortedLines->sum('Qty'),
+                    'lines' => $sortedLines->all(),
+                ],
+            ];
         } catch (\Throwable $e) {
             report($e);
 
@@ -156,6 +190,14 @@ class SubconProductionService
      * future Fab-* pool — while excluding Acc-*, CMT, AddPro, etc.
      */
     private const FABRIC_POOL_PREFIX = 'Fab-';
+
+    /**
+     * Trim/accessory keywords seen on Fab-* pool lines that are NOT fabric
+     * (e.g. a hangtag bought in KG instead of PCS) — the PCS-unit skip below
+     * doesn't catch these since they're ordered by weight/length, not piece
+     * count. Matched case-insensitively against LineDescription.
+     */
+    private const NON_FABRIC_KEYWORDS = ['HANGTAG', 'LABEL', 'STICKER', 'POLYBAG'];
 
     /**
      * Linked fabric PO lines for a CMT PO, combined per fabric (description +
@@ -202,6 +244,13 @@ class SubconProductionService
                 if (strcasecmp($unit, 'PCS') === 0) {
                     continue;
                 }
+                // Some trims (e.g. hangtags) are bought by weight/length instead
+                // of PCS and would otherwise slip through the check above.
+                foreach (self::NON_FABRIC_KEYWORDS as $keyword) {
+                    if (stripos($desc, $keyword) !== false) {
+                        continue 2;
+                    }
+                }
                 $key = $desc.'|'.$unit;
                 if (! isset($grouped[$key])) {
                     $grouped[$key] = ['description' => $desc, 'unit' => $unit ?: null, 'fabric_sent' => 0.0, 'total_amount' => 0.0, 'po_numbers' => [], 'item_numbers' => []];
@@ -216,7 +265,26 @@ class SubconProductionService
                 }
             }
 
-            return array_values(array_map(function ($g) {
+            // Item-master enrichment (Inventory Group) — a single batched, best-effort
+            // D365 call for every item number across all grouped fabrics. Wrapped in
+            // its own try/catch so a D365 hiccup never drops the VSM-derived fabric
+            // lines themselves (unlike fabric_sent/price, this has no local fallback).
+            $allItemNumbers = [];
+            foreach ($grouped as $g) {
+                foreach ($g['item_numbers'] as $it) {
+                    $allItemNumbers[$it] = true;
+                }
+            }
+            $itemMaster = [];
+            if (! empty($allItemNumbers)) {
+                try {
+                    $itemMaster = app(\App\Services\D365JobTransactionService::class)->fetchItemMaster(array_keys($allItemNumbers));
+                } catch (\Throwable $e) {
+                    report($e);
+                }
+            }
+
+            return array_values(array_map(function ($g) use ($itemMaster) {
                 // Weighted unit price = Σ LineAmount / Σ ordered qty — a VSM-only
                 // fallback (no currency); the resolver prefers po_items / D365.
                 $g['fabric_price'] = $g['fabric_sent'] > 0 ? round($g['total_amount'] / $g['fabric_sent'], 2) : null;
@@ -225,6 +293,17 @@ class SubconProductionService
                 $g['po_numbers'] = array_keys($g['po_numbers']);
                 $g['item_numbers'] = array_keys($g['item_numbers']);
                 $g['label'] = $g['description'].($g['unit'] ? ' ('.$g['unit'].')' : '');
+                // Display unit: length fabric (M/YD) is always entered/converted
+                // to YARDS regardless of the PO's raw unit — see resolveGoodsReceipts().
+                $g['display_unit'] = self::displayUnit($g['label']);
+                $g['item_number'] = implode(', ', $g['item_numbers']);
+                $g['inventory_group'] = null;
+                foreach ($g['item_numbers'] as $it) {
+                    if (! empty($itemMaster[$it]['inventory_group'])) {
+                        $g['inventory_group'] = $itemMaster[$it]['inventory_group'];
+                        break;
+                    }
+                }
 
                 return $g;
             }, $grouped));
@@ -333,6 +412,107 @@ class SubconProductionService
             $result[$label] = ['price' => $price, 'currency' => $currency];
         }
 
+        // Policy markup: every resolved fabric price (local po_items, direct D365,
+        // or the VSM fallback alike) is marked up 30% before it reaches the
+        // consumption/deduction calc. Applied here — the single funnel all three
+        // sources pass through — so it can't be missed on any one source.
+        foreach ($result as $label => $r) {
+            if ($r['price'] !== null) {
+                $result[$label]['price'] = round($r['price'] * self::FABRIC_PRICE_MARKUP, 2);
+            }
+        }
+
+        return $result;
+    }
+
+    /** Policy markup applied to every resolved fabric price (see resolveFabricPricing()). */
+    private const FABRIC_PRICE_MARKUP = 1.30;
+
+    /** 1 meter = this many yards — the only length conversion Goods Receive needs. */
+    private const METER_TO_YARD = 1.0936133;
+
+    /**
+     * The unit a fabric line's figures are actually recorded in — for display
+     * only. D365 quotes length fabric in M or YD depending on the PO, but Fabric
+     * Sent / the waste columns / Goods Receive are always entered/converted to
+     * YARDS regardless (see resolveGoodsReceipts() above); only KG (weight)
+     * fabric keeps its own unit. The label's trailing "(UNIT)" — built from the
+     * raw D365 PurchaseUnitSymbol — is the only place that unit survives once a
+     * fabric line reaches display code, so it's parsed back out here.
+     */
+    public static function displayUnit(?string $label): ?string
+    {
+        if (! $label || ! preg_match('/\(([A-Za-z0-9]+)\)\s*$/', $label, $m)) {
+            return null;
+        }
+
+        return strcasecmp($m[1], 'KG') === 0 ? 'KG' : 'YD';
+    }
+
+    /**
+     * Actual goods-received quantity per fabric line, direct from D365 (the real
+     * receipt documents — see D365JobTransactionService::fetchGoodsReceipts()).
+     * There's no local mirror for this (unlike fabric pricing, which po_items
+     * carries), so it's always a direct, cached, best-effort D365 call keyed by
+     * the fabric's linked PO numbers.
+     *
+     * D365/VSM record quantity in whatever unit the fabric was procured in
+     * (PurchaseUnitSymbol — M or YD for length fabrics, KG for weight), but the
+     * cutting floor always works — and the vendor always enters Fabric Sent and
+     * every waste column — in YARDS regardless of the PO's unit. Left unconverted,
+     * a fabric bought in meters shows a Goods Receive that looks ~9% short of
+     * Fabric Sent even when everything was actually received. So a length fabric
+     * quoted in meters is converted to yards here; KG (weight) and already-YD
+     * fabrics pass through unchanged.
+     *
+     * @param  array<int, array<string, mixed>>  $vsmLines  from fabricLinesForPo()
+     * @return array<string, array{qty: ?float, date: ?string}> keyed by label
+     */
+    public function resolveGoodsReceipts(array $vsmLines): array
+    {
+        $allPos = [];
+        foreach ($vsmLines as $l) {
+            foreach (($l['po_numbers'] ?? []) as $p) {
+                $allPos[$p] = true;
+            }
+        }
+
+        if (empty($allPos)) {
+            return [];
+        }
+
+        $receipts = [];
+        try {
+            $receipts = app(\App\Services\D365JobTransactionService::class)->fetchGoodsReceipts(array_keys($allPos));
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        $result = [];
+        foreach ($vsmLines as $l) {
+            $qty = null;
+            $date = null;
+            foreach (($l['po_numbers'] ?? []) as $p) {
+                if (! isset($receipts[$p])) {
+                    continue;
+                }
+                foreach (($l['item_numbers'] ?? []) as $it) {
+                    if (isset($receipts[$p]['items'][$it])) {
+                        $qty = ($qty ?? 0.0) + $receipts[$p]['items'][$it];
+                    }
+                }
+                if (! empty($receipts[$p]['last_delivery_date']) && (! $date || $receipts[$p]['last_delivery_date'] > $date)) {
+                    $date = $receipts[$p]['last_delivery_date'];
+                }
+            }
+            // Meters → yards: the only unit the fabric was actually procured in
+            // that doesn't already match the vendor's yard-based entry.
+            if ($qty !== null && strcasecmp((string) ($l['unit'] ?? ''), 'M') === 0) {
+                $qty *= self::METER_TO_YARD;
+            }
+            $result[$l['label']] = ['qty' => $qty !== null ? round($qty, 2) : null, 'date' => $date];
+        }
+
         return $result;
     }
 
@@ -359,6 +539,10 @@ class SubconProductionService
         // Real unit price + currency (local po_items first, then direct D365).
         $pricing = $this->resolveFabricPricing(array_values($vsm));
 
+        // Actual goods-received quantity per fabric (direct D365, always — no
+        // local mirror exists for this).
+        $receipts = $this->resolveGoodsReceipts(array_values($vsm));
+
         $labels = array_keys($vsm + $recon->all());
 
         $lines = [];
@@ -368,23 +552,39 @@ class SubconProductionService
             if (preg_match('/\(PCS\)\s*$/i', $label)) {
                 continue;
             }
+            $isNonFabric = false;
+            foreach (self::NON_FABRIC_KEYWORDS as $keyword) {
+                if (stripos($label, $keyword) !== false) {
+                    $isNonFabric = true;
+                    break;
+                }
+            }
+            if ($isNonFabric) {
+                continue;
+            }
             $r = $recon->get($label);
             $priced = $pricing[$label] ?? ['price' => ($vsm[$label]['fabric_price'] ?? null), 'currency' => null];
 
             // Convert a non-IDR source price to IDR via the configured FX rate so
             // the deduction is always computed in IDR. The converted value is the
-            // prefill; a saved admin value still wins. Source kept as a hint.
-            $srcPrice = $priced['price'] ?? null;
+            // prefill; a saved admin value still wins. Source kept as a short hint
+            // so the 30% policy markup isn't silently invisible on screen.
+            $srcPrice = $priced['price'] ?? null; // already includes FABRIC_PRICE_MARKUP, per resolveFabricPricing()
             $srcCurrency = $priced['currency'] ?? null;
             $prefillPrice = $srcPrice;
             $priceSource = null;
-            if ($srcPrice !== null && $srcCurrency && strtoupper((string) $srcCurrency) !== 'IDR') {
-                $rate = $this->fxRateToIdr($srcCurrency);
-                if ($rate > 0) {
-                    $prefillPrice = round($srcPrice * $rate, 2);
-                    $priceSource = strtoupper((string) $srcCurrency).' '
-                        .rtrim(rtrim(number_format($srcPrice, 4, '.', ''), '0'), '.')
-                        .' @ '.number_format($rate).' = Rp '.number_format($prefillPrice, 2);
+            if ($srcPrice !== null) {
+                $rawPrice = round($srcPrice / self::FABRIC_PRICE_MARKUP, 2);
+                $markupPct = round((self::FABRIC_PRICE_MARKUP - 1) * 100);
+                if ($srcCurrency && strtoupper((string) $srcCurrency) !== 'IDR') {
+                    $rate = $this->fxRateToIdr($srcCurrency);
+                    if ($rate > 0) {
+                        $prefillPrice = round($srcPrice * $rate, 2);
+                        $cur = strtoupper((string) $srcCurrency);
+                        $priceSource = $cur.' '.number_format($rawPrice, 2).' (+'.$markupPct.'%) @ '.number_format($rate).' = Rp '.number_format($prefillPrice, 2);
+                    }
+                } else {
+                    $priceSource = 'Rp '.number_format($rawPrice, 2).' (+'.$markupPct.'%)';
                 }
             }
 
@@ -395,6 +595,11 @@ class SubconProductionService
 
             $lines[] = [
                 'label' => $label,
+                'unit' => self::displayUnit($label),
+                'item_number' => $vsm[$label]['item_number'] ?? null,
+                'inventory_group' => $vsm[$label]['inventory_group'] ?? null,
+                'goods_receive' => $receipts[$label]['qty'] ?? null,
+                'goods_receive_date' => $receipts[$label]['date'] ?? null,
                 'short_roll' => $r ? (float) $r->short_roll : 0,
                 'sisa_kain' => $r ? (float) $r->sisa_kain : 0,
                 'kepala_kain' => $r ? (float) $r->kepala_kain : 0,
@@ -480,7 +685,15 @@ class SubconProductionService
      */
     public function totalCutForOrder(\App\Models\SubconOrder $order): int
     {
-        return (int) \App\Models\SubconCuttingReport::where('order_id', $order->id)->sum('cutting_qty');
+        // D365 can reissue a size's ProdId mid-order, which leaves the old
+        // row in place alongside the new one (rows are keyed by prod_id, not
+        // size). Dedupe to one row per size — the most recently updated —
+        // instead of summing every historical prod_id, or the qty doubles.
+        return (int) \App\Models\SubconCuttingReport::where('order_id', $order->id)
+            ->orderByDesc('updated_at')
+            ->get(['size', 'cutting_qty'])
+            ->unique('size')
+            ->sum('cutting_qty');
     }
 
     /**
