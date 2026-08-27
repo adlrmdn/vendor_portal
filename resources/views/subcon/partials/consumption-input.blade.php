@@ -64,19 +64,36 @@
                 <span class="text-muted fw-normal text-lowercase">(per fabric)</span>
             </div>
             <span class="text-muted small">Total Qty Cut: <strong>{{ $fmt2($totalCut) }}</strong> pcs</span>
+            @if($editable)
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="add-cons-fabric"><i class="fas fa-plus me-1"></i> Add fabric</button>
+            @endif
         </div>
 
-        @if(empty($fabricLines))
+        @if(empty($fabricLines) && ! $editable)
             <div class="text-muted small">No fabric linked for this style yet, so there is nothing to reconcile.</div>
         @else
+            @if(empty($fabricLines))
+                <div class="text-muted small mb-2">No fabric linked from VSM for this style — use "Add fabric" above if one was used.</div>
+            @endif
+            <style>
+                .consumption-table > thead > tr > th,
+                .consumption-table > tbody > tr.cons-data-row > td {
+                    border-right: 1px solid rgba(0,0,0,0.08);
+                }
+                .consumption-table > thead > tr > th:last-child,
+                .consumption-table > tbody > tr.cons-data-row > td:last-child {
+                    border-right: none;
+                }
+            </style>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
+                <table class="table table-sm align-middle mb-0 consumption-table">
                     <thead class="table-light">
                         <tr>
                             <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">Short Roll</th>
                             <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">Sisa Kain (Utuh)</th>
                             <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">Kepala Kain</th>
                             <th class="text-end" style="width:90px; font-size:.75rem; white-space:nowrap;">Retur Kain</th>
+                            <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">Goods Receive</th>
                             <th class="text-end" style="width:120px; font-size:.75rem; white-space:nowrap;{{ $editable ? 'background:#fff3cd;color:#7a5a00;' : '' }}">Fabric Sent @if($editable)<i class="fas fa-pen ms-1" style="font-size:.6rem;"></i>@endif</th>
                             <th class="text-end" style="width:130px; font-size:.75rem; white-space:nowrap;{{ $editable ? 'background:#fff3cd;color:#7a5a00;' : '' }}">Cons. Plan @if($editable)<i class="fas fa-pen ms-1" style="font-size:.6rem;"></i>@endif</th>
                             <th class="text-end" style="width:90px; font-size:.75rem; white-space:nowrap;">Cutt Plan</th>
@@ -86,19 +103,32 @@
                             <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">Deduction</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="cons-rows">
                         @foreach($fabricLines as $i => $fl)
-                            @php $waste = (float) ($fl['retur_kain'] ?? 0); @endphp
+                            @php
+                                $waste = (float) ($fl['retur_kain'] ?? 0);
+                                $unit = $fl['unit'] ?? null;
+                                // Small muted unit tag placed under a value, consistent with
+                                // the existing "as of {date}" / "converted:" annotations below.
+                                $unitTag = fn ($u) => $u ? '<div class="text-muted" style="font-size:.72rem;line-height:1.3;">'.e($u).'</div>' : '';
+                            @endphp
                             {{-- Fabric description on its own full-width line, calculation columns below --}}
                             <tr class="table-light">
-                                <td colspan="11" class="fw-semibold small py-2">
+                                <td colspan="12" class="fw-semibold small py-2">
                                     <i class="fas fa-scroll text-secondary me-1"></i> {{ $fl['label'] }}
+                                    @if(! empty($fl['item_number']) || ! empty($fl['inventory_group']))
+                                        <span class="text-muted fw-normal ms-2" style="font-size:.72rem;">
+                                            @if(! empty($fl['item_number']))Item: {{ $fl['item_number'] }}@endif
+                                            @if(! empty($fl['item_number']) && ! empty($fl['inventory_group'])) &middot; @endif
+                                            @if(! empty($fl['inventory_group']))Inv. Group: {{ $fl['inventory_group'] }}@endif
+                                        </span>
+                                    @endif
                                     @if($editable)
                                         <input type="hidden" name="fabrics[{{ $i }}][label]" value="{{ $fl['label'] }}">
                                     @endif
                                 </td>
                             </tr>
-                            <tr data-waste="{{ $waste }}">
+                            <tr class="cons-data-row" data-waste="{{ $waste }}">
                                 @foreach(['short_roll','sisa_kain','kepala_kain','retur_kain'] as $rc)
                                     <td class="text-end">
                                         @if($editable)
@@ -106,6 +136,7 @@
                                                    class="form-control form-control-sm text-end cons-waste{{ $rc === 'retur_kain' ? ' cons-retur' : '' }}" style="width:84px;"
                                                    name="fabrics[{{ $i }}][{{ $rc }}]"
                                                    value="{{ old('fabrics.'.$i.'.'.$rc, $fl[$rc] ?? 0) }}" placeholder="0">
+                                            {!! $unitTag($unit) !!}
                                             @if($rc === 'retur_kain' && ($fl['retur_kain_source'] ?? null) === 'qc_console')
                                                 <div class="text-info" style="font-size:.65rem;white-space:nowrap;" title="Measured by QC on the console; overrides the vendor-entered value.">
                                                     <i class="fas fa-clipboard-check"></i> QC input
@@ -113,17 +144,29 @@
                                             @endif
                                         @else
                                             <span class="text-muted">{{ $fmt2($fl[$rc] ?? 0) }}</span>
+                                            {!! $unitTag($unit) !!}
                                         @endif
                                     </td>
                                 @endforeach
+                                <td class="text-end">
+                                    <span class="text-muted">{{ $fmt2($fl['goods_receive'] ?? null) }}</span>
+                                    {!! $fl['goods_receive'] !== null ? $unitTag($unit) : '' !!}
+                                    @if(! empty($fl['goods_receive_date']))
+                                        <div class="text-muted" style="font-size:.65rem;white-space:nowrap;" title="Last delivery date from the D365 packing slip">
+                                            as of {{ \Illuminate\Support\Carbon::parse($fl['goods_receive_date'])->format('d M Y') }}
+                                        </div>
+                                    @endif
+                                </td>
                                 <td class="text-end">
                                     @if($editable)
                                         <input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()"
                                                class="form-control form-control-sm text-end cons-sent" style="width:110px;background:#fffaf0;border-color:#f0c000;font-weight:600;"
                                                name="fabrics[{{ $i }}][fabric_sent]"
                                                value="{{ old('fabrics.'.$i.'.fabric_sent', $fl['fabric_sent']) }}" placeholder="0">
+                                        {!! $unitTag($unit) !!}
                                     @else
                                         <span class="fw-semibold">{{ $fmt2($fl['fabric_sent']) }}</span>
+                                        {!! $unitTag($unit) !!}
                                     @endif
                                 </td>
                                 <td class="text-end">
@@ -132,12 +175,20 @@
                                                class="form-control form-control-sm text-end cons-plan" style="width:120px;background:#fffaf0;border-color:#f0c000;font-weight:600;"
                                                name="fabrics[{{ $i }}][consumption_plan]"
                                                value="{{ old('fabrics.'.$i.'.consumption_plan', $fl['consumption_plan']) }}" placeholder="0">
+                                        {!! $unitTag($unit ? $unit.'/pc' : null) !!}
                                     @else
                                         <span class="fw-semibold">{{ $fmtCons($fl['consumption_plan']) }}</span>
+                                        {!! $unitTag($unit ? $unit.'/pc' : null) !!}
                                     @endif
                                 </td>
-                                <td class="text-end fw-semibold cons-cutt">{{ $fmt2($fl['cutt_plan']) }}</td>
-                                <td class="text-end fw-semibold cons-actual">{{ $fmtCons($fl['actual_consumption']) }}</td>
+                                <td class="text-end">
+                                    <span class="fw-semibold cons-cutt">{{ $fmt2($fl['cutt_plan']) }}</span>
+                                    {!! $unitTag($fl['cutt_plan'] !== null ? 'pcs' : null) !!}
+                                </td>
+                                <td class="text-end">
+                                    <span class="fw-semibold cons-actual">{{ $fmtCons($fl['actual_consumption']) }}</span>
+                                    {!! $unitTag($fl['actual_consumption'] !== null && $unit ? $unit.'/pc' : null) !!}
+                                </td>
                                 <td class="text-end fw-semibold cons-over">{{ $fl['overconsumption'] !== null ? $fmt2($fl['overconsumption'] * 100).'%' : '—' }}</td>
                                 <td class="text-end">
                                     @if($editable)
@@ -145,14 +196,12 @@
                                                class="form-control form-control-sm text-end cons-price" style="width:130px;"
                                                name="fabrics[{{ $i }}][fabric_price]"
                                                value="{{ old('fabrics.'.$i.'.fabric_price', $fl['fabric_price']) }}" placeholder="0">
-                                        @if(!empty($fl['fabric_price_source'] ?? null))
-                                            <div class="text-muted small" style="font-size:.7rem;">converted: {{ $fl['fabric_price_source'] }}</div>
-                                        @endif
+                                        {!! $unitTag($unit ? 'Rp / '.$unit : null) !!}
+                                        {!! $unitTag($fl['fabric_price_source'] ?? null) !!}
                                     @else
                                         <span class="fw-semibold">{{ $fmt2($fl['fabric_price']) }}</span>
-                                        @if(!empty($fl['fabric_price_source'] ?? null))
-                                            <div class="text-muted small" style="font-size:.7rem;">from {{ $fl['fabric_price_source'] }}</div>
-                                        @endif
+                                        {!! $unitTag($fl['fabric_price'] !== null && $unit ? 'Rp / '.$unit : null) !!}
+                                        {!! $unitTag($fl['fabric_price_source'] ?? null) !!}
                                     @endif
                                 </td>
                                 <td class="text-end fw-semibold cons-ded" style="white-space:nowrap;">{{ $money($fl['deduction']) }}</td>
@@ -161,7 +210,7 @@
                     </tbody>
                     <tfoot class="table-light">
                         <tr>
-                            <td colspan="10" class="text-end fw-semibold">Total Deduction</td>
+                            <td colspan="11" class="text-end fw-semibold">Total Deduction</td>
                             <td class="text-end fw-bold cons-ded-total" style="white-space:nowrap;">{{ $money($totalDeduction) }}</td>
                         </tr>
                     </tfoot>
@@ -170,12 +219,13 @@
 
             @if($editable)
                     <div class="form-text mt-1">
-                        Cutt Plan = ROUNDDOWN(Fabric Sent ÷ Cons. Plan).
+                        Cutt Plan = ROUNDDOWN((Fabric Sent − Retur Kain) ÷ Cons. Plan).
                         Actual Cons. = (Fabric Sent − Retur Kain) ÷ Total Qty Cut ({{ $fmt2($totalCut) }}).
                         Overconsumption = (Actual Cons. − Cons. Plan) ÷ Cons. Plan.
                         Deduction = MAX(0, Actual Cons. − Cons. Plan × 1.03) × Total Qty Cut × Fabric Price — charged only when Overconsumption exceeds 3%.
                         Fabric Price is prefilled from the fabric PO; convert to IDR here if the source is another currency.
                         The waste columns (Short Roll / Sisa Kain / Kepala Kain / Retur Kain) are prefilled from the vendor's cutting report — override them here if needed. Saved when you approve the cutting report.
+                        Goods Receive is the confirmed receipt quantity from D365 (packing slip records) for the linked fabric PO — reference only, not editable.
                     </div>
                 <script>
                 (function () {
@@ -207,8 +257,9 @@
                         const overEl = tr.querySelector('.cons-over');
                         const dedEl = tr.querySelector('.cons-ded');
                         const act = (fs > 0 && total > 0) ? (fs - waste) / total : null;
-                        // Cutt Plan is a piece count → fixed 2 decimals.
-                        if (cuttEl) cuttEl.textContent = (fs > 0 && cp > 0) ? Math.floor(fs / cp).toFixed(2) : '—';
+                        // Cutt Plan is a piece count → fixed 2 decimals. The unit tag
+                        // below each value is static (server-rendered) and untouched here.
+                        if (cuttEl) cuttEl.textContent = (fs > 0 && cp > 0) ? Math.floor((fs - waste) / cp).toFixed(2) : '—';
                         if (actEl) actEl.textContent = act !== null ? fmtCons(act) : '—';
                         // Overconsumption % → fixed 2 decimals.
                         if (overEl) overEl.textContent = (act !== null && cp > 0) ? ((act - cp) / cp * 100).toFixed(2) + '%' : '—';
@@ -230,9 +281,59 @@
                         const t = document.querySelector('.cons-ded-total');
                         if (t) t.textContent = fmtMoney(sum);
                     }
-                    document.querySelectorAll('.cons-sent, .cons-plan, .cons-price, .cons-waste').forEach(function (el) {
-                        el.addEventListener('input', function () { recompute(el.closest('tr')); updateTotal(); });
+                    const rows = document.getElementById('cons-rows');
+                    // Delegated so rows added later (via "Add fabric") are covered too.
+                    rows.addEventListener('input', function (e) {
+                        if (e.target.matches('.cons-sent, .cons-plan, .cons-price, .cons-waste')) {
+                            recompute(e.target.closest('tr'));
+                            updateTotal();
+                        }
                     });
+                    rows.addEventListener('click', function (e) {
+                        const btn = e.target.closest('.cons-remove');
+                        if (! btn) return;
+                        const labelRow = btn.closest('tr');
+                        const dataRow = labelRow.nextElementSibling;
+                        labelRow.remove();
+                        if (dataRow) dataRow.remove();
+                        updateTotal();
+                    });
+
+                    // "Add fabric" — a manually-entered fabric VSM does not carry (e.g. a
+                    // material never linked/synced from D365). Same shape as a VSM row,
+                    // but with an editable label and no Goods Receive (no PO to read it from).
+                    const addBtn = document.getElementById('add-cons-fabric');
+                    let rIdx = {{ count($fabricLines) }};
+                    if (addBtn) {
+                        addBtn.addEventListener('click', function () {
+                            const i = rIdx++;
+                            const labelRow = document.createElement('tr');
+                            labelRow.className = 'table-light';
+                            labelRow.innerHTML = '<td colspan="11" class="py-2">'
+                                + '<input type="text" class="form-control form-control-sm d-inline-block" style="max-width:420px;" name="fabrics[' + i + '][label]" placeholder="Fabric description" required>'
+                                + '</td><td class="text-end py-2"><button type="button" class="btn btn-sm btn-outline-danger cons-remove" title="Remove"><i class="fas fa-times"></i></button></td>';
+
+                            const dataRow = document.createElement('tr');
+                            dataRow.className = 'cons-data-row';
+                            dataRow.dataset.waste = '0';
+                            let cells = '';
+                            ['short_roll', 'sisa_kain', 'kepala_kain', 'retur_kain'].forEach(function (c) {
+                                cells += '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end cons-waste' + (c === 'retur_kain' ? ' cons-retur' : '') + '" style="width:84px;" name="fabrics[' + i + '][' + c + ']" value="0"></td>';
+                            });
+                            cells += '<td class="text-end"><span class="text-muted">—</span></td>';
+                            cells += '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end cons-sent" style="width:110px;background:#fffaf0;border-color:#f0c000;font-weight:600;" name="fabrics[' + i + '][fabric_sent]" value="0"></td>';
+                            cells += '<td class="text-end"><input type="number" step="0.0001" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end cons-plan" style="width:120px;background:#fffaf0;border-color:#f0c000;font-weight:600;" name="fabrics[' + i + '][consumption_plan]" value="0"></td>';
+                            cells += '<td class="text-end"><span class="fw-semibold cons-cutt">—</span></td>';
+                            cells += '<td class="text-end"><span class="fw-semibold cons-actual">—</span></td>';
+                            cells += '<td class="text-end fw-semibold cons-over">—</td>';
+                            cells += '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end cons-price" style="width:130px;" name="fabrics[' + i + '][fabric_price]" value="0"></td>';
+                            cells += '<td class="text-end fw-semibold cons-ded" style="white-space:nowrap;">—</td>';
+                            dataRow.innerHTML = cells;
+
+                            rows.appendChild(labelRow);
+                            rows.appendChild(dataRow);
+                        });
+                    }
                 })();
                 </script>
             @endif
