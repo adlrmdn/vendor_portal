@@ -192,14 +192,6 @@ class SubconProductionService
     private const FABRIC_POOL_PREFIX = 'Fab-';
 
     /**
-     * Trim/accessory keywords seen on Fab-* pool lines that are NOT fabric
-     * (e.g. a hangtag bought in KG instead of PCS) — the PCS-unit skip below
-     * doesn't catch these since they're ordered by weight/length, not piece
-     * count. Matched case-insensitively against LineDescription.
-     */
-    private const NON_FABRIC_KEYWORDS = ['HANGTAG', 'LABEL', 'STICKER', 'POLYBAG'];
-
-    /**
      * Linked fabric PO lines for a CMT PO, combined per fabric (description +
      * unit). Reached via the shared PLMId: the CMT PO's lines carry the PLM, and
      * the fabric POs bought for that style share it (all Fab-* pools). Quantities for the same
@@ -243,13 +235,6 @@ class SubconProductionService
                 // they have no consumption to reconcile.
                 if (strcasecmp($unit, 'PCS') === 0) {
                     continue;
-                }
-                // Some trims (e.g. hangtags) are bought by weight/length instead
-                // of PCS and would otherwise slip through the check above.
-                foreach (self::NON_FABRIC_KEYWORDS as $keyword) {
-                    if (stripos($desc, $keyword) !== false) {
-                        continue 2;
-                    }
                 }
                 $key = $desc.'|'.$unit;
                 if (! isset($grouped[$key])) {
@@ -550,16 +535,6 @@ class SubconProductionService
             // PCS = trims, not fabric. Also drops reconciliation rows snapshotted
             // before the exclusion existed (kept in the DB, just not surfaced).
             if (preg_match('/\(PCS\)\s*$/i', $label)) {
-                continue;
-            }
-            $isNonFabric = false;
-            foreach (self::NON_FABRIC_KEYWORDS as $keyword) {
-                if (stripos($label, $keyword) !== false) {
-                    $isNonFabric = true;
-                    break;
-                }
-            }
-            if ($isNonFabric) {
                 continue;
             }
             $r = $recon->get($label);
