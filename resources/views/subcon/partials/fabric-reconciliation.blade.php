@@ -88,19 +88,15 @@
                             <tr>
                                 <td>
                                     @if($s['from_vsm'])
-                                        <div class="small fw-semibold">{{ $s['display_label'] ?? $s['label'] }}</div>
-                                        @if(! empty($s['item_number']) || ! empty($s['inventory_group']))
-                                            <div class="text-muted" style="font-size:.7rem;">
-                                                @if(! empty($s['item_number']))Item: {{ $s['item_number'] }}@endif
-                                                @if(! empty($s['item_number']) && ! empty($s['inventory_group'])) &middot; @endif
-                                                @if(! empty($s['inventory_group']))Inv. Group: {{ $s['inventory_group'] }}@endif
-                                            </div>
-                                        @endif
-                                        @if(($s['display_label'] ?? $s['label']) !== $s['label'])
-                                            <div class="text-muted" style="font-size:.66rem;" title="The PO line's own description text — kept for traceability, but the item master name above is what's actually correct.">
-                                                <i class="fas fa-triangle-exclamation me-1"></i>PO line text: {{ $s['label'] }}
-                                            </div>
-                                        @endif
+                                        <div class="d-flex align-items-center flex-wrap gap-2">
+                                            <span class="small fw-semibold">{{ $s['display_label'] ?? $s['label'] }}</span>
+                                            @if(! empty($s['item_number']))
+                                                <span class="badge rounded-pill text-bg-light border fw-normal" style="font-size:.66rem;">Item {{ $s['item_number'] }}</span>
+                                            @endif
+                                            @if(! empty($s['inventory_group']))
+                                                <span class="badge rounded-pill text-bg-light border fw-normal" style="font-size:.66rem;">{{ $s['inventory_group'] }}</span>
+                                            @endif
+                                        </div>
                                         @if($editable)
                                             <input type="hidden" name="fabrics_recon[{{ $i }}][label]" value="{{ $s['label'] }}">
                                         @endif
