@@ -91,6 +91,16 @@ class D365JobTransactionService
     }
 
     /**
+     * D365 returns the Operation code with inconsistent casing across vendors/
+     * companies (e.g. 'cmt-pak' vs 'CMT-Pak') — match case-insensitively rather
+     * than trusting one canonical casing.
+     */
+    private function isOperation(string $value, string $target): bool
+    {
+        return strcasecmp($value, $target) === 0;
+    }
+
+    /**
      * Render a value as an OData key literal (percent-encodes string values).
      */
     private function odataLit($val): string
@@ -124,16 +134,27 @@ class D365JobTransactionService
         Log::info("Sending start jobs command to jobt-api for PRG: {$productionGroup} (DynamicKey: {$dkey})");
 
         try {
+            // jobt-api's Playwright flow can take well over a minute per job row
+            // (observed ~97s for 2 rows) — match the 180s/200s/210s HTTP/job/
+            // retry_after ordering already used for the DTT label-gen call.
             $response = Http::withHeaders([
                 'X-API-Key' => self::JOBT_API_KEY,
                 'X-Dynamic-Key' => $dkey,
                 'Content-Type' => 'application/json',
-            ])->timeout(60)->post(self::JOBT_API_URL, [
+            ])->timeout(180)->post(self::JOBT_API_URL, [
                 'production_group' => $productionGroup,
                 'command' => 'start',
             ]);
 
             if ($response->successful()) {
+                // jobt-api returns HTTP 200 even when its own Playwright flow failed —
+                // the real outcome is in the body's "success" field, not the status code.
+                if (($response->json('success') ?? true) === false) {
+                    Log::error("Failed to start jobs for PRG {$productionGroup} (jobt-api reported failure): ".$response->body());
+
+                    return false;
+                }
+
                 Log::info("Successfully started jobs for PRG {$productionGroup}: ".$response->body());
 
                 return true;
@@ -531,10 +552,10 @@ class D365JobTransactionService
             if ($response->successful()) {
                 $headers = $response->json()['value'] ?? [];
                 foreach ($headers as $h) {
-                    if (($h['Operation'] ?? '') === 'CMT-Cut') {
+                    if ($this->isOperation($h['Operation'] ?? '', 'CMT-Cut')) {
                         $cutJobId = $h['JobTransactionId'];
                     }
-                    if (($h['Operation'] ?? '') === 'CMT-Pak') {
+                    if ($this->isOperation($h['Operation'] ?? '', 'CMT-Pak')) {
                         $pakJobId = $h['JobTransactionId'];
                     }
                 }
@@ -549,71 +570,93 @@ class D365JobTransactionService
             return $results;
         }
 
-        // 2. Perform CMT-Cut OData updates if there are cutting quantity changes
-        if (! empty($cutUpdates) && $cutJobId) {
-            Log::info("CMT-Cut job resolved: {$cutJobId}. Fetching line details.");
-            $linesUrl = $this->getResource().'/data/JobTransactionLinesDetails?$filter=JobTransactionId eq '.$this->odataLit($cutJobId).'&cross-company=true';
+        // 2. Perform CMT-Cut OData updates if there are cutting quantity changes.
+        // startJobs() (called by the caller just before this) fires an async RPA
+        // command that CREATES the JobTransactionHeaders in D365 — it doesn't wait
+        // for that to finish. If this runs before the header actually exists,
+        // $cutJobId (or every line below) comes back empty and, previously, the
+        // whole block silently did nothing while the caller still logged "success"
+        // (no exception was thrown). Explicitly erroring on "had updates to send
+        // but wrote zero" turns that into a visible, retryable failure instead.
+        if (! empty($cutUpdates)) {
+            if (! $cutJobId) {
+                $results['errors'][] = 'CMT-Cut job header not found in D365 for this production group — cutting quantities were not patched (the D365 job may not be started yet; retry later).';
+            } else {
+                Log::info("CMT-Cut job resolved: {$cutJobId}. Fetching line details.");
+                $linesUrl = $this->getResource().'/data/JobTransactionLinesDetails?$filter=JobTransactionId eq '.$this->odataLit($cutJobId).'&cross-company=true';
 
-            try {
-                $response = Http::withToken($token)->acceptJson()->get($linesUrl);
-                if ($response->successful()) {
-                    $lines = $response->json()['value'] ?? [];
-                    foreach ($lines as $line) {
-                        $size = $line['Size'] ?? '';
-                        if (isset($cutUpdates[$size])) {
-                            $key = [
-                                'dataAreaId' => $line['dataAreaId'],
-                                'No' => $line['No'],
-                                'JobTransactionId' => $line['JobTransactionId'],
-                                'ItemId' => $line['ItemId'],
-                                'Size' => $size,
-                            ];
-                            $qtyToPatch = $cutUpdates[$size];
-                            Log::info("Patching CMT-Cut for size {$size} with Jam7: {$qtyToPatch}");
-                            if ($this->patchOData('JobTransactionLinesDetails', $key, ['Jam7' => $qtyToPatch])) {
-                                $results['odata_cut_updates']++;
+                try {
+                    $response = Http::withToken($token)->acceptJson()->get($linesUrl);
+                    if ($response->successful()) {
+                        $lines = $response->json()['value'] ?? [];
+                        foreach ($lines as $line) {
+                            $size = $line['Size'] ?? '';
+                            if (isset($cutUpdates[$size])) {
+                                $key = [
+                                    'dataAreaId' => $line['dataAreaId'],
+                                    'No' => $line['No'],
+                                    'JobTransactionId' => $line['JobTransactionId'],
+                                    'ItemId' => $line['ItemId'],
+                                    'Size' => $size,
+                                ];
+                                $qtyToPatch = $cutUpdates[$size];
+                                Log::info("Patching CMT-Cut for size {$size} with Jam7: {$qtyToPatch}");
+                                if ($this->patchOData('JobTransactionLinesDetails', $key, ['Jam7' => $qtyToPatch])) {
+                                    $results['odata_cut_updates']++;
+                                }
                             }
                         }
+                        if ($results['odata_cut_updates'] === 0) {
+                            $results['errors'][] = 'CMT-Cut job found but no matching size line was patched — check Size values on JobTransactionLinesDetails.';
+                        }
+                    } else {
+                        $results['errors'][] = 'Failed to fetch CMT-Cut lines. Status: '.$response->status();
                     }
-                } else {
-                    $results['errors'][] = 'Failed to fetch CMT-Cut lines. Status: '.$response->status();
+                } catch (\Throwable $e) {
+                    $results['errors'][] = 'Exception patching CMT-Cut lines: '.$e->getMessage();
                 }
-            } catch (\Throwable $e) {
-                $results['errors'][] = 'Exception patching CMT-Cut lines: '.$e->getMessage();
             }
         }
 
-        // 3. Perform CMT-Pak OData updates if there are gramasi changes
-        if (! empty($pakUpdates) && $pakJobId) {
-            Log::info("CMT-Pak job resolved: {$pakJobId}. Fetching line details.");
-            $linesUrl = $this->getResource().'/data/JobTransactionLinesDetails?$filter=JobTransactionId eq '.$this->odataLit($pakJobId).'&cross-company=true';
+        // 3. Perform CMT-Pak OData updates if there are gramasi changes. Same
+        // "had updates but wrote zero must be an error" contract as CMT-Cut above.
+        if (! empty($pakUpdates)) {
+            if (! $pakJobId) {
+                $results['errors'][] = 'CMT-Pak job header not found in D365 for this production group — gramasi values were not patched (the D365 job may not be started yet; retry later).';
+            } else {
+                Log::info("CMT-Pak job resolved: {$pakJobId}. Fetching line details.");
+                $linesUrl = $this->getResource().'/data/JobTransactionLinesDetails?$filter=JobTransactionId eq '.$this->odataLit($pakJobId).'&cross-company=true';
 
-            try {
-                $response = Http::withToken($token)->acceptJson()->get($linesUrl);
-                if ($response->successful()) {
-                    $lines = $response->json()['value'] ?? [];
-                    foreach ($lines as $line) {
-                        $size = $line['Size'] ?? '';
-                        if (isset($pakUpdates[$size])) {
-                            $key = [
-                                'dataAreaId' => $line['dataAreaId'],
-                                'No' => $line['No'],
-                                'JobTransactionId' => $line['JobTransactionId'],
-                                'ItemId' => $line['ItemId'],
-                                'Size' => $size,
-                            ];
-                            $gramasiToPatch = $pakUpdates[$size];
-                            Log::info("Patching CMT-Pak for size {$size} with Gramasi: {$gramasiToPatch}");
-                            if ($this->patchOData('JobTransactionLinesDetails', $key, ['Gramasi' => $gramasiToPatch])) {
-                                $results['odata_pak_updates']++;
+                try {
+                    $response = Http::withToken($token)->acceptJson()->get($linesUrl);
+                    if ($response->successful()) {
+                        $lines = $response->json()['value'] ?? [];
+                        foreach ($lines as $line) {
+                            $size = $line['Size'] ?? '';
+                            if (isset($pakUpdates[$size])) {
+                                $key = [
+                                    'dataAreaId' => $line['dataAreaId'],
+                                    'No' => $line['No'],
+                                    'JobTransactionId' => $line['JobTransactionId'],
+                                    'ItemId' => $line['ItemId'],
+                                    'Size' => $size,
+                                ];
+                                $gramasiToPatch = $pakUpdates[$size];
+                                Log::info("Patching CMT-Pak for size {$size} with Gramasi: {$gramasiToPatch}");
+                                if ($this->patchOData('JobTransactionLinesDetails', $key, ['Gramasi' => $gramasiToPatch])) {
+                                    $results['odata_pak_updates']++;
+                                }
                             }
                         }
+                        if ($results['odata_pak_updates'] === 0) {
+                            $results['errors'][] = 'CMT-Pak job found but no matching size line was patched — check Size values on JobTransactionLinesDetails.';
+                        }
+                    } else {
+                        $results['errors'][] = 'Failed to fetch CMT-Pak lines. Status: '.$response->status();
                     }
-                } else {
-                    $results['errors'][] = 'Failed to fetch CMT-Pak lines. Status: '.$response->status();
+                } catch (\Throwable $e) {
+                    $results['errors'][] = 'Exception patching CMT-Pak lines: '.$e->getMessage();
                 }
-            } catch (\Throwable $e) {
-                $results['errors'][] = 'Exception patching CMT-Pak lines: '.$e->getMessage();
             }
         }
 
@@ -636,6 +679,50 @@ class D365JobTransactionService
         }
 
         return $results;
+    }
+
+    /**
+     * Resolve the current CMT-Cut / CMT-Pak JobTransactionId for a production
+     * group directly from D365 JobTransactionHeaders — never trust a job id
+     * cached elsewhere (e.g. packaging_projects.cmt_pak_job_id): D365 can
+     * reissue these (same reissue event that renumbers ProdIds on
+     * production_group_lines), silently orphaning anything still keyed to the
+     * old id. Headers-only fetch, so this is cheap enough to call before every
+     * downstream job that needs the id.
+     *
+     * @return array{cut: ?string, pak: ?string}
+     */
+    public function resolveJobTransactionIds(string $productionGroup): array
+    {
+        $token = $this->getD365Token();
+        if (! $token) {
+            Log::error('Could not obtain token for resolving Job Transaction ids');
+
+            return ['cut' => null, 'pak' => null];
+        }
+
+        $headersUrl = $this->getResource().'/data/JobTransactionHeaders?$filter=ProductionGroup eq '.$this->odataLit($productionGroup).'&cross-company=true';
+        $cutJobId = null;
+        $pakJobId = null;
+
+        try {
+            $response = Http::withToken($token)->acceptJson()->get($headersUrl);
+            if ($response->successful()) {
+                $headers = $response->json()['value'] ?? [];
+                foreach ($headers as $h) {
+                    if ($this->isOperation($h['Operation'] ?? '', 'CMT-Cut')) {
+                        $cutJobId = $h['JobTransactionId'];
+                    }
+                    if ($this->isOperation($h['Operation'] ?? '', 'CMT-Pak')) {
+                        $pakJobId = $h['JobTransactionId'];
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::error("Exception resolving Job Transaction ids for {$productionGroup}: ".$e->getMessage());
+        }
+
+        return ['cut' => $cutJobId, 'pak' => $pakJobId];
     }
 
     /**
@@ -664,10 +751,10 @@ class D365JobTransactionService
             if ($response->successful()) {
                 $headers = $response->json()['value'] ?? [];
                 foreach ($headers as $h) {
-                    if (($h['Operation'] ?? '') === 'CMT-Cut') {
+                    if ($this->isOperation($h['Operation'] ?? '', 'CMT-Cut')) {
                         $cutJobId = $h['JobTransactionId'];
                     }
-                    if (($h['Operation'] ?? '') === 'CMT-Pak') {
+                    if ($this->isOperation($h['Operation'] ?? '', 'CMT-Pak')) {
                         $pakJobId = $h['JobTransactionId'];
                     }
                 }
@@ -884,6 +971,225 @@ class D365JobTransactionService
             Cache::put($cacheKey, $out, now()->addHour());
         } catch (\Throwable $e) {
             Log::error('Exception fetching D365 fabric pricing: '.$e->getMessage());
+
+            return [];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Item-master lookup (D365 `ReleasedProductsV2`) for fabric items: Inventory
+     * Group (`TOC_InventoryGroup`, e.g. "COMBINASI" on the D365 item details page)
+     * and the item's real description (`ProductSearchName`) — the PO line's own
+     * `LineDescription` is free text and can be stale/wrong (seen in production:
+     * a genuine fabric item with a leftover "HANGTAG ..." line description from
+     * a copy-paste), so this is the description to display, never the PO line's.
+     * Best-effort, cached ~1h like fetchFabricPricing. `cross-company=true`
+     * returns one row per legal entity for the same item number (mpg/mpr/...);
+     * fabric items are mpg-scoped (see CLAUDE.md), so an mpg row wins when more
+     * than one company returns a match.
+     *
+     * @param  array<int, string>  $itemNumbers
+     * @return array<string, array{inventory_group: ?string, description: ?string}> keyed by item number
+     */
+    public function fetchItemMaster(array $itemNumbers): array
+    {
+        // Force back to string: callers commonly collect item numbers via an
+        // associative array used as a set (`$set[$itemNumber] = true`), and PHP
+        // silently casts a purely-numeric string key to an int — which then skips
+        // the quoting in odataLit() below and breaks the filter against D365's
+        // Edm.String ItemNumber/ProductNumber fields ("incompatible types" 400).
+        $itemNumbers = array_values(array_unique(array_map('strval', array_filter($itemNumbers))));
+        if (empty($itemNumbers)) {
+            return [];
+        }
+
+        $cacheKey = 'd365_item_master_'.md5(implode(',', $itemNumbers));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $token = $this->getD365Token();
+        if (! $token) {
+            return [];
+        }
+
+        $out = [];
+        try {
+            foreach (array_chunk($itemNumbers, 20) as $chunk) {
+                $filters = array_map(fn ($it) => 'ItemNumber eq '.$this->odataLit($it), $chunk);
+                $filterStr = '('.implode(' or ', $filters).')';
+                $url = $this->getResource()."/data/ReleasedProductsV2?\$filter={$filterStr}&cross-company=true";
+
+                $response = Http::withToken($token)
+                    ->withHeaders(['OData-MaxVersion' => '4.0', 'OData-Version' => '4.0', 'Accept' => 'application/json'])
+                    ->timeout(30)
+                    ->get($url);
+
+                if (! $response->successful()) {
+                    Log::warning('D365 item master fetch failed. Status: '.$response->status());
+
+                    continue;
+                }
+
+                foreach ($response->json()['value'] ?? [] as $row) {
+                    $item = $row['ItemNumber'] ?? null;
+                    if ($item === null) {
+                        continue;
+                    }
+                    $isMpg = strcasecmp((string) ($row['dataAreaId'] ?? ''), 'mpg') === 0;
+                    if (! isset($out[$item]) || $isMpg) {
+                        $out[$item] = [
+                            'inventory_group' => $row['TOC_InventoryGroup'] ?? null,
+                            'description' => null,
+                        ];
+                    }
+                }
+            }
+
+            // The item's real display name lives on `ProductTranslations` (its
+            // `ProductName`), NOT `ReleasedProductsV2.ProductSearchName`/`SearchName`
+            // — confirmed in production: for item 2508000000398 SearchName reads
+            // "WOVEN 70% COTTON..." (itself wrong — TOC_FabricType says KNITTING) while
+            // ProductTranslations.ProductName correctly reads "KNITTING 70% COTTON...
+            // SM26-CALL BLACK". `ProductTranslations.Description` is what a PO line's
+            // own (possibly stale/wrong) LineDescription is actually sourced from —
+            // e.g. that same item's Description is "HANGTAG EDWIN VEGAS..." even
+            // though it's genuinely fabric — so never use Description as the identity.
+            foreach (array_chunk($itemNumbers, 20) as $chunk) {
+                $filters = array_map(fn ($it) => 'ProductNumber eq '.$this->odataLit($it), $chunk);
+                $filterStr = '('.implode(' or ', $filters).") and LanguageId eq 'en-US'";
+                $url = $this->getResource()."/data/ProductTranslations?\$filter={$filterStr}&cross-company=true";
+
+                $response = Http::withToken($token)
+                    ->withHeaders(['OData-MaxVersion' => '4.0', 'OData-Version' => '4.0', 'Accept' => 'application/json'])
+                    ->timeout(30)
+                    ->get($url);
+
+                if (! $response->successful()) {
+                    Log::warning('D365 product translation fetch failed. Status: '.$response->status());
+
+                    continue;
+                }
+
+                foreach ($response->json()['value'] ?? [] as $row) {
+                    $item = $row['ProductNumber'] ?? null;
+                    $name = $row['ProductName'] ?? null;
+                    if ($item === null || empty($name)) {
+                        continue;
+                    }
+                    $out[$item] ??= ['inventory_group' => null, 'description' => null];
+                    $out[$item]['description'] = $name;
+                }
+            }
+
+            Cache::put($cacheKey, $out, now()->addHour());
+        } catch (\Throwable $e) {
+            Log::error('Exception fetching D365 item master: '.$e->getMessage());
+
+            return [];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Fetch actual goods-receipt quantities per fabric PO, direct from D365
+     * OData. Unlike PurchLineBiEntities (ordered/remaining, procurement-side)
+     * or the PurchaseOrderStatus flag (received or not, no quantity),
+     * VendPackingSlipTransBiEntities is the real receipt evidence — one row per
+     * packing-slip line, so a PO delivered in several partial shipments is
+     * summed across all of them. VendPackingSlipJourBiEntities (the packing
+     * slip header) supplies the latest delivery date, shown as a hint only.
+     * Best-effort: returns [] on any failure, cached ~1h like fetchFabricPricing
+     * so a no-login page never re-hits D365 on every view.
+     *
+     * @param  array<int, string>  $poNumbers
+     * @return array<string, array{items: array<string, float>, last_delivery_date: ?string}> keyed by PO number
+     */
+    public function fetchGoodsReceipts(array $poNumbers): array
+    {
+        $poNumbers = array_values(array_filter(array_unique($poNumbers)));
+        if (empty($poNumbers)) {
+            return [];
+        }
+
+        $cacheKey = 'd365_goods_receipt_'.md5(implode(',', $poNumbers));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $token = $this->getD365Token();
+        if (! $token) {
+            return [];
+        }
+
+        $qty = [];
+        $lastDelivery = [];
+        try {
+            foreach (array_chunk($poNumbers, 20) as $chunk) {
+                $filters = array_map(fn ($po) => 'OrigPurchid eq '.$this->odataLit($po), $chunk);
+                $filterStr = '('.implode(' or ', $filters).')';
+                $url = $this->getResource()."/data/VendPackingSlipTransBiEntities?\$filter={$filterStr}&cross-company=true";
+
+                $response = Http::withToken($token)
+                    ->withHeaders(['OData-MaxVersion' => '4.0', 'OData-Version' => '4.0', 'Accept' => 'application/json'])
+                    ->timeout(30)
+                    ->get($url);
+
+                if (! $response->successful()) {
+                    Log::warning('D365 goods receipt fetch failed. Status: '.$response->status());
+
+                    continue;
+                }
+
+                foreach ($response->json()['value'] ?? [] as $line) {
+                    $po = $line['OrigPurchid'] ?? null;
+                    $item = $line['ItemId'] ?? null;
+                    if ($po === null || $item === null) {
+                        continue;
+                    }
+                    $qty[$po][$item] = ($qty[$po][$item] ?? 0.0) + (float) ($line['Qty'] ?? 0);
+                }
+            }
+
+            // Delivery date off the packing-slip header — a second batched call,
+            // best-effort (a missing header just means no date hint is shown).
+            foreach (array_chunk($poNumbers, 20) as $chunk) {
+                $filters = array_map(fn ($po) => 'PurchId eq '.$this->odataLit($po), $chunk);
+                $filterStr = '('.implode(' or ', $filters).')';
+                $url = $this->getResource()."/data/VendPackingSlipJourBiEntities?\$filter={$filterStr}&cross-company=true";
+
+                $response = Http::withToken($token)
+                    ->withHeaders(['OData-MaxVersion' => '4.0', 'OData-Version' => '4.0', 'Accept' => 'application/json'])
+                    ->timeout(30)
+                    ->get($url);
+
+                if (! $response->successful()) {
+                    continue;
+                }
+
+                foreach ($response->json()['value'] ?? [] as $jour) {
+                    $po = $jour['PurchId'] ?? null;
+                    $date = $jour['DeliveryDate'] ?? null;
+                    if ($po === null || ! $date) {
+                        continue;
+                    }
+                    if (! isset($lastDelivery[$po]) || $date > $lastDelivery[$po]) {
+                        $lastDelivery[$po] = $date;
+                    }
+                }
+            }
+
+            $out = [];
+            foreach ($qty as $po => $items) {
+                $out[$po] = ['items' => $items, 'last_delivery_date' => $lastDelivery[$po] ?? null];
+            }
+
+            Cache::put($cacheKey, $out, now()->addHour());
+        } catch (\Throwable $e) {
+            Log::error('Exception fetching D365 goods receipts: '.$e->getMessage());
 
             return [];
         }

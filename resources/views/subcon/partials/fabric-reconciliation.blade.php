@@ -17,6 +17,9 @@
     $fabricRecon = $fabricRecon ?? collect();
     $cols = ['short_roll' => 'Short Roll', 'sisa_kain' => 'Sisa Kain (Utuh)', 'kepala_kain' => 'Kepala Kain', 'retur_kain' => 'Retur Kain'];
 
+    // Small muted unit tag under a value — consistent across the fabric partials.
+    $unitTag = fn ($u) => $u ? '<div class="text-muted" style="font-size:.72rem;line-height:1.3;">'.e($u).'</div>' : '';
+
     // Merge VSM fabric lines with any recon rows VSM does not carry (fabrics the
     // vendor added previously), so both persist across edits. VSM-sourced rows
     // keep a fixed label; vendor-added rows have an editable label.
@@ -26,6 +29,10 @@
         $rec = $fabricRecon->get($fl['label']);
         $seed[] = [
             'label' => $fl['label'],
+            'display_label' => $fl['display_label'] ?? $fl['label'],
+            'unit' => $fl['display_unit'] ?? \App\Services\SubconProductionService::displayUnit($fl['label']),
+            'item_number' => $fl['item_number'] ?? null,
+            'inventory_group' => $fl['inventory_group'] ?? null,
             'fabric_sent' => (float) ($fl['fabric_sent'] ?? 0),
             'from_vsm' => true,
             'short_roll' => $rec ? (float) $rec->short_roll : 0,
@@ -38,6 +45,7 @@
         if (! in_array($rec->label, $vsmLabels, true)) {
             $seed[] = [
                 'label' => $rec->label,
+                'unit' => \App\Services\SubconProductionService::displayUnit($rec->label),
                 'fabric_sent' => null,
                 'from_vsm' => false,
                 'short_roll' => (float) $rec->short_roll,
@@ -54,7 +62,7 @@
         <div class="d-flex justify-content-between align-items-center mb-2">
             <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
                 <i class="fas fa-ruler-horizontal me-1"></i> Fabric Reconciliation
-                <span class="text-muted fw-normal text-lowercase">(per fabric — meters/native unit)</span>
+                <span class="text-muted fw-normal text-lowercase">(per fabric — unit shown under each value)</span>
             </div>
             @if($editable)
                 <button type="button" class="btn btn-outline-secondary btn-sm" id="add-recon-fabric"><i class="fas fa-plus me-1"></i> Add fabric</button>
@@ -80,7 +88,19 @@
                             <tr>
                                 <td>
                                     @if($s['from_vsm'])
-                                        <div class="small fw-semibold">{{ $s['label'] }}</div>
+                                        <div class="small fw-semibold">{{ $s['display_label'] ?? $s['label'] }}</div>
+                                        @if(! empty($s['item_number']) || ! empty($s['inventory_group']))
+                                            <div class="text-muted" style="font-size:.7rem;">
+                                                @if(! empty($s['item_number']))Item: {{ $s['item_number'] }}@endif
+                                                @if(! empty($s['item_number']) && ! empty($s['inventory_group'])) &middot; @endif
+                                                @if(! empty($s['inventory_group']))Inv. Group: {{ $s['inventory_group'] }}@endif
+                                            </div>
+                                        @endif
+                                        @if(($s['display_label'] ?? $s['label']) !== $s['label'])
+                                            <div class="text-muted" style="font-size:.66rem;" title="The PO line's own description text — kept for traceability, but the item master name above is what's actually correct.">
+                                                <i class="fas fa-triangle-exclamation me-1"></i>PO line text: {{ $s['label'] }}
+                                            </div>
+                                        @endif
                                         @if($editable)
                                             <input type="hidden" name="fabrics_recon[{{ $i }}][label]" value="{{ $s['label'] }}">
                                         @endif
@@ -103,14 +123,20 @@
                                                        value="{{ old('fabrics_recon.'.$i.'.'.$name, $s[$name]) }}"
                                                        title="Auto-calculated: Short Roll + Sisa Kain + Kepala Kain">
                                             @else
+                                                {{-- QoL: select the prefilled 0 on focus (typing replaces it instead of
+                                                     producing '60'/'06') and strip accidental leading zeros. --}}
                                                 <input type="number" step="0.01" min="0" inputmode="decimal"
+                                                       onfocus="if(!parseFloat(this.value))this.select()"
+                                                       oninput="if(/^0\d/.test(this.value))this.value=this.value.replace(/^0+(?=\d)/,'')"
                                                        class="form-control form-control-sm text-end d-inline-block recon-waste-src" style="width:100px;"
                                                        name="fabrics_recon[{{ $i }}][{{ $name }}]"
                                                        value="{{ old('fabrics_recon.'.$i.'.'.$name, $s[$name]) }}"
                                                        placeholder="0">
                                             @endif
+                                            {!! $unitTag($s['unit'] ?? null) !!}
                                         @else
                                             <span class="fw-semibold">{{ number_format((float) $s[$name], 2) }}</span>
+                                            {!! $unitTag($s['unit'] ?? null) !!}
                                         @endif
                                     </td>
                                 @endforeach
@@ -166,7 +192,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (c === 'retur_kain') {
                 cells += '<td class="text-end"><input type="number" step="0.01" min="0" readonly tabindex="-1" class="form-control form-control-sm text-end d-inline-block recon-retur" style="width:100px;background:#f1f5f9;cursor:not-allowed;" name="fabrics_recon[' + i + '][' + c + ']" value="0.00" title="Auto-calculated: Short Roll + Sisa Kain + Kepala Kain"></td>';
             } else {
-                cells += '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" class="form-control form-control-sm text-end d-inline-block recon-waste-src" style="width:100px;" name="fabrics_recon[' + i + '][' + c + ']" value="0"></td>';
+                cells += '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" oninput="if(/^0\d/.test(this.value))this.value=this.value.replace(/^0+(?=\d)/,\'\')" class="form-control form-control-sm text-end d-inline-block recon-waste-src" style="width:100px;" name="fabrics_recon[' + i + '][' + c + ']" value="0"></td>';
             }
         });
         cells += '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger recon-remove" title="Remove"><i class="fas fa-times"></i></button></td>';

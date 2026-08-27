@@ -256,7 +256,10 @@ class SubconProductionService
             // lines themselves (unlike fabric_sent/price, this has no local fallback).
             $allItemNumbers = [];
             foreach ($grouped as $g) {
-                foreach ($g['item_numbers'] as $it) {
+                // $g['item_numbers'] is still the assoc set built during grouping
+                // (['itemNumber' => true, ...]) at this point — the values are all
+                // `true`; the item numbers are the KEYS.
+                foreach (array_keys($g['item_numbers']) as $it) {
                     $allItemNumbers[$it] = true;
                 }
             }
@@ -283,12 +286,24 @@ class SubconProductionService
                 $g['display_unit'] = self::displayUnit($g['label']);
                 $g['item_number'] = implode(', ', $g['item_numbers']);
                 $g['inventory_group'] = null;
+                $itemMasterDescription = null;
                 foreach ($g['item_numbers'] as $it) {
+                    if ($itemMasterDescription === null && ! empty($itemMaster[$it]['description'])) {
+                        $itemMasterDescription = $itemMaster[$it]['description'];
+                    }
                     if (! empty($itemMaster[$it]['inventory_group'])) {
                         $g['inventory_group'] = $itemMaster[$it]['inventory_group'];
                         break;
                     }
                 }
+                // `label` above stays the PO-derived grouping/persistence key (never
+                // change it — subcon_fabric_reconciliations upserts by it). What's
+                // actually shown to the user prefers the item master's real
+                // description, since LineDescription is free text that can be stale
+                // or wrong (seen in production: a genuine fabric line carrying a
+                // leftover "HANGTAG ..." description from a copy-paste).
+                $g['display_description'] = $itemMasterDescription ?? $g['description'];
+                $g['display_label'] = $g['display_description'].($g['unit'] ? ' ('.$g['unit'].')' : '');
 
                 return $g;
             }, $grouped));
@@ -570,6 +585,9 @@ class SubconProductionService
 
             $lines[] = [
                 'label' => $label,
+                // The real fabric name, preferred over the PO's own (possibly
+                // stale/wrong) LineDescription-derived $label — see fabricLinesForPo().
+                'display_label' => $vsm[$label]['display_label'] ?? $label,
                 'unit' => self::displayUnit($label),
                 'item_number' => $vsm[$label]['item_number'] ?? null,
                 'inventory_group' => $vsm[$label]['inventory_group'] ?? null,

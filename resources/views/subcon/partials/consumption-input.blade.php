@@ -113,15 +113,21 @@
                                 $unitTag = fn ($u) => $u ? '<div class="text-muted" style="font-size:.72rem;line-height:1.3;">'.e($u).'</div>' : '';
                             @endphp
                             {{-- Fabric description on its own full-width line, calculation columns below --}}
+                            @php $displayLabel = $fl['display_label'] ?? $fl['label']; @endphp
                             <tr class="table-light">
                                 <td colspan="12" class="fw-semibold small py-2">
-                                    <i class="fas fa-scroll text-secondary me-1"></i> {{ $fl['label'] }}
+                                    <i class="fas fa-scroll text-secondary me-1"></i> {{ $displayLabel }}
                                     @if(! empty($fl['item_number']) || ! empty($fl['inventory_group']))
                                         <span class="text-muted fw-normal ms-2" style="font-size:.72rem;">
                                             @if(! empty($fl['item_number']))Item: {{ $fl['item_number'] }}@endif
                                             @if(! empty($fl['item_number']) && ! empty($fl['inventory_group'])) &middot; @endif
                                             @if(! empty($fl['inventory_group']))Inv. Group: {{ $fl['inventory_group'] }}@endif
                                         </span>
+                                    @endif
+                                    @if($displayLabel !== $fl['label'])
+                                        <div class="text-muted fw-normal" style="font-size:.68rem;" title="The PO line's own description text — kept for traceability, but the item master name above is what's actually correct.">
+                                            <i class="fas fa-triangle-exclamation me-1"></i>PO line text: {{ $fl['label'] }}
+                                        </div>
                                     @endif
                                     @if($editable)
                                         <input type="hidden" name="fabrics[{{ $i }}][label]" value="{{ $fl['label'] }}">
