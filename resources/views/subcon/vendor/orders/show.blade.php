@@ -185,6 +185,16 @@
     </div>
 </div>
 
+@if($order->reject_reason)
+    <div class="alert alert-danger d-flex align-items-start gap-2 mb-4" style="border-radius:12px;">
+        <i class="fas fa-triangle-exclamation mt-1"></i>
+        <div>
+            <strong>{{ $order->reject_gate === 'gramasi' ? 'Gramasi & blister capacity' : 'Cutting report' }} rejected{{ $order->rejected_at ? ' '.$order->rejected_at->diffForHumans() : '' }}.</strong>
+            <div class="mt-1" style="white-space:pre-wrap;">{{ $order->reject_reason }}</div>
+        </div>
+    </div>
+@endif
+
 @php
     $mode = $order->canEditCutting() ? 'cutting' : ($order->canEditGramasi() ? 'gramasi' : 'view');
 @endphp
@@ -192,27 +202,22 @@
 <div class="row">
     <div class="col-12">
 
-        {{-- Vendor remarks — free notes, no approval, saved anytime, visible to approvers --}}
-        <div class="card mt-2 mb-3 shadow-sm border-0" style="border-radius:12px; border:1px solid rgba(0,0,0,0.08);">
-            <div class="card-body p-3">
-                <form method="POST" action="{{ route('subcon.vendor.orders.remarks', $order->id) }}">
-                    @csrf
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <label for="remarks" class="fw-semibold small text-secondary text-uppercase mb-0" style="letter-spacing:.05em;">
-                            <i class="fas fa-comment-dots me-1"></i> Remarks
-                        </label>
-                        <button type="submit" class="btn btn-sm btn-outline-primary"><i class="fas fa-save me-1"></i> Save Remarks</button>
-                    </div>
-                    <textarea name="remarks" id="remarks" rows="3" class="form-control form-control-sm" placeholder="Notes for this work order — visible to approvers. No approval needed; save anytime.">{{ old('remarks', $order->remarks) }}</textarea>
-                </form>
-            </div>
-        </div>
+        @include('subcon.partials.material-return', [
+            'order' => $order,
+            'materialReturnTask' => $materialReturnTask,
+            'dispatchRoute' => null,
+        ])
 
         {{-- Awaiting-approval / completion banners --}}
         @if($order->workflow_stage === \App\Models\SubconOrder::STAGE_CUTTING_REVIEW)
             <div class="alert alert-warning d-flex align-items-center gap-2 border-0 shadow-sm" role="alert" style="border-radius:12px;">
                 <i class="fas fa-hourglass-half"></i>
-                <div>Your <strong>cutting report</strong> has been submitted and is awaiting admin approval. Values are locked until a decision is made.</div>
+                <div>Your <strong>{{ $order->cutting_partial ? 'partial ' : '' }}cutting report</strong> has been submitted and is awaiting admin approval. Values are locked until a decision is made.</div>
+            </div>
+        @elseif($order->workflow_stage === \App\Models\SubconOrder::STAGE_CUTTING && $order->cutting_partial && $order->cutting_approved_at)
+            <div class="alert alert-info d-flex align-items-center gap-2 border-0 shadow-sm" role="alert" style="border-radius:12px;">
+                <i class="fas fa-circle-half-stroke"></i>
+                <div>Your <strong>partial cutting report</strong> was approved on {{ $order->cutting_approved_at->format('d M Y') }}. Continue entering the remaining quantities and submit again — untick <strong>Partial report</strong> on the final submission to move on to gramasi.</div>
             </div>
         @elseif($order->workflow_stage === \App\Models\SubconOrder::STAGE_GRAMASI_REVIEW)
             <div class="alert alert-warning d-flex align-items-center gap-2 border-0 shadow-sm" role="alert" style="border-radius:12px;">
@@ -239,10 +244,20 @@
                     @csrf
                     @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'mode' => 'cutting'])
 
-                    @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'editable' => true])
+                    @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon, 'editable' => true])
 
                     @include('subcon.partials.blister-input', ['order' => $order, 'editable' => false, 'required' => false])
                 </form>
+
+                @include('subcon.partials.delivery-note-attachment', [
+                    'order' => $order,
+                    'materialReturns' => $materialReturns,
+                    'canSubmit' => $order->materialReturnVendorWindowOpen(),
+                    'uploadRoute' => route('subcon.vendor.orders.material-return', $order->id),
+                ])
+
+                @include('subcon.partials.vendor-remarks-form', ['order' => $order])
+
                 <div class="card mt-3 shadow-sm border-0" style="border-radius: 12px; overflow: hidden; border: 1px solid rgba(0,0,0,0.08);">
                     <div class="card-body d-flex justify-content-between align-items-center flex-wrap gap-3 p-3 bg-light">
                         <div class="d-flex align-items-center flex-wrap gap-3">
@@ -258,8 +273,16 @@
                                 </button>
                             </form>
                         </div>
-                        <div>
-                            <button type="submit" form="stageForm" class="btn btn-success shadow-sm px-4 fw-semibold" onclick="return confirmStageSubmit(this, 'Submit the cutting report for approval? You will not be able to edit it until a decision is made.');">
+                        <div class="d-flex align-items-center gap-3 flex-wrap">
+                            {{-- Partial toggle (default: not partial). A partial report is
+                                 flagged to the approver, and after approval the order stays
+                                 at this stage so the remaining quantities can be submitted. --}}
+                            <div class="form-check form-switch m-0" title="Mark this submission as partial: after approval you can continue entering the remaining quantities.">
+                                <input class="form-check-input" type="checkbox" role="switch" id="cuttingPartialToggle"
+                                       name="is_partial" value="1" form="stageForm" @checked($order->cutting_partial)>
+                                <label class="form-check-label small fw-semibold" for="cuttingPartialToggle">Partial report</label>
+                            </div>
+                            <button type="submit" form="stageForm" class="btn btn-success shadow-sm px-4 fw-semibold" onclick="return confirmStageSubmit(this, document.getElementById('cuttingPartialToggle').checked ? 'Submit this PARTIAL cutting report for approval? After approval you can continue entering the remaining quantities.' : 'Submit the cutting report for approval? You will not be able to edit it until a decision is made.');">
                                 <i class="fas fa-paper-plane me-1"></i> Submit Cutting Report
                             </button>
                         </div>
@@ -277,10 +300,25 @@
                     @csrf
                     @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'mode' => 'gramasi'])
 
-                    @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'editable' => false])
-
                     @include('subcon.partials.blister-input', ['order' => $order, 'editable' => true, 'required' => false])
                 </form>
+
+                @include('subcon.partials.fabric-reconciliation', [
+                    'fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon,
+                    'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon,
+                    'editable' => $order->materialReturnVendorWindowOpen(),
+                    'standalone' => true,
+                    'saveRoute' => route('subcon.vendor.orders.material-reconciliation', $order->id),
+                ])
+
+                @include('subcon.partials.delivery-note-attachment', [
+                    'order' => $order,
+                    'materialReturns' => $materialReturns,
+                    'canSubmit' => $order->materialReturnVendorWindowOpen(),
+                    'uploadRoute' => route('subcon.vendor.orders.material-return', $order->id),
+                ])
+
+                @include('subcon.partials.vendor-remarks-form', ['order' => $order])
 
                 <div class="card mt-4 shadow-sm border-0" style="border-radius: 12px; overflow: hidden; border: 1px solid rgba(0,0,0,0.08);">
                     <div class="card-body d-flex justify-content-between align-items-center flex-wrap gap-3 p-3 bg-light">
@@ -310,11 +348,26 @@
             @else
                 @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'mode' => 'view'])
 
-                @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'editable' => false])
+                @include('subcon.partials.fabric-reconciliation', [
+                    'fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon,
+                    'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon,
+                    'editable' => $order->materialReturnVendorWindowOpen(),
+                    'standalone' => true,
+                    'saveRoute' => route('subcon.vendor.orders.material-reconciliation', $order->id),
+                ])
 
                 @if($order->blister_capacity)
                     <div class="text-muted small mb-3"><i class="fas fa-box me-1"></i> Blister capacity: <strong class="text-dark">{{ number_format($order->blister_capacity) }}</strong> pcs / blister</div>
                 @endif
+
+                @include('subcon.partials.delivery-note-attachment', [
+                    'order' => $order,
+                    'materialReturns' => $materialReturns,
+                    'canSubmit' => $order->materialReturnVendorWindowOpen(),
+                    'uploadRoute' => route('subcon.vendor.orders.material-return', $order->id),
+                ])
+
+                @include('subcon.partials.vendor-remarks-form', ['order' => $order])
 
                 @if($order->canComplete())
                     <div class="card mt-2 shadow-sm border-0" style="border-radius: 12px; overflow: hidden; border: 1px solid rgba(0,0,0,0.08);">
@@ -345,6 +398,7 @@
         @else
             @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'mode' => 'view'])
         @endif
+
     </div>
 </div>
 

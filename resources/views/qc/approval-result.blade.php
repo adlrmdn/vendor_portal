@@ -18,6 +18,9 @@
                     @elseif($state === 'already')
                         <div class="mb-3"><i class="fas fa-circle-info fa-3x text-primary"></i></div>
                         <h4 class="fw-bold mb-2">Already Approved</h4>
+                    @elseif($state === 'blocked')
+                        <div class="mb-3"><i class="fas fa-hourglass-half fa-3x text-warning"></i></div>
+                        <h4 class="fw-bold mb-2">Waiting on Material Flow</h4>
                     @else
                         <div class="mb-3"><i class="fas fa-circle-exclamation fa-3x text-danger"></i></div>
                         <h4 class="fw-bold mb-2">Link Not Valid</h4>

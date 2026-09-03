@@ -8,9 +8,13 @@ use App\Models\SubconCuttingReport;
 use App\Models\SubconOrder;
 use App\Models\User;
 use App\Models\Vendor;
+use App\Services\QcReportPdfService;
+use App\Services\RpaQueueReadService;
 use App\Services\SubconLabelService;
 use App\Services\SubconProductionService;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +25,7 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class SubconAdminController extends Controller
 {
-    public function __construct()
+    public function __construct(private RpaQueueReadService $rpaQueueReader, private QcReportPdfService $reportPdf)
     {
         $this->middleware('auth');
         $this->middleware(function ($request, $next) {
@@ -53,6 +57,194 @@ class SubconAdminController extends Controller
         $syncLast = Cache::get(SyncSubconOrdersJob::LAST_KEY);
 
         return view('subcon.admin.dashboard', compact('stats', 'recentOrders', 'syncRunning', 'syncLast'));
+    }
+
+    /**
+     * Read-only view of invoice RPA jobs for subcon vendors — same underlying
+     * data as the finance admin Invoices tab (RpaQueueReadService), scoped to
+     * portal='Subcon' (cross-vendor, matches the admin's domain) and with no
+     * write actions (no Checked toggle, no force-complete — that stays
+     * exclusive to Finance). Reports are still viewable/downloadable — that's
+     * a read, not a mutation.
+     */
+    public function invoices(Request $request)
+    {
+        $rows = $this->rpaQueueReader->rows('invoice')->where('portal', 'Subcon')->values();
+
+        $status = $request->query('status', '');
+        if ($status !== '' && in_array($status, RpaQueueReadService::STATUSES, true)) {
+            $rows = $rows->where('status', $status);
+        }
+
+        $checked = $request->query('checked', '');
+        if ($checked !== '') {
+            $rows = $rows->where('checked', $checked === '1');
+        }
+
+        $search = trim((string) $request->query('q', ''));
+        if ($search !== '') {
+            $needle = strtolower($search);
+            $rows = $rows->filter(fn ($row) => str_contains(strtolower($row->po), $needle)
+                || str_contains(strtolower($row->vendor_name), $needle));
+        }
+
+        $rows = $rows->values();
+        $perPage = 25;
+        $page = max(1, (int) $request->query('page', 1));
+
+        $paginated = new LengthAwarePaginator(
+            $rows->slice(($page - 1) * $perPage, $perPage)->values(),
+            $rows->count(),
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        // PO -> work order id, so the PO cell can link straight to the order
+        // (only the current page's rows need it — one batched lookup).
+        $poNumbers = $paginated->getCollection()->pluck('po')->filter()->unique()->values()->all();
+        $orderIdsByPo = SubconOrder::whereIn('order_number', $poNumbers)->pluck('id', 'order_number');
+        $paginated->getCollection()->transform(function ($row) use ($orderIdsByPo) {
+            $row->work_order_id = $orderIdsByPo->get($row->po);
+
+            return $row;
+        });
+
+        return view('subcon.admin.invoices', [
+            'rows' => $paginated,
+            'filters' => ['status' => $status, 'checked' => $checked, 'q' => $search],
+        ]);
+    }
+
+    /**
+     * Same PDF stream as the finance admin report route, but scoped: only
+     * serves invoice jobs whose vendor actually resolves to a subcon vendor,
+     * keeping fabric-side jobs (if that ever exists) out of this admin's view.
+     */
+    public function invoiceReport(int $id)
+    {
+        $row = DB::connection('rpa')->table('rpa_queues')
+            ->where('id', $id)->where('rpa_type', 'invoice')
+            ->first(['id', 'payload']);
+
+        if (! $row) {
+            abort(404);
+        }
+
+        $payload = json_decode($row->payload ?? '', true) ?: [];
+        $vendorName = (string) ($payload['vendor_name'] ?? '');
+        $vendorType = Vendor::where('name', 'ILIKE', $vendorName)->value('type');
+
+        if ($vendorType !== 'subcon') {
+            abort(404);
+        }
+
+        $signedDoc = $this->rpaQueueReader->resolveSignedDoc($payload);
+        if ($signedDoc === '' || ! str_contains($signedDoc, 'base64,')) {
+            abort(404, 'No report attached to this job.');
+        }
+
+        $pdf = base64_decode(substr($signedDoc, strpos($signedDoc, 'base64,') + 7));
+
+        return new Response($pdf, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="invoice-'.$id.'.pdf"',
+        ]);
+    }
+
+    /**
+     * Read-only view of debit note (deduction) RPA jobs for subcon vendors —
+     * mirrors invoices() above. Includes 'review' status (RpaQueueReadService
+     * ::STATUSES) so subcon admin can see debit notes finance hasn't released
+     * yet; release itself stays exclusive to Finance
+     * (FinanceAdminController::releaseDeduction).
+     */
+    public function debitNotes(Request $request)
+    {
+        $rows = $this->rpaQueueReader->rows('deduction')->where('portal', 'Subcon')->values();
+
+        $status = $request->query('status', '');
+        if ($status !== '' && in_array($status, RpaQueueReadService::STATUSES, true)) {
+            $rows = $rows->where('status', $status);
+        }
+
+        $checked = $request->query('checked', '');
+        if ($checked !== '') {
+            $rows = $rows->where('checked', $checked === '1');
+        }
+
+        $search = trim((string) $request->query('q', ''));
+        if ($search !== '') {
+            $needle = strtolower($search);
+            $rows = $rows->filter(fn ($row) => str_contains(strtolower($row->po), $needle)
+                || str_contains(strtolower($row->vendor_name), $needle));
+        }
+
+        $rows = $rows->values();
+        $perPage = 25;
+        $page = max(1, (int) $request->query('page', 1));
+
+        $paginated = new LengthAwarePaginator(
+            $rows->slice(($page - 1) * $perPage, $perPage)->values(),
+            $rows->count(),
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        $poNumbers = $paginated->getCollection()->pluck('po')->filter()->unique()->values()->all();
+        $orderIdsByPo = SubconOrder::whereIn('order_number', $poNumbers)->pluck('id', 'order_number');
+        $paginated->getCollection()->transform(function ($row) use ($orderIdsByPo) {
+            $row->work_order_id = $orderIdsByPo->get($row->po);
+
+            return $row;
+        });
+
+        return view('subcon.admin.debit-notes', [
+            'rows' => $paginated,
+            'filters' => ['status' => $status, 'checked' => $checked, 'q' => $search],
+        ]);
+    }
+
+    /**
+     * Same PDF stream as invoiceReport(), scoped to rpa_type='deduction' —
+     * but always the plain report (RpaQueueReadService::resolveOriginalReport),
+     * never the debit-note-combined document Finance's tab shows. Falls back
+     * to resolveSignedDoc() for rows queued before original_report existed
+     * (queueDeduction() only started writing it once this split landed).
+     */
+    public function debitNoteReport(int $id)
+    {
+        $row = DB::connection('rpa')->table('rpa_queues')
+            ->where('id', $id)->where('rpa_type', 'deduction')
+            ->first(['id', 'payload']);
+
+        if (! $row) {
+            abort(404);
+        }
+
+        $payload = json_decode($row->payload ?? '', true) ?: [];
+        $vendorName = (string) ($payload['vendor_name'] ?? '');
+        $vendorType = Vendor::where('name', 'ILIKE', $vendorName)->value('type');
+
+        if ($vendorType !== 'subcon') {
+            abort(404);
+        }
+
+        $signedDoc = $this->rpaQueueReader->resolveOriginalReport($payload);
+        if ($signedDoc === '' || ! str_contains($signedDoc, 'base64,')) {
+            $signedDoc = $this->rpaQueueReader->resolveSignedDoc($payload);
+        }
+        if ($signedDoc === '' || ! str_contains($signedDoc, 'base64,')) {
+            abort(404, 'No report attached to this job.');
+        }
+
+        $pdf = base64_decode(substr($signedDoc, strpos($signedDoc, 'base64,') + 7));
+
+        return new Response($pdf, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="debit-note-'.$id.'.pdf"',
+        ]);
     }
 
     /**
@@ -95,21 +287,132 @@ class SubconAdminController extends Controller
 
     public function logs(Request $request)
     {
-        $logs = \App\Models\SubconJobLog::with('order')
-            ->orderBy('created_at', 'desc')
-            ->paginate(30);
+        $query = \App\Models\SubconJobLog::with('order');
 
-        return view('subcon.admin.logs.index', compact('logs'));
+        $search = trim((string) $request->query('q', ''));
+        if ($search !== '') {
+            $driver = DB::connection()->getDriverName();
+            $likeOperator = $driver === 'pgsql' ? 'ilike' : 'like';
+            $query->where('order_number', $likeOperator, '%'.$search.'%');
+        }
+        $jobType = (string) $request->query('job_type', '');
+        if ($jobType !== '') {
+            $query->where('job_type', $jobType);
+        }
+        $status = (string) $request->query('status', '');
+        if ($status !== '') {
+            $query->where('status', $status);
+        }
+
+        $logs = $query->orderBy('created_at', 'desc')->paginate(30)->withQueryString();
+
+        return view('subcon.admin.logs.index', compact('logs', 'search', 'jobType', 'status'));
     }
 
-    public function vendors()
+    public function vendors(Request $request)
     {
-        $vendors = Vendor::where('type', 'subcon')
+        $query = Vendor::where('type', 'subcon')
             ->withCount('subconOrders')
-            ->orderBy('name')
-            ->paginate(20);
+            ->with(['users' => function ($q) {
+                $q->where('role', 'subcon_vendor');
+            }]);
+
+        if ($search = trim((string) $request->input('search'))) {
+            $query->where(function ($q) use ($search) {
+                $term = '%'.strtolower($search).'%';
+                $q->whereRaw('LOWER(name) LIKE ?', [$term])
+                    ->orWhereRaw('LOWER(vendor_code) LIKE ?', [$term])
+                    ->orWhereRaw('LOWER("group") LIKE ?', [$term])
+                    ->orWhereHas('users', function ($userQuery) use ($term) {
+                        $userQuery->whereRaw('LOWER(email) LIKE ?', [$term]);
+                    });
+            });
+        }
+
+        $vendors = $query->orderBy('name')
+            ->paginate(20)
+            ->withQueryString();
 
         return view('subcon.admin.vendors', compact('vendors'));
+    }
+
+    public function resetVendorPassword(Request $request, string $id)
+    {
+        $vendor = Vendor::where('type', 'subcon')->findOrFail($id);
+
+        $data = $request->validate([
+            'password' => 'nullable|string|min:6|max:255',
+        ]);
+
+        $password = $data['password'] ?? 'password';
+
+        $users = User::where('vendor_id', $vendor->id)
+            ->where('role', 'subcon_vendor')
+            ->get();
+
+        if ($users->isEmpty()) {
+            $loginEmail = $this->deriveVendorLoginEmail($vendor->name);
+            $user = new User([
+                'name' => $vendor->name,
+                'email' => $loginEmail,
+                'password' => bcrypt($password),
+                'role' => 'subcon_vendor',
+                'vendor_id' => $vendor->id,
+            ]);
+            $user->id = (string) Str::uuid();
+            $user->save();
+            $email = $loginEmail;
+        } else {
+            foreach ($users as $user) {
+                $user->password = bcrypt($password);
+                $user->save();
+            }
+            $email = $users->first()->email;
+        }
+
+        return redirect()->route('subcon.admin.vendors', $request->only('search'))
+            ->with('success', 'Password reset successfully for vendor "'.$vendor->name.'".')
+            ->with('new_vendor_credentials', [
+                'name' => $vendor->name,
+                'login_email' => $email,
+                'password' => $password,
+                'is_reset' => true,
+            ]);
+    }
+
+    public function createVendorAccount(Request $request, string $id)
+    {
+        $vendor = Vendor::where('type', 'subcon')->findOrFail($id);
+
+        $existingUser = User::where('vendor_id', $vendor->id)
+            ->where('role', 'subcon_vendor')
+            ->first();
+
+        if ($existingUser) {
+            return redirect()->route('subcon.admin.vendors', $request->only('search'))
+                ->with('warning', 'Vendor already has a portal login account ('.$existingUser->email.').');
+        }
+
+        $loginEmail = $this->deriveVendorLoginEmail($vendor->name);
+        $password = 'password';
+
+        $user = new User([
+            'name' => $vendor->name,
+            'email' => $loginEmail,
+            'password' => bcrypt($password),
+            'role' => 'subcon_vendor',
+            'vendor_id' => $vendor->id,
+        ]);
+        $user->id = (string) Str::uuid();
+        $user->save();
+
+        return redirect()->route('subcon.admin.vendors', $request->only('search'))
+            ->with('success', 'Portal login account created for vendor "'.$vendor->name.'".')
+            ->with('new_vendor_credentials', [
+                'name' => $vendor->name,
+                'login_email' => $loginEmail,
+                'password' => $password,
+            ]);
     }
 
     public function storeVendor(Request $request)
@@ -131,8 +434,10 @@ class SubconAdminController extends Controller
         $password = 'password';
 
         DB::transaction(function () use ($data, $vendorId, $loginEmail, $password) {
-            Vendor::create([
-                'id' => $vendorId,
+            // 'id' isn't mass-assignable on Vendor (no creating hook either), so
+            // Vendor::create(['id' => ...]) silently drops it and the DB assigns
+            // its own id — set it directly, matching SyncD365SubconVendors.
+            $vendor = new Vendor([
                 'name' => $data['name'],
                 'vendor_code' => $data['vendor_code'],
                 'group' => $data['group'] ?? null,
@@ -144,6 +449,8 @@ class SubconAdminController extends Controller
                 ], fn ($v) => $v !== null),
                 'is_active' => true,
             ]);
+            $vendor->id = $vendorId;
+            $vendor->save();
 
             $user = new User([
                 'name' => $data['name'],
@@ -299,19 +606,44 @@ class SubconAdminController extends Controller
     }
 
     /** Orders currently awaiting a cutting or gramasi approval decision. */
-    public function approvals()
+    public function approvals(Request $request)
     {
-        $orders = SubconOrder::with('vendor')
-            ->whereIn('workflow_stage', [SubconOrder::STAGE_CUTTING_REVIEW, SubconOrder::STAGE_GRAMASI_REVIEW])
-            ->orderBy('updated_at', 'desc')
-            ->paginate(20);
+        $search = trim((string) $request->query('q', ''));
+
+        $query = SubconOrder::with('vendor')
+            ->whereIn('workflow_stage', [SubconOrder::STAGE_CUTTING_REVIEW, SubconOrder::STAGE_GRAMASI_REVIEW]);
+
+        if ($search !== '') {
+            $words = array_filter(explode(' ', $search));
+            $driver = DB::connection()->getDriverName();
+            $likeOperator = $driver === 'pgsql' ? 'ilike' : 'like';
+
+            $query->where(function ($q) use ($words, $likeOperator) {
+                foreach ($words as $word) {
+                    $q->where(function ($sub) use ($word, $likeOperator) {
+                        $sub->where('order_number', $likeOperator, '%'.$word.'%')
+                            ->orWhere('title', $likeOperator, '%'.$word.'%')
+                            ->orWhere('production_group', $likeOperator, '%'.$word.'%')
+                            ->orWhereHas('vendor', function ($vq) use ($word, $likeOperator) {
+                                $vq->where('name', $likeOperator, '%'.$word.'%');
+                            });
+                    });
+                }
+            });
+        }
+
+        $orders = $query->orderBy('updated_at', 'desc')->paginate(20)->withQueryString();
 
         // Final (QC-console) approvals: stage-1 confirmed on the QMS session but
         // still awaiting Head-Office / Final sign-off. Read best-effort from QMS —
-        // never let an unreachable/older QMS 500 this tab.
+        // never let an unreachable/older QMS 500 this tab. It's a plain array (no
+        // query builder to filter), so the same search text is applied in PHP.
         $finalApprovals = $this->pendingFinalApprovals();
+        if ($search !== '') {
+            $finalApprovals = self::filterPendingRows($finalApprovals, $search);
+        }
 
-        return view('subcon.admin.approvals', compact('orders', 'finalApprovals'));
+        return view('subcon.admin.approvals', compact('orders', 'finalApprovals', 'search'));
     }
 
     /**
@@ -319,11 +651,37 @@ class SubconAdminController extends Controller
      * RAF run queued) that still await the "Validate & Send Approval" step.
      * Read-only listing; the buttons open the token-based validate form.
      */
-    public function reportValidations()
+    public function reportValidations(Request $request)
     {
-        $pending = $this->pendingValidateSends();
+        $search = trim((string) $request->query('q', ''));
 
-        return view('subcon.admin.report-validations', compact('pending'));
+        $pending = $this->pendingValidateSends();
+        if ($search !== '') {
+            $pending = self::filterPendingRows($pending, $search);
+        }
+
+        return view('subcon.admin.report-validations', compact('pending', 'search'));
+    }
+
+    /**
+     * Case-insensitive substring match across the fields common to every
+     * QMS-backed pending-approval row (order_number/style/vendor/production_group).
+     * These lists are plain arrays (joined in PHP against local orders), not
+     * query builders, so filtering happens here rather than in SQL.
+     */
+    private static function filterPendingRows(array $rows, string $q): array
+    {
+        $needle = mb_strtolower($q);
+
+        return array_values(array_filter($rows, function ($row) use ($needle) {
+            foreach (['order_number', 'style', 'vendor', 'production_group'] as $field) {
+                if (! empty($row[$field]) && str_contains(mb_strtolower((string) $row[$field]), $needle)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
     }
 
     /**
@@ -362,11 +720,14 @@ class SubconAdminController extends Controller
             }
 
             $pgByProject = [];
+            $projectsById = collect();
             $projectIds = $sessions->pluck('project_id')->filter()->unique()->values()->all();
             if (! empty($projectIds) && Schema::connection('qms')->hasTable('packaging_projects')) {
-                $pgByProject = DB::connection('qms')->table('packaging_projects')
+                $projectsById = DB::connection('qms')->table('packaging_projects')
                     ->whereIn('project_id', $projectIds)
-                    ->pluck('production_group', 'project_id')->all();
+                    ->get(['project_id', 'production_group', 'po_info', 'po_vendor', 'article_name'])
+                    ->keyBy('project_id');
+                $pgByProject = $projectsById->pluck('production_group', 'project_id')->all();
             }
 
             // Live RAF run status per project — one batched query, best-effort.
@@ -386,23 +747,112 @@ class SubconAdminController extends Controller
                 ? collect()
                 : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
 
-            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $rafByProject) {
+            // Deduction total per session — same figure shown on the Director tab
+            // and actually queued to Finance (RpaQueueService::deductionTotal):
+            // fabric overconsumption charges by project + manual deduction lines
+            // by session, both batched (grouped sums) rather than N+1 per row.
+            // The reject/lost-items penalty is per-session and not batchable the
+            // same way (non-linear 1%-limit step function), so it's added per
+            // row below via QcReportPdfService::calculateDeductions() — this list
+            // is small (pending approvals only), so that's not a real N+1 concern.
+            // Best-effort: an unreachable QMS table just yields 0 everywhere.
+            $fabricDedByProject = [];
+            $manualDedBySession = [];
+            try {
+                if (Schema::connection('qms')->hasTable('packaging_project_fabric_lines')) {
+                    $fabricDedByProject = DB::connection('qms')->table('packaging_project_fabric_lines')
+                        ->whereIn('project_id', $projectIds)
+                        ->groupBy('project_id')
+                        ->selectRaw('project_id, SUM(deduction) as total')
+                        ->pluck('total', 'project_id')->all();
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — deduction shows as 0 rather than failing the tab.
+            }
+            $sessionIds = $sessions->pluck('session_id')->filter()->unique()->values()->all();
+            try {
+                if (Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
+                    $manualDedBySession = DB::connection('qms')->table('packaging_session_deduction_lines')
+                        ->whereIn('session_id', $sessionIds)
+                        ->groupBy('session_id')
+                        ->selectRaw('session_id, SUM(amount) as total')
+                        ->pluck('total', 'session_id')->all();
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — deduction shows as 0 rather than failing the tab.
+            }
+
+            // Material Flow status per order — one batched read, best-effort
+            // (an unreachable `wms` connection just leaves the badge off).
+            $materialReturnByOrder = [];
+            try {
+                $orderIds = $ordersByPg->pluck('id')->filter()->unique()->values()->all();
+                if (! empty($orderIds)) {
+                    $materialReturnByOrder = \App\Models\MaterialReturnTask::whereIn('order_id', $orderIds)
+                        ->orderByDesc('created_at')
+                        ->get()
+                        ->groupBy('order_id')
+                        ->map(fn ($g) => $g->first()->status);
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — the "Send to Material Flow" state just shows as unknown.
+            }
+
+            $rows = $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $projectsById, $rafByProject, $fabricDedByProject, $manualDedBySession, $materialReturnByOrder) {
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
+                // No local order yet (e.g. the D365 PO hasn't been Confirmed so
+                // the sync won't create it) — fall back to the QMS console's own
+                // project record instead of showing a bare project_id/"—".
+                $project = $projectsById[$s->project_id] ?? null;
+                $penalty = $this->reportPdf->calculateDeductions((string) $s->project_id, (string) $s->session_id);
+                $deductionTotal = round(
+                    (float) ($fabricDedByProject[$s->project_id] ?? 0)
+                    + (float) ($manualDedBySession[$s->session_id] ?? 0)
+                    + (float) $penalty['rejectProduksiPenalty']
+                    + (float) $penalty['barangHilangPenalty'],
+                    2
+                );
 
                 return [
                     'token' => $s->approval_token,
                     'order_id' => $order->id ?? null,
-                    'order_number' => $order->order_number ?? ($s->project_id ?? '—'),
-                    'style' => $order->title ?? null,
-                    'vendor' => $order?->vendor?->name ?? '—',
+                    'order_number' => $order->order_number ?? $project->po_info ?? ($s->project_id ?? '—'),
+                    'style' => $order->title ?? $project->article_name ?? null,
+                    'vendor' => $order?->vendor?->name ?? $project->po_vendor ?? '—',
                     'production_group' => $pg,
                     'version' => $s->version ?? null,
                     'result' => $s->result ?? null,
                     'ho_signature' => $s->ho_approval_signature ?? null,
                     'raf_status' => $rafByProject[$s->project_id] ?? null,
+                    'deduction_total' => $deductionTotal,
+                    'material_return_status' => $order ? ($materialReturnByOrder[$order->id] ?? null) : null,
                 ];
             })->all();
+
+            // A row lands back in this list either because it was never sent to
+            // the Director yet, or because the Director just rejected it (which
+            // resets ho_validation_signature/director_approval_signature to null
+            // — see QcApprovalController::directorDecline). Flag rows the
+            // Director bounced back; the full reason is shown on the Validate &
+            // Send page itself (QcApprovalController::hoApprovalForm), not here.
+            $orderNumbers = array_values(array_unique(array_filter(array_column($rows, 'order_number'))));
+            $rejectedOrderNumbers = [];
+            if (! empty($orderNumbers)) {
+                $rejectedOrderNumbers = \App\Models\SubconApprovalLog::where('gate', 'director')
+                    ->where('decision', 'declined')
+                    ->whereIn('order_number', $orderNumbers)
+                    ->distinct()
+                    ->pluck('order_number')
+                    ->flip()
+                    ->all();
+            }
+
+            return array_map(function ($row) use ($rejectedOrderNumbers) {
+                $row['director_rejected'] = isset($rejectedOrderNumbers[$row['order_number']]);
+
+                return $row;
+            }, $rows);
         } catch (\Throwable $e) {
             Log::warning('Pending report validations unavailable', ['error' => $e->getMessage()]);
 
@@ -438,20 +888,39 @@ class SubconAdminController extends Controller
      * awaiting the Director's authorization. Read-only listing — the action
      * buttons open the existing token-based Director workflow forms, so the
      * signature/routing contract is untouched.
+     *
+     * Visible to any subcon admin, not just the configured Director(s), so
+     * admins can track progress — but only an actual Director (isDirectorUser)
+     * gets the Authorize/Reject actions; everyone else is view/report-only.
      */
-    public function directorApprovals()
+    public function directorApprovals(Request $request)
     {
-        abort_unless(self::isDirectorUser(Auth::user()), 403);
+        // Access here is already gated to admin|subcon_admin by the controller's
+        // constructor middleware — $isDirector just decides whether the
+        // Authorize/Reject actions render, or the page is report-view-only.
+        $isDirector = self::isDirectorUser(Auth::user());
+        $search = trim((string) $request->query('q', ''));
 
         $pending = $this->pendingDirectorApprovals();
+        if ($search !== '') {
+            $pending = self::filterPendingRows($pending, $search);
+        }
 
         $recentDecisions = \App\Models\SubconApprovalLog::query()
             ->where('gate', 'director')
+            ->when($search !== '', function ($query) use ($search) {
+                $driver = DB::connection()->getDriverName();
+                $likeOperator = $driver === 'pgsql' ? 'ilike' : 'like';
+                $query->where(function ($q) use ($search, $likeOperator) {
+                    $q->where('order_number', $likeOperator, '%'.$search.'%')
+                        ->orWhere('vendor_name', $likeOperator, '%'.$search.'%');
+                });
+            })
             ->orderByDesc('created_at')
             ->limit(15)
             ->get();
 
-        return view('subcon.admin.director-approvals', compact('pending', 'recentDecisions'));
+        return view('subcon.admin.director-approvals', compact('pending', 'recentDecisions', 'isDirector', 'search'));
     }
 
     /**
@@ -506,9 +975,51 @@ class SubconAdminController extends Controller
                 ? collect()
                 : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
 
-            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg) {
+            // Deduction total per session — same figure the Invoice/Deduction RPA
+            // will actually queue on authorization (RpaQueueService::deductionTotal):
+            // fabric overconsumption charges (by project) + manual deduction lines
+            // (by session) + the reject/lost-items penalty (per row below, via
+            // QcReportPdfService::calculateDeductions — not batchable, see the
+            // twin comment in pendingValidateSends()). Batched here (grouped
+            // sums) rather than N+1 per row for the two batchable parts.
+            // Best-effort: an unreachable QMS table just yields 0 everywhere.
+            $fabricDedByProject = [];
+            $manualDedBySession = [];
+            try {
+                if (Schema::connection('qms')->hasTable('packaging_project_fabric_lines')) {
+                    $fabricDedByProject = DB::connection('qms')->table('packaging_project_fabric_lines')
+                        ->whereIn('project_id', $projectIds)
+                        ->groupBy('project_id')
+                        ->selectRaw('project_id, SUM(deduction) as total')
+                        ->pluck('total', 'project_id')->all();
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — deduction shows as 0 rather than failing the tab.
+            }
+            $sessionIds = $sessions->pluck('session_id')->filter()->unique()->values()->all();
+            try {
+                if (Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
+                    $manualDedBySession = DB::connection('qms')->table('packaging_session_deduction_lines')
+                        ->whereIn('session_id', $sessionIds)
+                        ->groupBy('session_id')
+                        ->selectRaw('session_id, SUM(amount) as total')
+                        ->pluck('total', 'session_id')->all();
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — deduction shows as 0 rather than failing the tab.
+            }
+
+            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $fabricDedByProject, $manualDedBySession) {
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
+                $penalty = $this->reportPdf->calculateDeductions((string) $s->project_id, (string) $s->session_id);
+                $deductionTotal = round(
+                    (float) ($fabricDedByProject[$s->project_id] ?? 0)
+                    + (float) ($manualDedBySession[$s->session_id] ?? 0)
+                    + (float) $penalty['rejectProduksiPenalty']
+                    + (float) $penalty['barangHilangPenalty'],
+                    2
+                );
 
                 return [
                     'token' => $s->approval_token,
@@ -520,6 +1031,7 @@ class SubconAdminController extends Controller
                     'version' => $s->version ?? null,
                     'result' => $s->result ?? null,
                     'ho_signature' => $s->ho_approval_signature ?? null,
+                    'deduction_total' => $deductionTotal,
                 ];
             })->all();
         } catch (\Throwable $e) {
@@ -624,22 +1136,57 @@ class SubconAdminController extends Controller
         }
     }
 
-    public function waitingDistribution()
+    public function waitingDistribution(Request $request)
     {
-        $orders = SubconOrder::with('vendor')
-            ->where('workflow_stage', SubconOrder::STAGE_WAITING_DISTRIBUTION)
-            ->orderBy('updated_at', 'desc')
-            ->paginate(20);
+        $query = SubconOrder::with('vendor')
+            ->where('workflow_stage', SubconOrder::STAGE_WAITING_DISTRIBUTION);
 
-        return view('subcon.admin.waiting-distribution', compact('orders'));
+        $search = trim((string) $request->query('q', ''));
+        if ($search !== '') {
+            $words = array_filter(explode(' ', $search));
+            $driver = DB::connection()->getDriverName();
+            $likeOperator = $driver === 'pgsql' ? 'ilike' : 'like';
+
+            $query->where(function ($q) use ($words, $likeOperator) {
+                foreach ($words as $word) {
+                    $q->where(function ($sub) use ($word, $likeOperator) {
+                        $sub->where('order_number', $likeOperator, '%'.$word.'%')
+                            ->orWhere('title', $likeOperator, '%'.$word.'%')
+                            ->orWhere('production_group', $likeOperator, '%'.$word.'%')
+                            ->orWhereHas('vendor', function ($vq) use ($word, $likeOperator) {
+                                $vq->where('name', $likeOperator, '%'.$word.'%');
+                            });
+                    });
+                }
+            });
+        }
+
+        // Failed label generations surface first so they don't get buried behind
+        // routine "waiting" rows — everything else falls back to most-recently-updated.
+        $orders = $query
+            ->orderByRaw('CASE WHEN label_gen_status = ? THEN 0 ELSE 1 END', [SubconOrder::LABEL_GEN_FAILED])
+            ->orderBy('updated_at', 'desc')
+            ->paginate(20)
+            ->withQueryString();
+
+        return view('subcon.admin.waiting-distribution', compact('orders', 'search'));
     }
 
+    /**
+     * Triggers label generation. Gate is "gramasi & blister approved"
+     * (`gramasi_approved_at` set) rather than a specific workflow stage, so this
+     * doubles as both the first-time generation (stage still
+     * `waiting_distribution`) and an on-demand re-trigger for an
+     * already-labelled order — e.g. after the admin corrects blister/sack
+     * capacity, which only needs a Coli/Blister resync (see
+     * GenerateSubconLabels::recalculateColiBlister()), not a full DTT re-run.
+     */
     public function generateLabelsManual(Request $request, string $id)
     {
         $model = SubconOrder::findOrFail($id);
 
-        if ($model->workflow_stage !== SubconOrder::STAGE_WAITING_DISTRIBUTION) {
-            return back()->with('error', 'This work order is not waiting for distribution details.');
+        if (empty($model->gramasi_approved_at)) {
+            return back()->with('error', 'Gramasi & blister capacity must be approved before labels can be generated.');
         }
 
         // Button-lock guard: don't stack a second run while one is in flight.
@@ -648,12 +1195,18 @@ class SubconAdminController extends Controller
         }
 
         // Lock the button (persisted state) then dispatch. Resolution + DTT call
-        // run off the request cycle; on success the worker advances to "labels",
-        // on failure it records the reason — both surfaced back on this page.
+        // (or, for an already-labelled order, the Coli/Blister resync) run off
+        // the request cycle; on success the worker advances to "labels" (or, on
+        // resync, just updates D365) — on failure it records the reason — both
+        // surfaced back on this page.
         $model->markLabelGenStarted();
         \App\Jobs\GenerateSubconLabels::dispatch($model->id);
 
-        return back()->with('success', 'Label generation started for work order '.$model->order_number.'. It is running in the background — printing will unlock once the labels are ready.');
+        $message = $model->canPrintLabels()
+            ? 'Recalculating Coli/Blister for work order '.$model->order_number.' with the current capacity. This runs in the background.'
+            : 'Label generation started for work order '.$model->order_number.'. It is running in the background — printing will unlock once the labels are ready.';
+
+        return back()->with('success', $message);
     }
 
     public function viewOrder(string $id, SubconProductionService $production)
@@ -676,7 +1229,55 @@ class SubconAdminController extends Controller
         }
         $totalCut = $production->totalCutForOrder($order);
 
-        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'totalCut'));
+        $materialReturnService = app(\App\Services\MaterialReturnService::class);
+        $materialReturns = $materialReturnService->attachmentsFor($order);
+        $materialReturnTask = $materialReturnService->activeTaskFor($order);
+
+        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'totalCut', 'materialReturns', 'materialReturnTask'));
+    }
+
+    /**
+     * Admin/MD Production-side material-return delivery note. Open only from
+     * Final Approval through Report Validation — see
+     * SubconOrder::materialReturnAdminWindowOpen().
+     */
+    public function uploadMaterialReturn(Request $request, string $id, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $order = SubconOrder::with('vendor')->findOrFail($id);
+
+        if (! $order->materialReturnAdminWindowOpen()) {
+            return back()->with('error', 'A material-return note can only be attached between Final Approval and Report Validation.');
+        }
+
+        $data = $request->validate([
+            'file' => 'required|file|mimes:pdf,jpg,jpeg,png|max:10240',
+            'note' => 'nullable|string|max:1000',
+        ]);
+
+        $materialReturns->upload($order, $data['file'], $data['note'] ?? null, \App\Models\MaterialReturnAttachment::ROLE_ADMIN, Auth::user()->name);
+
+        return back()->with('success', 'Material-return delivery note attached.');
+    }
+
+    /**
+     * "Send to Material Flow" — MD Production dispatches an inventory-check
+     * task to value_stream_ops. From this point, QcApprovalController::
+     * hoSendApproval refuses to send Report Validation to the Director until
+     * value_stream_ops flips the task to 'checked'. In-app/authenticated
+     * only — deliberately not reachable from the no-login signed email link
+     * (a bare GET must never mutate; see the fabric tolerance prefetch fix).
+     */
+    public function dispatchMaterialReturnTask(string $id, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $order = SubconOrder::with('vendor')->findOrFail($id);
+
+        if (! $order->materialReturnAdminWindowOpen()) {
+            return back()->with('error', 'Material Flow can only be dispatched between Final Approval and Report Validation.');
+        }
+
+        $materialReturns->dispatchTask($order, Auth::user()->name);
+
+        return back()->with('success', 'Sent to Material Flow — inventory will check the returned material.');
     }
 
     /**
@@ -691,7 +1292,7 @@ class SubconAdminController extends Controller
         $groups = $production->forPo($order->order_number);
         $reports = SubconCuttingReport::where('order_id', $order->id)->get()->keyBy('prod_id');
 
-        // Meta header block.
+        // Meta header block — plain label/value pairs, styled by the export class.
         $rows = [
             ['Cutting Report'],
             ['Work Order', $order->order_number],
@@ -701,9 +1302,13 @@ class SubconAdminController extends Controller
             ['Blister Capacity', $order->blister_capacity ?: '—'],
             ['Sack (Karung) Capacity', $order->sack_capacity ?? 50],
         ];
+        $metaRows = range(2, count($rows));
 
-        // Fabric reconciliation — one block per fabric (by description). Entered
-        // by the vendor on the cutting report; empty if none recorded yet.
+        // Fabric reconciliation — a real table (one row per fabric, one column per
+        // metric), not a vertical label:value stack. Values stay raw numeric types
+        // (not pre-formatted strings) so Excel can sum/sort/filter them; display
+        // formatting (decimals, thousands separators, "Rp", "%") is applied as
+        // native cell number formats in the export class instead.
         try {
             $reconciliations = \App\Models\SubconFabricReconciliation::where('order_id', $order->id)
                 ->orderBy('label')
@@ -712,59 +1317,63 @@ class SubconAdminController extends Controller
             report($e);
             $reconciliations = collect();
         }
+
+        $rows[] = ['']; // spacer — a single empty cell so the writer keeps the row (an empty [] is dropped, desyncing indices)
+        $rows[] = ['Fabric Reconciliation & Consumption'];
+        $reconSectionRow = count($rows);
+        $reconHeaderRow = null;
+        $reconDataRows = [];
+        $reconTotalRow = null;
+
         if ($reconciliations->isEmpty()) {
-            $rows[] = ['Fabric Reconciliation', '—'];
+            $rows[] = ['No fabric reconciliation recorded yet.'];
         } else {
-            // Fixed 2 decimals for money/waste; min-2/max-4 for the two consumption
-            // figures (Cons. Plan, Actual Cons.) — mirrors the in-app display rules.
-            $fmt2 = fn ($v) => $v === null || $v === '' ? '—' : number_format((float) $v, 2);
-            // Money (IDR): "Rp " + thousands + 2 decimals — uniform currency standard.
-            $money = fn ($v) => $v === null || $v === '' ? '—' : 'Rp '.number_format((float) $v, 2);
-            $fmtCons = function ($v) {
-                if ($v === null || $v === '') {
-                    return '—';
-                }
-                $v = (float) $v;
-                $trimmed = rtrim(rtrim(sprintf('%.4F', $v), '0'), '.');
-                $dec = ($pos = strpos($trimmed, '.')) !== false ? strlen(substr($trimmed, $pos + 1)) : 0;
+            $reconHeaderRow = count($rows) + 1;
+            $rows[] = [
+                'Fabric', 'Short Roll', 'Sisa Kain (Utuh)', 'Kepala Kain', 'Retur Kain',
+                'Fabric Sent', 'Cons. Plan', 'Cutt Plan', 'Actual Cons.', 'Overconsumption',
+                'Fabric Price (IDR)', 'Deduction (IDR)',
+            ];
 
-                return number_format($v, max(2, $dec));
-            };
-
-            $rows[] = ['Fabric Reconciliation & Consumption', ''];
             $totalDeduction = 0.0;
             foreach ($reconciliations as $rec) {
                 $totalDeduction += (float) $rec->deduction;
-                $rows[] = ['  '.$rec->label, ''];
-                // Vendor-entered / approver-overridable waste (all four enter the calc).
-                $rows[] = ['    Short Roll', $fmt2($rec->short_roll)];
-                $rows[] = ['    Sisa Kain (Utuh)', $fmt2($rec->sisa_kain)];
-                $rows[] = ['    Kepala Kain', $fmt2($rec->kepala_kain)];
-                $rows[] = ['    Retur Kain', $fmt2($rec->retur_kain)];
-                // Consumption — entered/derived at cutting approval.
-                $rows[] = ['    Fabric Sent', $fmt2($rec->fabric_sent)];
-                $rows[] = ['    Cons. Plan', $fmtCons($rec->consumption_plan)];
-                $rows[] = ['    Cutt Plan', $rec->cutt_plan !== null ? (string) (int) $rec->cutt_plan : '—'];
-                $rows[] = ['    Actual Cons.', $fmtCons($rec->actual_consumption)];
-                $rows[] = ['    Overconsumption', $rec->overconsumption !== null ? $fmt2((float) $rec->overconsumption * 100).'%' : '—'];
-                $rows[] = ['    Fabric Price (IDR)', $fmt2($rec->fabric_price)];
-                $rows[] = ['    Deduction (IDR)', $money($rec->deduction)];
+                $rows[] = [
+                    $rec->label,
+                    (float) $rec->short_roll,
+                    (float) $rec->sisa_kain,
+                    (float) $rec->kepala_kain,
+                    (float) $rec->retur_kain,
+                    $rec->fabric_sent !== null ? (float) $rec->fabric_sent : null,
+                    $rec->consumption_plan !== null ? (float) $rec->consumption_plan : null,
+                    $rec->cutt_plan !== null ? (int) $rec->cutt_plan : null,
+                    $rec->actual_consumption !== null ? (float) $rec->actual_consumption : null,
+                    // Stored as a fraction (0.0284), not x100 — the '0.00%' cell
+                    // format below multiplies for display, matching Excel's own
+                    // native percentage convention.
+                    $rec->overconsumption !== null ? (float) $rec->overconsumption : null,
+                    $rec->fabric_price !== null ? (float) $rec->fabric_price : null,
+                    (float) $rec->deduction,
+                ];
+                $reconDataRows[] = count($rows);
             }
-            $rows[] = ['  Total Deduction (IDR)', $money($totalDeduction)];
+
+            $reconTotalRow = count($rows) + 1;
+            $rows[] = ['TOTAL DEDUCTION', null, null, null, null, null, null, null, null, null, null, $totalDeduction];
         }
 
-        $rows = array_merge($rows, [
-            ['Exported', now()->format('Y-m-d H:i')],
-            [''], // spacer — a single empty cell so the writer keeps the row (an empty [] is dropped, desyncing indices)
-        ]);
+        $rows[] = ['']; // spacer — a single empty cell so the writer keeps the row (an empty [] is dropped, desyncing indices)
+        $rows[] = ['Exported', now()->format('Y-m-d H:i')];
+        $rows[] = ['']; // spacer — a single empty cell so the writer keeps the row (an empty [] is dropped, desyncing indices)
 
-        $headerRow = count($rows) + 1; // 1-based row of the table header
+        $sizeHeaderRow = count($rows) + 1;
         $rows[] = ['Size', 'PRD ID', 'Status', 'Order Qty', 'Qty Cut', 'Balance', 'Gramasi (g)'];
 
         $totalOrder = 0;
         $totalCut = 0;
         $anyCut = false;
         $hadLines = false;
+        $sizeDataRows = [];
 
         // Balance column (F) font colours, keyed by 1-based row: under-cut
         // (shortfall) red, exact/over-cut (surplus) green — matching the in-app
@@ -791,10 +1400,11 @@ class SubconAdminController extends Controller
                     $line->ProdId,
                     $line->ProdStatus ?: '—',
                     $orderQty,
-                    $hasCut ? (int) $cutQty : '',
-                    $hasCut ? ((int) $cutQty - $orderQty) : '',
-                    $gramasi !== null ? (float) $gramasi : '',
+                    $hasCut ? (int) $cutQty : null,
+                    $hasCut ? ((int) $cutQty - $orderQty) : null,
+                    $gramasi !== null ? (float) $gramasi : null,
                 ];
+                $sizeDataRows[] = count($rows);
 
                 if ($hasCut) {
                     $balanceColors[count($rows)] = ((int) $cutQty - $orderQty) < 0 ? 'C92A2A' : '2B8A3E';
@@ -816,21 +1426,22 @@ class SubconAdminController extends Controller
                     $report->size ?: '—',
                     $report->prod_id,
                     '—',
-                    '',
-                    $cutQty !== null ? (int) $cutQty : '',
-                    '',
-                    $report->gramasi !== null ? (float) $report->gramasi : '',
+                    null,
+                    $cutQty !== null ? (int) $cutQty : null,
+                    null,
+                    $report->gramasi !== null ? (float) $report->gramasi : null,
                 ];
+                $sizeDataRows[] = count($rows);
             }
         }
 
         $totalRow = count($rows) + 1; // 1-based row of the totals line
         $rows[] = [
-            'TOTAL', '', '',
-            $totalOrder ?: '',
-            $anyCut ? $totalCut : '',
-            $anyCut ? ($totalCut - $totalOrder) : '',
-            '',
+            'TOTAL', null, null,
+            $totalOrder ?: null,
+            $anyCut ? $totalCut : null,
+            $anyCut ? ($totalCut - $totalOrder) : null,
+            null,
         ];
         if ($anyCut) {
             $balanceColors[$totalRow] = ($totalCut - $totalOrder) < 0 ? 'C92A2A' : '2B8A3E';
@@ -840,7 +1451,18 @@ class SubconAdminController extends Controller
         $filename = 'cutting-report_'.$safeNumber.'_'.now()->format('Ymd-His').'.xlsx';
 
         return Excel::download(
-            new SubconCuttingReportExport($rows, [1, $headerRow, $totalRow], $balanceColors),
+            new SubconCuttingReportExport($rows, [
+                'titleRow' => 1,
+                'metaRows' => $metaRows,
+                'reconSectionRow' => $reconSectionRow,
+                'reconHeaderRow' => $reconHeaderRow,
+                'reconDataRows' => $reconDataRows,
+                'reconTotalRow' => $reconTotalRow,
+                'sizeHeaderRow' => $sizeHeaderRow,
+                'sizeDataRows' => $sizeDataRows,
+                'totalRow' => $totalRow,
+                'balanceColors' => $balanceColors,
+            ]),
             $filename
         );
     }
@@ -853,7 +1475,7 @@ class SubconAdminController extends Controller
     public function updateOrderStatus(Request $request, string $id)
     {
         $request->validate([
-            'action' => 'required|in:cancel,reactivate',
+            'action' => 'required|in:cancel,reactivate,complete',
         ]);
 
         $order = SubconOrder::findOrFail($id);
@@ -865,11 +1487,49 @@ class SubconAdminController extends Controller
             return back()->with('success', 'Order cancelled.');
         }
 
+        if ($request->action === 'complete') {
+            // Same gate as the vendor's own completeOrder(): labels stage
+            // reached, not yet completed — admin can finish it on the
+            // vendor's behalf, but not skip ahead of the workflow.
+            if (! $order->canComplete()) {
+                return back()->with('error', 'This order cannot be completed at its current stage ('.$order->stageLabel().').');
+            }
+
+            $order->workflow_stage = SubconOrder::STAGE_COMPLETED;
+            // status is derived from workflow_stage in the model's saving hook.
+            $order->save();
+
+            return back()->with('success', 'Work order marked as completed.');
+        }
+
         // Reactivate: re-derive status from the current workflow stage.
         $order->status = SubconOrder::inferStatusFromStage($order->workflow_stage);
         $order->save();
 
         return back()->with('success', 'Order reactivated.');
+    }
+
+    /**
+     * Admin override for the per-order blister/sack capacity — normally set by
+     * the vendor on the gramasi form, but the admin can correct it directly.
+     */
+    public function updateCapacity(Request $request, string $id)
+    {
+        $data = $request->validate([
+            'blister_capacity' => 'nullable|integer|min:1',
+            'sack_capacity' => 'nullable|integer|min:1',
+        ]);
+
+        $order = SubconOrder::findOrFail($id);
+        $order->blister_capacity = ! empty($data['blister_capacity'])
+            ? (int) $data['blister_capacity']
+            : null;
+        $order->sack_capacity = ! empty($data['sack_capacity'])
+            ? (int) $data['sack_capacity']
+            : null;
+        $order->save();
+
+        return back()->with('success', 'Blister/sack capacity updated.');
     }
 
     public function printPackagingLabels(Request $request, string $id, SubconLabelService $labels)
@@ -905,9 +1565,21 @@ class SubconAdminController extends Controller
         $gramasiApproverEmail = \App\Models\Setting::getValue('subcon_gramasi_approver_email', '');
         $labelGeneratorEmail = \App\Models\Setting::getValue('subcon_label_generator_email', '');
         $finalApproverEmail = \App\Models\Setting::getValue('qc_ho_approver_email', '');
+        $qcHeadNotificationEmail = \App\Models\Setting::getValue('qc_head_notification_email', '');
         $directorApproverEmail = \App\Models\Setting::getValue('qc_director_approver_email', '');
+        $directorApproverPhone = \App\Models\Setting::getValue('qc_director_approver_phone', '');
 
-        return view('subcon.admin.workflow', compact('cuttingApproverEmail', 'gramasiApproverEmail', 'labelGeneratorEmail', 'finalApproverEmail', 'directorApproverEmail'));
+        return view('subcon.admin.workflow', compact('cuttingApproverEmail', 'gramasiApproverEmail', 'labelGeneratorEmail', 'finalApproverEmail', 'qcHeadNotificationEmail', 'directorApproverEmail', 'directorApproverPhone'));
+    }
+
+    /**
+     * Bahasa Indonesia PDF user guide for the subcon admin portal.
+     */
+    public function userGuide()
+    {
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('subcon.pdf.admin-guide-id')->setPaper('a4');
+
+        return $pdf->stream('Panduan Admin - Portal Subkontraktor.pdf');
     }
 
     /**
@@ -928,6 +1600,21 @@ class SubconAdminController extends Controller
             }
         };
 
+        // May hold one OR many comma/semicolon-separated phone numbers; each
+        // just needs to leave at least one digit after stripping non-digits
+        // (WhatsAppNotificationService::toChatId does the real normalization).
+        $multiPhone = function (string $attribute, $value, $fail) {
+            foreach (preg_split('/[,;]+/', (string) $value) as $phone) {
+                $phone = trim($phone);
+                if ($phone === '' || str_contains($phone, '@')) {
+                    continue;
+                }
+                if (preg_replace('/\D+/', '', $phone) === '') {
+                    $fail("The {$attribute} field contains an invalid phone number: {$phone}");
+                }
+            }
+        };
+
         $request->validate([
             'subcon_cutting_approver_email' => ['required', $multiEmail],
             'subcon_gramasi_approver_email' => ['required', $multiEmail],
@@ -935,9 +1622,14 @@ class SubconAdminController extends Controller
             // Second-stage (Head Office) consumption approval — optional; when
             // blank the HO email falls back to the cutting approver list.
             'qc_ho_approver_email' => ['nullable', $multiEmail],
+            // QC Head — notification only, no approval action. Cc'd on the
+            // completion email once the Director authorizes.
+            'qc_head_notification_email' => ['nullable', $multiEmail],
             // Third-stage (Director) authorization — optional; when blank the
             // director email falls back to the Final (HO) list.
             'qc_director_approver_email' => ['nullable', $multiEmail],
+            // Director WhatsApp notification — optional, on top of the email.
+            'qc_director_approver_phone' => ['nullable', $multiPhone],
         ]);
 
         \App\Models\Setting::updateOrCreate(
@@ -981,12 +1673,32 @@ class SubconAdminController extends Controller
         );
 
         \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_head_notification_email'],
+            [
+                'value' => $request->input('qc_head_notification_email', ''),
+                'group' => 'subcon',
+                'type' => 'string',
+                'description' => 'QC Head email address(es) notified when the Director authorizes and the project completes (comma-separated for multiple); notification only, no approval action',
+            ]
+        );
+
+        \App\Models\Setting::updateOrCreate(
             ['key' => 'qc_director_approver_email'],
             [
                 'value' => $request->input('qc_director_approver_email', ''),
                 'group' => 'subcon',
                 'type' => 'string',
                 'description' => 'Director email address(es) for the third-stage authorization after MD Production approves (comma-separated for multiple); falls back to the Final approver list when blank',
+            ]
+        );
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_phone'],
+            [
+                'value' => $request->input('qc_director_approver_phone', ''),
+                'group' => 'subcon',
+                'type' => 'string',
+                'description' => 'Director WhatsApp number(s) for the third-stage authorization, sent alongside the email (comma-separated for multiple, e.g. 08123456789)',
             ]
         );
 

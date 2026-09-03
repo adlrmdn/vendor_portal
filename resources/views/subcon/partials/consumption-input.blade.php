@@ -60,7 +60,7 @@
     <div class="card-body p-3">
         <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
             <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
-                <i class="fas fa-ruler-horizontal me-1"></i> Fabric Reconciliation &amp; Consumption
+                <i class="fas fa-ruler-horizontal me-1"></i> Material Reconciliation &amp; Consumption
                 <span class="text-muted fw-normal text-lowercase">(per fabric)</span>
             </div>
             <span class="text-muted small">Total Qty Cut: <strong>{{ $fmt2($totalCut) }}</strong> pcs</span>

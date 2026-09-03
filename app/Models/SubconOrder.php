@@ -41,10 +41,16 @@ class SubconOrder extends Model
 
     /**
      * QMS project statuses that need no further workflow action: completed
-     * (invoiced) and removed (deleted in the QC console, incl. the
-     * removed_completed variant). Every pending list/badge excludes these.
+     * (invoiced) and removed_completed (archived in the QC console after
+     * already being done). Plain 'removed' is deliberately NOT included —
+     * per the QC console (forge/src/components/FormView.tsx), that status
+     * just means an operator archived/hid the project on their device
+     * ("This will archive the style and hide it from all directories");
+     * it's restorable via a re-scan and does not imply the approval
+     * workflow finished. Treating it as inactive hid genuinely pending
+     * Director approvals. Every pending list/badge excludes only these.
      */
-    public const QMS_INACTIVE_PROJECT_STATUSES = ['completed', 'removed', 'removed_completed'];
+    public const QMS_INACTIVE_PROJECT_STATUSES = ['completed', 'removed_completed'];
 
     /**
      * Count of QC-console packaging sessions that passed stage-1 confirmation but
@@ -187,6 +193,7 @@ class SubconOrder extends Model
         'sisa_kain',
         'kepala_kain',
         'retur_kain',
+        'cutting_partial',
         'cutting_approved_at',
         'cutting_approved_by',
         'gramasi_approved_at',
@@ -198,12 +205,16 @@ class SubconOrder extends Model
         'due_date',
         'notes',
         'remarks',
+        'reject_gate',
+        'reject_reason',
+        'rejected_at',
         'distribution_id',
         'production_group',
         'sizes_count',
         'label_gen_status',
         'label_gen_error',
         'label_gen_at',
+        'd365_finished_detected_at',
     ];
 
     protected $casts = [
@@ -211,12 +222,15 @@ class SubconOrder extends Model
         'vendor_id' => 'string',
         'order_date' => 'date',
         'due_date' => 'date',
+        'd365_finished_detected_at' => 'datetime',
+        'rejected_at' => 'datetime',
         'blister_capacity' => 'integer',
         'sack_capacity' => 'integer',
         'short_roll' => 'decimal:2',
         'sisa_kain' => 'decimal:2',
         'kepala_kain' => 'decimal:2',
         'retur_kain' => 'decimal:2',
+        'cutting_partial' => 'boolean',
         'cutting_approved_at' => 'datetime',
         'gramasi_approved_at' => 'datetime',
         'job_trans_status' => 'string',
@@ -262,10 +276,20 @@ class SubconOrder extends Model
         ])->save();
     }
 
-    /** Record a generation failure with a human-readable reason. */
+    /**
+     * Record a generation failure with a human-readable reason. Also drops the
+     * stage back to waiting_distribution — even a recalc-only retry failure —
+     * so the order simply reappears on the Generate Labels tab instead of
+     * sitting invisible at `labels` with nothing showing the problem. Skipped
+     * for already-completed orders: the recalc button stays reachable there
+     * too, but a failure shouldn't un-complete a finished PO.
+     */
     public function markLabelGenFailed(string $reason): void
     {
         $this->forceFill([
+            ...($this->workflow_stage !== self::STAGE_COMPLETED
+                ? ['workflow_stage' => self::STAGE_WAITING_DISTRIBUTION]
+                : []),
             'label_gen_status' => self::LABEL_GEN_FAILED,
             'label_gen_error' => \Illuminate\Support\Str::limit($reason, 1000),
             'label_gen_at' => now(),
@@ -309,6 +333,93 @@ class SubconOrder extends Model
     public function canComplete(): bool
     {
         return $this->workflow_stage === self::STAGE_LABELS;
+    }
+
+    /**
+     * Vendor may attach/edit material-return declarations any time up until
+     * Report Validation is actually sent to the Director — i.e. any
+     * workflow stage, closing the moment ho_validation_signature is set on
+     * this order's QMS session (or immediately if no session exists yet,
+     * since that means Report Validation obviously hasn't happened) — AND,
+     * separately, the moment MD Production presses "Send to Material Flow"
+     * (a MaterialReturnTask exists at all, pending or already checked): once
+     * dispatched, the vendor can never edit again, so the declared figures
+     * Material Flow is validating can't shift underneath the check — only MD
+     * Production (materialReturnAdminWindowOpen()) can still edit from there.
+     */
+    public function materialReturnVendorWindowOpen(): bool
+    {
+        if ($this->qmsSignatureSet('ho_validation_signature')) {
+            return false;
+        }
+
+        try {
+            return ! \App\Models\MaterialReturnTask::where('order_id', $this->id)->exists();
+        } catch (\Throwable $e) {
+            return true;
+        }
+    }
+
+    /**
+     * Admin (MD Production) may attach from the Final Approval stage
+     * (approval_token set) through Report Validation (before
+     * ho_validation_signature is set) — the two admin stages MD Production
+     * itself owns, per the "final approval or report validation" instruction.
+     */
+    public function materialReturnAdminWindowOpen(): bool
+    {
+        return $this->qmsTokenSet('approval_token') && ! $this->qmsSignatureSet('ho_validation_signature');
+    }
+
+    /**
+     * Best-effort read of one column on this order's active QMS session
+     * (joined by production_group, same key QcApprovalController::subconContext()
+     * resolves projects through). Never throws — an unreachable/older QMS
+     * schema is treated as "not set" so the material-return windows degrade
+     * open for vendor / closed for admin rather than 500ing.
+     */
+    private function qmsColumnQuery(string $column)
+    {
+        if (empty($this->production_group)) {
+            return null;
+        }
+
+        if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
+            || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', $column)) {
+            return null;
+        }
+
+        return DB::connection('qms')->table('packaging_project_sessions')
+            ->join('packaging_projects', 'packaging_projects.project_id', '=', 'packaging_project_sessions.project_id')
+            ->where('packaging_projects.production_group', $this->production_group);
+    }
+
+    /** Text/signature columns (ho_approval_signature, ho_validation_signature, ...): null or '' both mean "unset". */
+    private function qmsSignatureSet(string $column): bool
+    {
+        try {
+            $query = $this->qmsColumnQuery($column);
+
+            return $query
+                ? $query->where(function ($q) use ($column) {
+                    $q->whereNotNull($column)->where($column, '!=', '');
+                })->exists()
+                : false;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** UUID-typed columns (approval_token): only null means "unset" — comparing a uuid column to '' errors in Postgres. */
+    private function qmsTokenSet(string $column): bool
+    {
+        try {
+            $query = $this->qmsColumnQuery($column);
+
+            return $query ? $query->whereNotNull($column)->exists() : false;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /** Human-readable label for the current stage. */

@@ -166,6 +166,31 @@ return [
             'sslmode' => 'prefer',
         ],
 
+        // WMS database (same Postgres server, separate database). Already in
+        // production use by the handheld "Goods Receiver" scanner app for
+        // supplier goods-receipt (good_receipt_headers/lines — schema owned
+        // and auto-migrated by that app's own Rust backend, not touched here).
+        // The subcon vendor portal owns and migrates two additional tables of
+        // its own here — material_return_tasks / material_return_attachments —
+        // the same "portal owns a small shared table in a DB it doesn't
+        // otherwise control" pattern already used for `qms` (see
+        // database/migrations/2026_07_07_000003_create_packaging_project_remarks.php).
+        // value_stream_ops's Material Flow tab polls/updates the same rows.
+        'wms' => [
+            'driver' => 'pgsql',
+            'url' => env('WMS_DB_URL'),
+            'host' => env('WMS_DB_HOST', env('DB_HOST', '127.0.0.1')),
+            'port' => env('WMS_DB_PORT', env('DB_PORT', '5432')),
+            'database' => env('WMS_DB_DATABASE', 'wms'),
+            'username' => env('WMS_DB_USERNAME', env('DB_USERNAME', 'root')),
+            'password' => env('WMS_DB_PASSWORD', env('DB_PASSWORD', '')),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => 'prefer',
+        ],
+
         // Universal RPA queue database (remote, shared with the QC Console's
         // Rust backend and the RPA bots). The portal INSERTs rows into
         // `rpa_queues` at approval milestones (job_trans_raf at MD Production

@@ -45,7 +45,7 @@ class SubconProductionService
                 ->all();
 
             $hasGroup = false;
-            if (!empty($plmIds)) {
+            if (! empty($plmIds)) {
                 // 2. PLM activity rows (article + production group + status).
                 $activities = DB::connection('vsm')->table('plm_activity')
                     ->whereIn('PLMId', $plmIds)
@@ -191,6 +191,13 @@ class SubconProductionService
      */
     private const FABRIC_POOL_PREFIX = 'Fab-';
 
+    // Accessories/trims (labels, zippers, thread, polybags, hangtags, tape,
+    // interlining, ...) live under a SEPARATE PO pool, not on the fabric-pool
+    // PO — confirmed live 2026-09-03 (MPG/PO/2606/00643: 15 real Acc-Local
+    // lines, 0 PCS lines on the Fab-Import PO). Units vary — labels are CM,
+    // thread/tape/lakban are YD, most others are PCS — never assume PCS.
+    private const ACCESSORY_POOL_PREFIX = 'Acc-';
+
     /**
      * Linked fabric PO lines for a CMT PO, combined per fabric (description +
      * unit). Reached via the shared PLMId: the CMT PO's lines carry the PLM, and
@@ -315,6 +322,92 @@ class SubconProductionService
     }
 
     /**
+     * The accessory/trim counterpart to fabricLinesForPo() — same fabric-pool
+     * PO lines (joined by PLMId), but keeping exactly the PCS-unit rows that
+     * method deliberately skips ("PCS lines on fabric POs are trims/accessories,
+     * not fabric"). Used to seed real, D365-sourced accessory return-quantity
+     * rows (see MaterialReturnService) instead of free-typing item names.
+     *
+     * @return array<int, array{label: string, display_label: string, unit: ?string, item_number: string, ordered_qty: float}>
+     */
+    public function accessoryLinesForPo(string $poNumber): array
+    {
+        try {
+            $plmIds = DB::connection('vsm')->table('po_lines')
+                ->where('PurchaseOrderNumber', $poNumber)
+                ->whereNotNull('PLMId')
+                ->where('PLMId', '!=', '')
+                ->distinct()
+                ->pluck('PLMId')
+                ->all();
+
+            if (empty($plmIds)) {
+                return [];
+            }
+
+            $lines = DB::connection('vsm')->table('po_lines as l')
+                ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
+                ->whereIn('l.PLMId', $plmIds)
+                ->where('h.PurchPoolId', 'like', self::ACCESSORY_POOL_PREFIX.'%')
+                ->get(['l.LineDescription', 'l.PurchaseUnitSymbol', 'l.OrderedPurchaseQuantity', 'l.ItemNumber']);
+
+            $grouped = [];
+            foreach ($lines as $ln) {
+                $desc = trim((string) ($ln->LineDescription ?? ''));
+                $unit = trim((string) ($ln->PurchaseUnitSymbol ?? ''));
+                if ($desc === '') {
+                    continue;
+                }
+                $key = $desc.'|'.$unit;
+                if (! isset($grouped[$key])) {
+                    $grouped[$key] = ['description' => $desc, 'unit' => $unit, 'ordered_qty' => 0.0, 'item_numbers' => []];
+                }
+                $grouped[$key]['ordered_qty'] += (float) ($ln->OrderedPurchaseQuantity ?? 0);
+                if (! empty($ln->ItemNumber)) {
+                    $grouped[$key]['item_numbers'][$ln->ItemNumber] = true;
+                }
+            }
+
+            $allItemNumbers = [];
+            foreach ($grouped as $g) {
+                foreach (array_keys($g['item_numbers']) as $it) {
+                    $allItemNumbers[$it] = true;
+                }
+            }
+            $itemMaster = [];
+            if (! empty($allItemNumbers)) {
+                try {
+                    $itemMaster = app(\App\Services\D365JobTransactionService::class)->fetchItemMaster(array_keys($allItemNumbers));
+                } catch (\Throwable $e) {
+                    report($e);
+                }
+            }
+
+            return array_values(array_map(function ($g) use ($itemMaster) {
+                $g['ordered_qty'] = round($g['ordered_qty'], 2);
+                $itemNumbers = array_keys($g['item_numbers']);
+                $g['item_number'] = implode(', ', $itemNumbers);
+                unset($g['item_numbers']);
+                $g['label'] = $g['description'].' ('.$g['unit'].')';
+                $itemMasterDescription = null;
+                foreach ($itemNumbers as $it) {
+                    if (! empty($itemMaster[$it]['description'])) {
+                        $itemMasterDescription = $itemMaster[$it]['description'];
+                        break;
+                    }
+                }
+                $g['display_label'] = ($itemMasterDescription ?? $g['description']).' ('.$g['unit'].')';
+
+                return $g;
+            }, $grouped));
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
      * Resolve a real unit price + currency per fabric line. Local `po_items`
      * (already synced by the fabric portal, carries unit_price + PO currency) is
      * checked first — fast, no external call — and only the fabrics with no local
@@ -412,21 +505,22 @@ class SubconProductionService
             $result[$label] = ['price' => $price, 'currency' => $currency];
         }
 
-        // Policy markup: every resolved fabric price (local po_items, direct D365,
-        // or the VSM fallback alike) is marked up 30% before it reaches the
+        // Policy margin: every resolved fabric price (local po_items, direct D365,
+        // or the VSM fallback alike) is divided by 0.7 (i.e. the raw cost is
+        // treated as 70% of the priced value) before it reaches the
         // consumption/deduction calc. Applied here — the single funnel all three
         // sources pass through — so it can't be missed on any one source.
         foreach ($result as $label => $r) {
             if ($r['price'] !== null) {
-                $result[$label]['price'] = round($r['price'] * self::FABRIC_PRICE_MARKUP, 2);
+                $result[$label]['price'] = round($r['price'] / self::FABRIC_PRICE_MARKUP_DIVISOR, 2);
             }
         }
 
         return $result;
     }
 
-    /** Policy markup applied to every resolved fabric price (see resolveFabricPricing()). */
-    private const FABRIC_PRICE_MARKUP = 1.30;
+    /** Policy margin divisor applied to every resolved fabric price (see resolveFabricPricing()). */
+    private const FABRIC_PRICE_MARKUP_DIVISOR = 0.7;
 
     /** 1 meter = this many yards — the only length conversion Goods Receive needs. */
     private const METER_TO_YARD = 1.0936133;
@@ -558,23 +652,23 @@ class SubconProductionService
             // Convert a non-IDR source price to IDR via the configured FX rate so
             // the deduction is always computed in IDR. The converted value is the
             // prefill; a saved admin value still wins. Source kept as a short hint
-            // so the 30% policy markup isn't silently invisible on screen.
-            $srcPrice = $priced['price'] ?? null; // already includes FABRIC_PRICE_MARKUP, per resolveFabricPricing()
+            // so the policy margin divisor isn't silently invisible on screen.
+            $srcPrice = $priced['price'] ?? null; // already divided by FABRIC_PRICE_MARKUP_DIVISOR, per resolveFabricPricing()
             $srcCurrency = $priced['currency'] ?? null;
             $prefillPrice = $srcPrice;
             $priceSource = null;
             if ($srcPrice !== null) {
-                $rawPrice = round($srcPrice / self::FABRIC_PRICE_MARKUP, 2);
-                $markupPct = round((self::FABRIC_PRICE_MARKUP - 1) * 100);
+                $rawPrice = round($srcPrice * self::FABRIC_PRICE_MARKUP_DIVISOR, 2);
+                $divisorLabel = rtrim(rtrim(number_format(self::FABRIC_PRICE_MARKUP_DIVISOR, 2), '0'), '.');
                 if ($srcCurrency && strtoupper((string) $srcCurrency) !== 'IDR') {
                     $rate = $this->fxRateToIdr($srcCurrency);
                     if ($rate > 0) {
                         $prefillPrice = round($srcPrice * $rate, 2);
                         $cur = strtoupper((string) $srcCurrency);
-                        $priceSource = $cur.' '.number_format($rawPrice, 2).' (+'.$markupPct.'%) @ '.number_format($rate).' = Rp '.number_format($prefillPrice, 2);
+                        $priceSource = $cur.' '.number_format($rawPrice, 2).' (÷'.$divisorLabel.') @ '.number_format($rate).' = Rp '.number_format($prefillPrice, 2);
                     }
                 } else {
-                    $priceSource = 'Rp '.number_format($rawPrice, 2).' (+'.$markupPct.'%)';
+                    $priceSource = 'Rp '.number_format($rawPrice, 2).' (÷'.$divisorLabel.')';
                 }
             }
 
@@ -747,7 +841,7 @@ class SubconProductionService
             $plmIds = $lines->pluck('PLMId')->unique()->all();
 
             $namesByPo = [];
-            if (!empty($plmIds)) {
+            if (! empty($plmIds)) {
                 $nameByPlm = DB::connection('vsm')->table('plm_activity')
                     ->whereIn('PLMId', $plmIds)
                     ->whereNotNull('ArticleName')
@@ -764,7 +858,7 @@ class SubconProductionService
             // Fallback: resolve SearchName from local production_group when PLM link is missing
             $foundPos = array_keys($namesByPo);
             $missingPos = array_diff($poNumbers, $foundPos);
-            if (!empty($missingPos)) {
+            if (! empty($missingPos)) {
                 $localOrders = DB::table('subcon_orders')
                     ->whereIn('order_number', $missingPos)
                     ->whereNotNull('production_group')

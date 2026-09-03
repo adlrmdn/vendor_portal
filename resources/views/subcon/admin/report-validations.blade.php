@@ -15,6 +15,12 @@
     </div>
 </div>
 
+@include('subcon.partials.table-search', [
+    'route' => route('subcon.admin.report-validations'),
+    'search' => $search,
+    'placeholder' => 'Search work order, vendor, style, production group…',
+])
+
 <div class="card">
     <div class="card-body p-0">
         <div class="table-responsive">
@@ -26,6 +32,8 @@
                         <th>Inspection</th>
                         <th>RAF Run</th>
                         <th>MD Production</th>
+                        <th>Deduction</th>
+                        <th>Director</th>
                         <th class="text-end pe-4" style="width: 320px;">Action</th>
                     </tr>
                 </thead>
@@ -61,7 +69,34 @@
                                     <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">Unknown</span>
                                 @endif
                             </td>
-                            <td class="small text-muted">{{ $p['ho_signature'] ?: '—' }}</td>
+                            <td class="small text-muted">
+                                {{ $p['ho_signature'] ?: '—' }}
+                                @if(($p['material_return_status'] ?? null) === 'pending')
+                                    <div><span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow pending</span></div>
+                                @elseif(($p['material_return_status'] ?? null) === 'checked')
+                                    <div><span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow checked</span></div>
+                                @endif
+                            </td>
+                            <td>
+                                @if(($p['deduction_total'] ?? 0) > 0)
+                                    <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25">
+                                        <i class="fas fa-circle-minus me-1"></i> Rp {{ number_format($p['deduction_total'], 0, ',', '.') }}
+                                    </span>
+                                @else
+                                    <span class="badge bg-success-subtle text-success border border-success border-opacity-25">
+                                        <i class="fas fa-circle-check me-1"></i> None
+                                    </span>
+                                @endif
+                            </td>
+                            <td>
+                                @if(!empty($p['director_rejected']))
+                                    <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25">
+                                        <i class="fas fa-triangle-exclamation me-1"></i> Rejected
+                                    </span>
+                                @else
+                                    <span class="text-muted">—</span>
+                                @endif
+                            </td>
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
                                     {{-- The inspection report as it currently stands — rendered
@@ -81,9 +116,9 @@
 
                     @if(empty($pending))
                         <tr>
-                            <td colspan="6" class="text-center text-muted py-5">
+                            <td colspan="8" class="text-center text-muted py-5">
                                 <i class="fas fa-check-double fa-2x mb-3 text-success opacity-50 d-block"></i>
-                                Nothing awaiting validation. You're all caught up.
+                                {{ $search !== '' ? 'No pending validations match "'.$search.'".' : "Nothing awaiting validation. You're all caught up." }}
                             </td>
                         </tr>
                     @endif

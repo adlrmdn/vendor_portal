@@ -63,6 +63,10 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
     Route::post('/vendors', [AdminController::class, 'storeVendor'])->name('vendor.store');
     Route::get('/vendors', [AdminController::class, 'vendors'])->name('vendors');
     Route::get('/vendor/{id}', [AdminController::class, 'vendorDetail'])->name('vendor.detail');
+    Route::post('/vendor/{id}/toggle-status', [AdminController::class, 'toggleVendorStatus'])->name('vendor.toggle-status');
+    Route::post('/vendor/{id}/reset-password', [AdminController::class, 'resetVendorPassword'])->name('vendor.reset-password');
+    Route::post('/vendor/{id}/create-account', [AdminController::class, 'createVendorAccount'])->name('vendor.create-account');
+    Route::delete('/vendor/{id}', [AdminController::class, 'deleteVendor'])->name('vendor.destroy');
 
     // Admin Item Processing Routes (Mirrors Vendor)
     Route::get('/item/{id}/process', [AdminController::class, 'processItem'])->name('item.process');
@@ -101,6 +105,7 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
 Route::middleware(['auth'])->prefix('finance/admin')->name('finance.admin.')->group(function () {
     Route::get('/dashboard', [FinanceAdminController::class, 'dashboard'])->name('dashboard');
     Route::get('/pending-payment', [FinanceAdminController::class, 'pendingPayment'])->name('pending-payment');
+    Route::get('/pending-payment/export', [FinanceAdminController::class, 'pendingPaymentExport'])->name('pending-payment.export');
     Route::get('/invoices', [FinanceAdminController::class, 'invoices'])->name('invoices');
     Route::get('/debit-notes', [FinanceAdminController::class, 'debitNotes'])->name('debit-notes');
     Route::post('/checks/{id}/toggle', [FinanceAdminController::class, 'toggleCheck'])->name('checks.toggle');
@@ -158,6 +163,8 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
     Route::post('/vendors', [SubconAdminController::class, 'storeVendor'])->name('vendor.store');
     Route::put('/vendors/{id}', [SubconAdminController::class, 'updateVendor'])->name('vendors.update');
     Route::post('/vendors/{id}/toggle-status', [SubconAdminController::class, 'toggleVendorStatus'])->name('vendors.toggle-status');
+    Route::post('/vendors/{id}/reset-password', [SubconAdminController::class, 'resetVendorPassword'])->name('vendors.reset-password');
+    Route::post('/vendors/{id}/create-account', [SubconAdminController::class, 'createVendorAccount'])->name('vendors.create-account');
     Route::delete('/vendors/{id}', [SubconAdminController::class, 'deleteVendor'])->name('vendors.destroy');
     Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
     Route::get('/report-validations', [SubconAdminController::class, 'reportValidations'])->name('report-validations');
@@ -174,6 +181,8 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
     Route::post('/orders/{id}/capacity', [SubconAdminController::class, 'updateCapacity'])->name('orders.update-capacity');
     Route::post('/orders/{id}/approve', [SubconApprovalController::class, 'approveInApp'])->name('orders.approve');
     Route::post('/orders/{id}/decline', [SubconApprovalController::class, 'declineInApp'])->name('orders.decline');
+    Route::post('/orders/{id}/material-return', [SubconAdminController::class, 'uploadMaterialReturn'])->name('orders.material-return');
+    Route::post('/orders/{id}/material-return/dispatch', [SubconAdminController::class, 'dispatchMaterialReturnTask'])->name('orders.material-return.dispatch');
     Route::get('/orders/{id}/print-labels', [SubconAdminController::class, 'printPackagingLabels'])->name('orders.print-labels');
     Route::get('/workflow', [SubconAdminController::class, 'workflow'])->name('workflow');
     Route::post('/workflow', [SubconAdminController::class, 'updateWorkflow'])->name('workflow.update');
@@ -203,6 +212,12 @@ Route::get('/qc/reject/{token}', [App\Http\Controllers\QcApprovalController::cla
 Route::get('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprovalForm'])->name('qc.ho-approve');
 Route::post('/qc/ho-approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoApprove'])->name('qc.ho-approve.submit');
 Route::post('/qc/ho-send/{token}', [App\Http\Controllers\QcApprovalController::class, 'hoSendApproval'])->name('qc.ho-send.submit');
+// Material Flow attach/dispatch — available on this same token-gated form
+// (Final Approval and Report Validation both render it). POST-only, human
+// button-click behind the rendered page — same safety shape as every other
+// mutation here (see the GET/POST split note on qc.ho-decline below).
+Route::post('/qc/ho-approve/{token}/material-return', [App\Http\Controllers\QcApprovalController::class, 'uploadMaterialReturnSigned'])->name('qc.ho-approve.material-return');
+Route::post('/qc/ho-approve/{token}/material-return/dispatch', [App\Http\Controllers\QcApprovalController::class, 'dispatchMaterialReturnTaskSigned'])->name('qc.ho-approve.material-return.dispatch');
 // HO rejection — writes `ho_approval_signature` with a "Rejected: …" prefix (console contract).
 // GET only renders a confirmation page; the actual write is a POST. This is deliberate:
 // the HO email goes to corporate mailboxes whose link scanners (Microsoft Safe Links /
@@ -233,10 +248,12 @@ Route::middleware(['auth'])->prefix('subcon/vendor')->name('subcon.vendor.')->gr
     Route::get('/orders/{id}', [SubconVendorController::class, 'viewOrder'])->name('orders.view');
     Route::post('/orders/{id}/remarks', [SubconVendorController::class, 'saveRemarks'])->name('orders.remarks');
     Route::post('/orders/{id}/submit-cutting', [SubconVendorController::class, 'submitCuttingReport'])->name('orders.submit-cutting');
+    Route::post('/orders/{id}/material-reconciliation', [SubconVendorController::class, 'saveMaterialReconciliation'])->name('orders.material-reconciliation');
     Route::post('/orders/{id}/submit-gramasi', [SubconVendorController::class, 'submitGramasi'])->name('orders.submit-gramasi');
     Route::post('/orders/{id}/complete', [SubconVendorController::class, 'completeOrder'])->name('orders.complete');
     Route::get('/orders/{id}/template', [SubconVendorController::class, 'downloadTemplate'])->name('orders.download-template');
     Route::post('/orders/{id}/upload-report', [SubconVendorController::class, 'uploadReport'])->name('orders.upload-report');
+    Route::post('/orders/{id}/material-return', [SubconVendorController::class, 'uploadMaterialReturn'])->name('orders.material-return');
     Route::get('/orders/{id}/print-labels', [SubconVendorController::class, 'printPackagingLabels'])->name('orders.print-labels');
     Route::get('/profile', [SubconVendorController::class, 'profile'])->name('profile');
     Route::put('/profile', [SubconVendorController::class, 'updateProfile'])->name('profile.update');

@@ -60,6 +60,31 @@ return [
             'report' => false,
         ],
 
+        // Shared data lake used to offload heavy RPA queue payloads (see
+        // RpaQueueService). No key/secret configured on purpose — the EC2
+        // instance role (reachable from containers via IMDS) already has
+        // read/write access to this bucket, same as the automaton host.
+        'rpa_lake' => [
+            'driver' => 's3',
+            'region' => env('RPA_LAKE_S3_REGION', 'ap-southeast-3'),
+            'bucket' => env('RPA_LAKE_S3_BUCKET', 'rpa-lake'),
+            'root' => 'automaton',
+            'throw' => true,
+        ],
+
+        // Subcon material-return delivery notes — material the SUBCON VENDOR
+        // sends back to us (e.g. unused/excess cut fabric), NOT material we
+        // return to our own upstream fabric supplier (a different, unbuilt
+        // flow — don't reuse this disk/path for that if it's ever built).
+        // Same bucket/instance-role access as rpa_lake, own prefix.
+        'material_prod_return' => [
+            'driver' => 's3',
+            'region' => env('RPA_LAKE_S3_REGION', 'ap-southeast-3'),
+            'bucket' => env('RPA_LAKE_S3_BUCKET', 'rpa-lake'),
+            'root' => 'automaton/material_prod_return',
+            'throw' => true,
+        ],
+
     ],
 
     /*

@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Mail\SubconApprovalRequestMailable;
 use App\Models\SubconCuttingReport;
-use App\Models\SubconFabricReconciliation;
 use App\Models\SubconOrder;
 use App\Models\User;
 use App\Notifications\SubconApprovalRequested;
@@ -119,9 +118,11 @@ class SubconVendorController extends Controller
             ->get()
             ->keyBy('prod_id');
 
-        // Linked fabrics (from VSM fabric POs) + any saved per-fabric reconciliation.
-        // Both are best-effort: a VSM/DB hiccup must not take down the order page.
+        // Linked fabrics (from VSM fabric POs) + any saved per-fabric reconciliation,
+        // and the accessory counterpart — fetched the same way. Both best-effort:
+        // a VSM/DB hiccup must not take down the order page.
         $fabricLines = $production->fabricLinesForPo($order->order_number);
+        $accessoryLines = $production->accessoryLinesForPo($order->order_number);
         try {
             $fabricRecon = \App\Models\SubconFabricReconciliation::where('order_id', $order->id)
                 ->get()
@@ -131,7 +132,37 @@ class SubconVendorController extends Controller
             $fabricRecon = collect();
         }
 
-        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'fabricRecon'));
+        $materialReturnService = app(\App\Services\MaterialReturnService::class);
+        $materialReturns = $materialReturnService->attachmentsFor($order);
+        $materialReturnLines = $materialReturnService->linesFor($order);
+        $materialReturnTask = $materialReturnService->activeTaskFor($order);
+        $accessoryRecon = $materialReturnLines->where('item_type', 'accessory')->keyBy('label');
+
+        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask'));
+    }
+
+    /**
+     * Vendor-side material-return delivery note. Open any time up until
+     * Report Validation is actually sent to the Director — see
+     * SubconOrder::materialReturnVendorWindowOpen().
+     */
+    public function uploadMaterialReturn(\Illuminate\Http\Request $request, string $id, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $vendorId = Auth::user()->vendor_id;
+        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+
+        if (! $order->materialReturnVendorWindowOpen()) {
+            return back()->with('error', 'This order has already been sent to the Director — a material-return note can no longer be attached.');
+        }
+
+        $data = $request->validate([
+            'file' => 'required|file|mimes:pdf,jpg,jpeg,png|max:10240',
+            'note' => 'nullable|string|max:1000',
+        ]);
+
+        $materialReturns->upload($order, $data['file'], $data['note'] ?? null, \App\Models\MaterialReturnAttachment::ROLE_VENDOR, Auth::user()->name);
+
+        return back()->with('success', 'Material-return delivery note attached.');
     }
 
     /**
@@ -144,11 +175,12 @@ class SubconVendorController extends Controller
         $vendorId = Auth::user()->vendor_id;
         $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
 
-        if ($order->workflow_stage !== SubconOrder::STAGE_CUTTING && $order->workflow_stage !== SubconOrder::STAGE_CUTTING_REVIEW) {
+        if (! $order->canEditCutting()) {
             return back()->with('error', 'Cutting report can no longer be edited at this stage ('.$order->stageLabel().').');
         }
 
         $data = $request->validate([
+            'is_partial' => 'nullable|boolean',
             'blister_capacity' => 'nullable|integer|min:1',
             'sack_capacity' => 'nullable|integer|min:1',
             'fabrics_recon' => 'nullable|array',
@@ -157,6 +189,10 @@ class SubconVendorController extends Controller
             'fabrics_recon.*.sisa_kain' => 'nullable|numeric|min:0',
             'fabrics_recon.*.kepala_kain' => 'nullable|numeric|min:0',
             'fabrics_recon.*.retur_kain' => 'nullable|numeric|min:0',
+            'accessories_recon' => 'nullable|array',
+            'accessories_recon.*.label' => 'required_with:accessories_recon|string|max:500',
+            'accessories_recon.*.qty' => 'nullable|numeric|min:0',
+            'accessories_recon.*.unit' => 'nullable|string|max:20',
             'reports' => 'required|array',
             'reports.*.prod_id' => 'required|string',
             'reports.*.size' => 'required|string',
@@ -170,7 +206,19 @@ class SubconVendorController extends Controller
             return back()->withInput()->with('error', 'Enter at least one cutting quantity before submitting.');
         }
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($order, $data) {
+        $duplicate = false;
+        \Illuminate\Support\Facades\DB::transaction(function () use (&$order, $data, &$duplicate) {
+            // Re-check under a row lock: closes the window where a double-click
+            // or resubmitted POST lands after the first request already moved
+            // the order to cutting_review, which would otherwise re-spawn a
+            // second approval email + admin notification for the same submit.
+            $order = SubconOrder::where('id', $order->id)->lockForUpdate()->first();
+            if (! $order->canEditCutting()) {
+                $duplicate = true;
+
+                return;
+            }
+
             foreach ($data['reports'] as $reportData) {
                 $updateData = [
                     'size' => $reportData['size'],
@@ -193,40 +241,14 @@ class SubconVendorController extends Controller
                 $order->sack_capacity = $data['sack_capacity'];
             }
 
-            // Per-fabric reconciliation (leftover fabric measured per fabric type).
-            // Upsert by label — updating ONLY the reconciliation fields — so the
-            // admin's consumption figures (fabric_sent/consumption_plan/…) on the
-            // same fabric row are never wiped by a vendor re-submit. Rows for
-            // fabrics the vendor no longer lists are removed.
-            $keptLabels = [];
-            foreach (($data['fabrics_recon'] ?? []) as $rec) {
-                $label = trim((string) ($rec['label'] ?? ''));
-                if ($label === '') {
-                    continue;
-                }
-                $keptLabels[] = $label;
-                $short = round((float) ($rec['short_roll'] ?? 0), 2);
-                $sisa = round((float) ($rec['sisa_kain'] ?? 0), 2);
-                $kepala = round((float) ($rec['kepala_kain'] ?? 0), 2);
-                SubconFabricReconciliation::updateOrCreate(
-                    ['order_id' => $order->id, 'label' => $label],
-                    [
-                        'short_roll' => $short,
-                        'sisa_kain' => $sisa,
-                        'kepala_kain' => $kepala,
-                        // Retur Kain is LOCKED for the vendor = sum of the other three.
-                        // The form field is readonly, but it could be tampered client-side,
-                        // so enforce the rule here regardless of the posted value. The
-                        // approver can still override retur_kain on the approval form.
-                        'retur_kain' => round($short + $sisa + $kepala, 2),
-                    ]
-                );
-            }
-            $stale = SubconFabricReconciliation::where('order_id', $order->id);
-            if (! empty($keptLabels)) {
-                $stale->whereNotIn('label', $keptLabels);
-            }
-            $stale->delete();
+            app(\App\Services\MaterialReturnService::class)->persistReconciliation(
+                $order,
+                $data['fabrics_recon'] ?? [],
+                $data['accessories_recon'] ?? [],
+                \App\Models\MaterialReturnAttachment::ROLE_VENDOR,
+                Auth::user()->name,
+                lockReturKain: true
+            );
 
             // Update job_trans_status sequence
             if (empty($order->job_trans_status) || $order->job_trans_status === 'not_saved') {
@@ -235,15 +257,75 @@ class SubconVendorController extends Controller
                 $order->job_trans_status = 'qty_cutting_saved';
             }
 
+            // Partial toggle (default: not partial): a partial report is flagged
+            // to the approver, and approving it returns the order here so the
+            // vendor can submit the remaining quantities. Set on every submit,
+            // so a final (non-partial) resubmit clears it.
+            $order->cutting_partial = (bool) ($data['is_partial'] ?? false);
+
             $order->workflow_stage = SubconOrder::STAGE_CUTTING_REVIEW;
+            // Resubmitting clears a stale rejection for this same gate — it's no
+            // longer relevant once the vendor has addressed it.
+            if ($order->reject_gate === 'cutting') {
+                $order->reject_gate = null;
+                $order->reject_reason = null;
+                $order->rejected_at = null;
+            }
             // status is derived from workflow_stage in the model's saving hook.
             $order->save();
         });
 
+        if ($duplicate) {
+            return back()->with('error', 'This cutting report was already submitted and is awaiting approval.');
+        }
+
         $this->emailApprover($order, 'cutting');
         $this->notifyAdmins(new SubconApprovalRequested($order, 'cutting'));
 
-        return back()->with('success', 'Cutting report submitted for approval.');
+        return back()->with('success', $order->cutting_partial
+            ? 'Partial cutting report submitted for approval. After approval you can continue entering the remaining quantities.'
+            : 'Cutting report submitted for approval.');
+    }
+
+    /**
+     * Material Reconciliation (Fabric + Accessory), saveable independently of
+     * the cutting-report submission — usable at any stage up to Report
+     * Validation being sent (materialReturnVendorWindowOpen()), not just at
+     * cutting. The cutting-report form keeps its own embedded copy too (see
+     * submitCuttingReport) — both call this same persistence helper.
+     */
+    public function saveMaterialReconciliation(\Illuminate\Http\Request $request, string $id)
+    {
+        $vendorId = Auth::user()->vendor_id;
+        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+
+        if (! $order->materialReturnVendorWindowOpen()) {
+            return back()->with('error', 'This order has already been sent to the Director — Material Reconciliation can no longer be edited.');
+        }
+
+        $data = $request->validate([
+            'fabrics_recon' => 'nullable|array',
+            'fabrics_recon.*.label' => 'required_with:fabrics_recon|string|max:500',
+            'fabrics_recon.*.short_roll' => 'nullable|numeric|min:0',
+            'fabrics_recon.*.sisa_kain' => 'nullable|numeric|min:0',
+            'fabrics_recon.*.kepala_kain' => 'nullable|numeric|min:0',
+            'fabrics_recon.*.retur_kain' => 'nullable|numeric|min:0',
+            'accessories_recon' => 'nullable|array',
+            'accessories_recon.*.label' => 'required_with:accessories_recon|string|max:500',
+            'accessories_recon.*.qty' => 'nullable|numeric|min:0',
+            'accessories_recon.*.unit' => 'nullable|string|max:20',
+        ]);
+
+        app(\App\Services\MaterialReturnService::class)->persistReconciliation(
+            $order,
+            $data['fabrics_recon'] ?? [],
+            $data['accessories_recon'] ?? [],
+            \App\Models\MaterialReturnAttachment::ROLE_VENDOR,
+            Auth::user()->name,
+            lockReturKain: true
+        );
+
+        return back()->with('success', 'Material Reconciliation saved.');
     }
 
     /**
@@ -255,7 +337,7 @@ class SubconVendorController extends Controller
         $vendorId = Auth::user()->vendor_id;
         $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
 
-        if ($order->workflow_stage !== SubconOrder::STAGE_GRAMASI && $order->workflow_stage !== SubconOrder::STAGE_GRAMASI_REVIEW) {
+        if (! $order->canEditGramasi()) {
             return back()->with('error', 'Gramasi & blister capacity can only be entered after the cutting report is approved (current stage: '.$order->stageLabel().').');
         }
 
@@ -269,7 +351,16 @@ class SubconVendorController extends Controller
             'reports.*.cutting_qty' => 'nullable|integer|min:0',
         ]);
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($order, $data) {
+        $duplicate = false;
+        \Illuminate\Support\Facades\DB::transaction(function () use (&$order, $data, &$duplicate) {
+            // Re-check under a row lock — see the same guard in submitCuttingReport().
+            $order = SubconOrder::where('id', $order->id)->lockForUpdate()->first();
+            if (! $order->canEditGramasi()) {
+                $duplicate = true;
+
+                return;
+            }
+
             foreach ($data['reports'] as $reportData) {
                 $updateData = [
                     'size' => $reportData['size'],
@@ -294,8 +385,19 @@ class SubconVendorController extends Controller
                 ? (int) $data['sack_capacity']
                 : ($order->sack_capacity ?: 50);
             $order->workflow_stage = SubconOrder::STAGE_GRAMASI_REVIEW;
+            // Resubmitting clears a stale rejection for this same gate — it's no
+            // longer relevant once the vendor has addressed it.
+            if ($order->reject_gate === 'gramasi') {
+                $order->reject_gate = null;
+                $order->reject_reason = null;
+                $order->rejected_at = null;
+            }
             $order->save();
         });
+
+        if ($duplicate) {
+            return back()->with('error', 'Gramasi & blister capacity were already submitted and are awaiting approval.');
+        }
 
         // No D365 sync here: gramasi is only pushed to D365 once approved
         // (dispatched from SubconApprovalController), mirroring the cutting flow.
@@ -668,6 +770,16 @@ class SubconVendorController extends Controller
         $vendor = \App\Models\Vendor::findOrFail($vendorId);
 
         return view('subcon.vendor.profile', compact('vendor'));
+    }
+
+    /**
+     * Bahasa Indonesia PDF user guide for the subcon vendor portal.
+     */
+    public function userGuide()
+    {
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('subcon.pdf.vendor-guide-id')->setPaper('a4');
+
+        return $pdf->stream('Panduan Vendor - Portal Subkontraktor.pdf');
     }
 
     /**

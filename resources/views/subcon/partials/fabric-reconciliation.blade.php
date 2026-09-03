@@ -1,20 +1,35 @@
 {{--
-    Per-fabric reconciliation (leftover fabric measured at cutting). One row per
-    fabric type, identified by its label (description + unit). Editable on the
-    cutting report — where the vendor may also add any fabric VSM does not carry —
-    and read-only elsewhere. "Sisa Kain" is always labelled "Sisa Kain (Utuh)".
-    On the editable (vendor) form, Retur Kain is LOCKED and auto-calculated as
-    Short Roll + Sisa Kain + Kepala Kain; the approver can still override it
-    directly on the cutting-approval form.
+    Material Reconciliation — two table groups: Fabric (leftover fabric
+    measured at cutting) and Accessory (return qty, mostly PCS — the SUBCON
+    VENDOR's accessories/trim returned to us, not our own returns to a
+    fabric supplier). One row per item, identified by its label. Editable on
+    the cutting report — where the vendor may also add an item VSM does not
+    carry — and read-only elsewhere. "Sisa Kain" is always labelled "Sisa
+    Kain (Utuh)". On the editable (vendor) form, Retur Kain is LOCKED and
+    auto-calculated as Short Roll + Sisa Kain + Kepala Kain; the approver can
+    still override it directly on the cutting-approval form. Accessory rows
+    have no such breakdown — just a directly-entered quantity.
     Params:
-      $fabricLines  array from SubconProductionService::fabricLinesForPo()
-      $fabricRecon  Collection of SubconFabricReconciliation keyed by label
-      $editable     bool
+      $fabricLines     array from SubconProductionService::fabricLinesForPo()
+      $fabricRecon     Collection of SubconFabricReconciliation keyed by label
+      $accessoryLines  array from SubconProductionService::accessoryLinesForPo()
+      $accessoryRecon  Collection of MaterialReturnLine (item_type=accessory) keyed by label
+      $editable        bool
+      $standalone      bool — false (default): no own <form>/save button, relies on an
+                        external form (the cutting-report form embeds this directly, so
+                        submitting the cutting report also saves it). true: wraps itself
+                        in its own <form> + Save button, POSTs to $saveRoute — used
+                        everywhere else, so this stays editable/saveable at any stage up
+                        to Report Validation being sent, not just at cutting.
+      $saveRoute       ?string — required when $standalone is true
 --}}
 @php
     $editable = $editable ?? false;
+    $standalone = $standalone ?? false;
     $fabricLines = $fabricLines ?? [];
     $fabricRecon = $fabricRecon ?? collect();
+    $accessoryLines = $accessoryLines ?? [];
+    $accessoryRecon = $accessoryRecon ?? collect();
     $cols = ['short_roll' => 'Short Roll', 'sisa_kain' => 'Sisa Kain (Utuh)', 'kepala_kain' => 'Kepala Kain', 'retur_kain' => 'Retur Kain'];
 
     // Small muted unit tag under a value — consistent across the fabric partials.
@@ -55,14 +70,46 @@
             ];
         }
     }
+
+    // Same merge shape for accessories — VSM-sourced (real D365 item names,
+    // via accessoryLinesForPo) + any the vendor added by hand. Just one
+    // quantity column (PCS), no waste breakdown.
+    $accVsmLabels = array_map(fn ($al) => $al['label'], $accessoryLines);
+    $accSeed = [];
+    foreach ($accessoryLines as $al) {
+        $rec = $accessoryRecon->get($al['label']);
+        $accSeed[] = [
+            'label' => $al['label'],
+            'display_label' => $al['display_label'] ?? $al['label'],
+            'item_number' => $al['item_number'] ?? null,
+            'unit' => $al['unit'] ?: 'PCS',
+            'from_vsm' => true,
+            'qty' => $rec ? (float) $rec->qty_declared : 0,
+        ];
+    }
+    foreach ($accessoryRecon as $rec) {
+        if (! in_array($rec->label, $accVsmLabels, true)) {
+            $accSeed[] = [
+                'label' => $rec->label,
+                'display_label' => $rec->label,
+                'item_number' => null,
+                'unit' => $rec->unit ?: 'PCS',
+                'from_vsm' => false,
+                'qty' => (float) $rec->qty_declared,
+            ];
+        }
+    }
 @endphp
 
 <div class="card mt-3 shadow-sm border-0" style="border-radius:12px; border:1px solid rgba(0,0,0,0.08);">
     <div class="card-body p-3">
+        @if($standalone && $editable)
+            <form method="POST" action="{{ $saveRoute }}">
+                @csrf
+        @endif
         <div class="d-flex justify-content-between align-items-center mb-2">
             <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
-                <i class="fas fa-ruler-horizontal me-1"></i> Fabric Reconciliation
-                <span class="text-muted fw-normal text-lowercase">(per fabric — unit shown under each value)</span>
+                <i class="fas fa-ruler-horizontal me-1"></i> Material Reconciliation
             </div>
             @if($editable)
                 <button type="button" class="btn btn-outline-secondary btn-sm" id="add-recon-fabric"><i class="fas fa-plus me-1"></i> Add fabric</button>
@@ -155,6 +202,88 @@
                 </div>
             @endif
         @endif
+
+        <hr class="my-3">
+
+        {{-- Accessory group — return qty (mostly PCS), no waste breakdown. --}}
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
+                <i class="fas fa-shapes me-1"></i> Accessory
+            </div>
+            @if($editable)
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="add-recon-accessory"><i class="fas fa-plus me-1"></i> Add accessory</button>
+            @endif
+        </div>
+
+        @if(! $editable && empty($accSeed))
+            <div class="text-muted small">No accessory return quantities declared.</div>
+        @else
+            <div class="table-responsive" style="max-height: 320px; overflow-y: auto;">
+                <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light" style="position: sticky; top: 0; z-index: 1;">
+                        <tr>
+                            <th style="min-width:240px;">Item</th>
+                            <th class="text-end" style="width:120px;">Retur Qty</th>
+                            @if($editable)<th style="width:40px;"></th>@endif
+                        </tr>
+                    </thead>
+                    <tbody id="recon-accessory-rows">
+                        @foreach($accSeed as $i => $a)
+                            <tr>
+                                <td>
+                                    @if($a['from_vsm'])
+                                        <span class="small fw-semibold">{{ $a['display_label'] }}</span>
+                                        @if(! empty($a['item_number']))
+                                            <span class="badge rounded-pill text-bg-light border fw-normal" style="font-size:.66rem;">Item {{ $a['item_number'] }}</span>
+                                        @endif
+                                        @if($editable)
+                                            <input type="hidden" name="accessories_recon[{{ $i }}][label]" value="{{ $a['label'] }}">
+                                            <input type="hidden" name="accessories_recon[{{ $i }}][unit]" value="{{ $a['unit'] }}">
+                                        @endif
+                                    @elseif($editable)
+                                        <input type="text" class="form-control form-control-sm" name="accessories_recon[{{ $i }}][label]"
+                                               value="{{ old('accessories_recon.'.$i.'.label', $a['label']) }}" placeholder="Accessory description" required>
+                                    @else
+                                        <div class="small fw-semibold">{{ $a['label'] }}</div>
+                                    @endif
+                                </td>
+                                <td class="text-end">
+                                    @if($editable)
+                                        <input type="number" step="0.01" min="0" inputmode="decimal"
+                                               onfocus="if(!parseFloat(this.value))this.select()"
+                                               class="form-control form-control-sm text-end d-inline-block" style="width:100px;"
+                                               name="accessories_recon[{{ $i }}][qty]" value="{{ old('accessories_recon.'.$i.'.qty', $a['qty']) }}" placeholder="0">
+                                        @if($a['from_vsm'])
+                                            {!! $unitTag($a['unit'] ?? null) !!}
+                                        @else
+                                            <input type="text" class="form-control form-control-sm d-inline-block mt-1" style="width:100px;"
+                                                   name="accessories_recon[{{ $i }}][unit]" value="{{ old('accessories_recon.'.$i.'.unit', $a['unit']) }}" placeholder="Unit">
+                                        @endif
+                                    @else
+                                        <span class="fw-semibold">{{ number_format((float) $a['qty'], 2) }}</span>
+                                        {!! $unitTag($a['unit'] ?? null) !!}
+                                    @endif
+                                </td>
+                                @if($editable)
+                                    <td class="text-end">
+                                        @unless($a['from_vsm'])
+                                            <button type="button" class="btn btn-sm btn-outline-danger recon-accessory-remove" title="Remove"><i class="fas fa-times"></i></button>
+                                        @endunless
+                                    </td>
+                                @endif
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        @endif
+
+        @if($standalone && $editable)
+                <div class="text-end mt-2">
+                    <button type="submit" class="btn btn-sm btn-outline-primary"><i class="fas fa-save me-1"></i> Save Material Reconciliation</button>
+                </div>
+            </form>
+        @endif
     </div>
 </div>
 
@@ -211,6 +340,30 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Initialise on load so Retur Kain always reflects the three columns.
     rows.querySelectorAll('tr').forEach(syncRetur);
+});
+
+document.addEventListener('DOMContentLoaded', function () {
+    const accRows = document.getElementById('recon-accessory-rows');
+    const accAddBtn = document.getElementById('add-recon-accessory');
+    if (! accRows || ! accAddBtn) return;
+
+    let aIdx = {{ count($accSeed) }};
+
+    accAddBtn.addEventListener('click', function () {
+        const i = aIdx++;
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+            '<td><input type="text" class="form-control form-control-sm" name="accessories_recon[' + i + '][label]" placeholder="Accessory description" required></td>' +
+            '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:100px;" name="accessories_recon[' + i + '][qty]" value="0">' +
+                '<input type="text" class="form-control form-control-sm d-inline-block mt-1" style="width:100px;" name="accessories_recon[' + i + '][unit]" value="PCS" placeholder="Unit"></td>' +
+            '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger recon-accessory-remove" title="Remove"><i class="fas fa-times"></i></button></td>';
+        accRows.appendChild(tr);
+    });
+
+    accRows.addEventListener('click', function (e) {
+        const btn = e.target.closest('.recon-accessory-remove');
+        if (btn) btn.closest('tr').remove();
+    });
 });
 </script>
 @endif

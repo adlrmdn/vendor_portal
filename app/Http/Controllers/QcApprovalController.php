@@ -35,6 +35,14 @@ class QcApprovalController extends Controller
     /** The QMS table the Tauri console polls every ~8s. */
     private const TABLE = 'packaging_project_sessions';
 
+    /**
+     * Tag prepended to every WhatsApp notification this controller sends, so
+     * a recipient can tell it apart from other bots/systems that may share
+     * the same WhatsApp number (the channel bot is a shared internal service,
+     * not dedicated to this portal).
+     */
+    private const WA_CHANNEL_TAG = '[Subcon Vendor Portal]';
+
     public function approve(Request $request, string $token)
     {
         // 1. Resolve the row by its unguessable bearer token.
@@ -274,8 +282,9 @@ class QcApprovalController extends Controller
             }
 
             // Approved but not yet sent — step 2 of the MD gate: the same page
-            // renders read-only with the RAF run status and a single
-            // "Validate & Send Approval" button (hoSendApproval).
+            // renders the RAF run status plus the same editable consumption +
+            // deduction inputs, and a "Validate & Send Approval" submit
+            // (hoSendApproval) that recalculates any revision before sending.
             $validateMode = true;
         }
 
@@ -284,6 +293,22 @@ class QcApprovalController extends Controller
         // revise them before signing. Recompute + overwrite happens on submit.
         [$subcon, $totalCut, $productionGroup] = $this->subconContext($row);
         $fabricLines = $subcon ? $production->fabricLinesWithData($subcon) : [];
+
+        // A row lands back on this page either because it was never sent to the
+        // Director yet, or because the Director just rejected it (which resets
+        // ho_validation_signature/director_approval_signature to null — see
+        // directorDecline() below). Surface the reason so HO/MD Production
+        // knows what to fix before resubmitting.
+        $directorRejectReason = null;
+        $orderNumberForLog = $subcon?->order_number ?? ($row->project_id ?? null);
+        if ($orderNumberForLog) {
+            $lastDirectorLog = \App\Models\SubconApprovalLog::where('gate', 'director')
+                ->where('decision', 'declined')
+                ->where('order_number', $orderNumberForLog)
+                ->orderByDesc('created_at')
+                ->first(['note']);
+            $directorRejectReason = \App\Models\SubconApprovalLog::extractReason($lastDirectorLog->note ?? null);
+        }
 
         // QC-measured Retur Kain from the console's Production Status card
         // overrides the vendor-entered prefill on the main (first) fabric line —
@@ -311,7 +336,81 @@ class QcApprovalController extends Controller
         // Step-2 extras: live RAF run status (best-effort, remote RPA DB).
         $rafStatus = $validateMode ? $this->rafJobStatus((string) $row->project_id) : null;
 
-        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'validateMode', 'rafStatus'));
+        // Existing deduction rows — prefill the editable rows in both modes
+        // (step 1 sees them again after a Director rejection, step 2 can revise
+        // them before sending). Best-effort: the table is console-owned.
+        $deductionLines = [];
+        try {
+            if (Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
+                $deductionLines = DB::connection('qms')->table('packaging_session_deduction_lines')
+                    ->where('session_id', $row->session_id)
+                    ->orderBy('id')
+                    ->get()
+                    ->map(fn ($d) => ['description' => (string) $d->description, 'amount' => (float) $d->amount])
+                    ->all();
+            }
+        } catch (\Throwable $e) {
+            // Unreadable — start with no prefilled rows.
+        }
+
+        // Material Flow — attach/dispatch is available here too (Final Approval
+        // and Report Validation are exactly the two SubconOrder::
+        // materialReturnAdminWindowOpen() stages this form renders for).
+        $materialReturnService = app(\App\Services\MaterialReturnService::class);
+        $materialReturns = $subcon ? $materialReturnService->attachmentsFor($subcon) : collect();
+        $materialReturnTask = $subcon ? $materialReturnService->activeTaskFor($subcon) : null;
+
+        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask'));
+    }
+
+    /**
+     * Material Flow attach, from this same token-gated form (Final Approval
+     * or Report Validation — both share hoApprovalForm/this page). No
+     * session auth here — the `approval_token` itself is the credential,
+     * same as every other action on this page.
+     */
+    public function uploadMaterialReturnSigned(Request $request, string $token, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $row = $this->findByToken($token);
+        if (! $row) {
+            return view('qc.approval-result', ['state' => 'invalid', 'message' => 'This approval link is invalid or has expired.']);
+        }
+
+        [$subcon] = $this->subconContext($row);
+        if (! $subcon || ! $subcon->materialReturnAdminWindowOpen()) {
+            return back()->with('error', 'A material-return note can only be attached between Final Approval and Report Validation.');
+        }
+
+        $data = $request->validate([
+            'file' => 'required|file|mimes:pdf,jpg,jpeg,png|max:10240',
+            'note' => 'nullable|string|max:1000',
+        ]);
+
+        $materialReturns->upload($subcon, $data['file'], $data['note'] ?? null, \App\Models\MaterialReturnAttachment::ROLE_ADMIN, self::HO_SIGNER);
+
+        return back()->with('success', 'Material-return delivery note attached.');
+    }
+
+    /**
+     * "Send to Material Flow" from this same token-gated form. See
+     * SubconAdminController::dispatchMaterialReturnTask for the in-app
+     * counterpart — both funnel through MaterialReturnService::dispatchTask().
+     */
+    public function dispatchMaterialReturnTaskSigned(string $token, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $row = $this->findByToken($token);
+        if (! $row) {
+            return view('qc.approval-result', ['state' => 'invalid', 'message' => 'This approval link is invalid or has expired.']);
+        }
+
+        [$subcon] = $this->subconContext($row);
+        if (! $subcon || ! $subcon->materialReturnAdminWindowOpen()) {
+            return back()->with('error', 'Material Flow can only be dispatched between Final Approval and Report Validation.');
+        }
+
+        $materialReturns->dispatchTask($subcon, self::HO_SIGNER);
+
+        return back()->with('success', 'Sent to Material Flow — inventory will check the returned material.');
     }
 
     /**
@@ -369,6 +468,8 @@ class QcApprovalController extends Controller
             'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
             'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
+            // MD Production's own remarks — distinct from the vendor's/QC's.
+            'ho_remarks' => 'required|string|max:2000',
         ]);
 
         [$subcon] = $this->subconContext($row);
@@ -400,9 +501,18 @@ class QcApprovalController extends Controller
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
 
         try {
-            DB::connection('qms')->transaction(function () use ($row, $token, $data, $signature) {
-                // Deduction lines (session-level, optional, 0+).
+            $replaceDeductions = $request->has('deductions_present');
+            DB::connection('qms')->transaction(function () use ($row, $token, $data, $signature, $replaceDeductions) {
+                // Deduction lines (session-level, optional, 0+). The form
+                // re-submits the FULL list (marked by `deductions_present`), so
+                // a re-approval after a Director rejection replaces the previous
+                // rows instead of accumulating duplicates.
                 if (Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
+                    if ($replaceDeductions) {
+                        DB::connection('qms')->table('packaging_session_deduction_lines')
+                            ->where('session_id', $row->session_id)
+                            ->delete();
+                    }
                     foreach (($data['deductions'] ?? []) as $d) {
                         $desc = trim((string) ($d['description'] ?? ''));
                         $amt = $d['amount'] ?? null;
@@ -423,14 +533,20 @@ class QcApprovalController extends Controller
                 // HO signature — last, and idempotent (guards a double submit).
                 if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_approval_signature')) {
                     $update = ['ho_approval_signature' => $signature];
-                    // A rerun after a Director rejection: wipe the stale
-                    // 'Rejected:' director stamp so the Director link is live again.
+                    // Defensive: directorDecline() already clears this stamp itself
+                    // (a Director rejection re-opens Validate & Send, not this Review
+                    // & Approve step, so a re-run here shouldn't normally see it set).
+                    // Kept as a safety net for any row left over from before that
+                    // change, so a stale stamp can never block the Director link.
                     if (Schema::connection('qms')->hasColumn(self::TABLE, 'director_approval_signature')) {
                         $update['director_approval_signature'] = null;
                     }
                     // Every (re-)approval starts a fresh validate-and-send cycle.
                     if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')) {
                         $update['ho_validation_signature'] = null;
+                    }
+                    if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_remarks')) {
+                        $update['ho_remarks'] = $data['ho_remarks'] ?? null;
                     }
                     DB::connection('qms')->table(self::TABLE)
                         ->where('approval_token', $token)
@@ -493,10 +609,16 @@ class QcApprovalController extends Controller
      * Stage 2b — "Validate & Send Approval". Review & Approve (hoApprove) signs
      * and queues the RAF production run but no longer notifies the Director;
      * this second, explicit send is MD Production vouching for the numbers
-     * after the RAF run. Idempotent via `ho_validation_signature` (same
-     * 'Digitally Signed:' contract as the other signature columns).
+     * after the RAF run. It is also the LAST edit point: the validate form
+     * carries the same editable consumption + deduction inputs as step 1, so
+     * any revision is recalculated through SubconConsumptionService, the
+     * fabric lines re-published to QMS, and the deduction rows replaced —
+     * before the Director sees anything. Idempotent via
+     * `ho_validation_signature` (same 'Digitally Signed:' contract as the
+     * other signature columns); only the request that wins the signature
+     * write may rewrite the deduction rows.
      */
-    public function hoSendApproval(Request $request, string $token)
+    public function hoSendApproval(Request $request, string $token, SubconConsumptionService $consumption, SubconFabricLinePublisher $publisher)
     {
         $row = $this->findByToken($token);
 
@@ -529,13 +651,30 @@ class QcApprovalController extends Controller
             ]);
         }
 
+        // Idempotency guard, same position as hoApprove's ho_approval_signature
+        // check above: a resubmit (double click, resend) of an already-sent
+        // approval must stop here, BEFORE any consumption mutation — not after.
+        // Whichever stage is furthest along wins; nothing below this point may
+        // rewrite figures the Director could already be reviewing.
+        if (trim((string) ($row->ho_validation_signature ?? '')) !== '') {
+            return view('qc.approval-result', [
+                'state' => 'already',
+                'message' => 'This approval has already been sent to the Director.',
+                'signature' => $row->ho_validation_signature,
+            ]);
+        }
+
         // Don't ask the Director about projects that need no action any more
-        // (completed under the legacy flow, or removed in the QC console).
+        // (completed under the legacy flow, or archived post-completion in
+        // the QC console). A plain 'removed' status is just a device-side
+        // archive/hide and does NOT mean the workflow is done — see
+        // SubconOrder::QMS_INACTIVE_PROJECT_STATUSES — so it is not guarded
+        // here; the project should still be sendable to the Director.
         try {
             $status = (string) DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', (string) ($row->project_id ?? ''))
                 ->value('status');
-            if ($status === 'completed' || str_starts_with($status, 'removed')) {
+            if (in_array($status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true)) {
                 return view('qc.approval-result', [
                     'state' => $status === 'completed' ? 'already' : 'invalid',
                     'message' => $status === 'completed'
@@ -548,43 +687,132 @@ class QcApprovalController extends Controller
             // refuses inactive projects.
         }
 
+        // Material Flow gate: if MD Production dispatched a returned-material
+        // check (SubconAdminController::dispatchMaterialReturnTask), value_stream_ops's
+        // inventory staff must confirm it before this can go to the Director.
+        // A no-op for orders that never had a task dispatched.
+        [$subconForReturnCheck] = $this->subconContext($row);
+        if ($subconForReturnCheck && app(\App\Services\MaterialReturnService::class)->isReturnCheckPending($subconForReturnCheck)) {
+            return view('qc.approval-result', [
+                'state' => 'blocked',
+                'message' => "Report Validation can't be sent to the Director until Material Flow has checked the returned material.",
+            ]);
+        }
+
+        $data = $request->validate([
+            'deductions' => 'nullable|array',
+            'deductions.*.description' => 'nullable|string|max:255',
+            'deductions.*.amount' => 'nullable|numeric|min:0',
+            // The validate step re-exposes the consumption inputs — same shape
+            // as hoApprove, recalculated by the same engine.
+            'fabrics' => 'nullable|array',
+            'fabrics.*.label' => 'required_with:fabrics|string|max:500',
+            'fabrics.*.short_roll' => 'nullable|numeric|min:0',
+            'fabrics.*.sisa_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.kepala_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.retur_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
+            'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
+            'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
+            // MD Production's own remarks — distinct from the vendor's/QC's.
+            'ho_remarks' => 'required|string|max:2000',
+        ]);
+
+        [$subcon, , $productionGroup] = $this->subconContext($row);
+
         $actor = $this->actorLabel($request, self::HO_SIGNER);
         $signature = 'Digitally Signed: '.$actor
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
 
-        if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')) {
-            try {
-                $affected = DB::connection('qms')->table(self::TABLE)
-                    ->where('approval_token', $token)
-                    ->where(function ($q) {
-                        $q->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
-                    })
-                    ->update(['ho_validation_signature' => $signature]);
-            } catch (\Throwable $e) {
-                Log::error('QC HO send write failed', ['token' => $token, 'error' => $e->getMessage()]);
+        // Claim the send FIRST, atomically, before anything else is mutated:
+        // only the request that wins this update may persist consumption,
+        // publish fabric lines, or replace deduction rows below. Claiming
+        // before mutating (rather than after) is what makes a genuinely
+        // concurrent double-submit safe too, on top of the front guard above
+        // that already catches the sequential case.
+        $already = false;
+        try {
+            DB::connection('qms')->transaction(function () use ($token, $signature, &$already) {
+                if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')) {
+                    $affected = DB::connection('qms')->table(self::TABLE)
+                        ->where('approval_token', $token)
+                        ->where(function ($q) {
+                            $q->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
+                        })
+                        ->update(['ho_validation_signature' => $signature]);
 
-                return view('qc.approval-result', [
-                    'state' => 'invalid',
-                    'message' => 'Could not record the send. Please try again, or contact support if this persists.',
-                ]);
-            }
+                    if ($affected === 0) {
+                        $already = true;
+                    }
+                } else {
+                    // Column missing (console DDL race) — proceed anyway, but without
+                    // the idempotency marker a double click could re-email the Director.
+                    Log::warning('QC HO send: ho_validation_signature column missing — send not idempotent', ['token' => $token]);
+                }
+            });
+        } catch (\Throwable $e) {
+            Log::error('QC HO send write failed', ['token' => $token, 'error' => $e->getMessage()]);
 
-            if ($affected === 0) {
-                return view('qc.approval-result', [
-                    'state' => 'already',
-                    'message' => 'This approval has already been sent to the Director.',
-                    'signature' => $row->ho_validation_signature,
-                ]);
-            }
-        } else {
-            // Column missing (console DDL race) — send anyway, but without the
-            // idempotency marker a double click could re-email the Director.
-            Log::warning('QC HO send: ho_validation_signature column missing — send not idempotent', ['token' => $token]);
+            return view('qc.approval-result', [
+                'state' => 'invalid',
+                'message' => 'Could not record the send. Please try again, or contact support if this persists.',
+            ]);
+        }
+
+        if ($already) {
+            return view('qc.approval-result', [
+                'state' => 'already',
+                'message' => 'This approval has already been sent to the Director.',
+                'signature' => $row->ho_validation_signature,
+            ]);
+        }
+
+        // Won the send — safe to mutate now. Last edit point before the
+        // Director: persist any revised consumption with the same engine as
+        // the cutting/approve gates (recompute + overwrite the snapshot),
+        // then re-publish the fabric lines to QMS so the Director's document
+        // and the deduction RPA total carry the final numbers.
+        if ($subcon && ! empty($data['fabrics'])) {
+            DB::transaction(function () use ($consumption, $subcon, $data) {
+                $consumption->persist($subcon, $data['fabrics']);
+            });
+        }
+        if ($subcon) {
+            $publisher->publish($subcon, (string) $row->project_id);
+            app(\App\Services\SubconRemarksPublisher::class)->publish($subcon);
+        }
+
+        if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_remarks')) {
+            DB::connection('qms')->table(self::TABLE)
+                ->where('approval_token', $token)
+                ->update(['ho_remarks' => $data['ho_remarks'] ?? null]);
+        }
+
+        // Deduction rows: the validate form re-submits the FULL list (marked
+        // by `deductions_present`) — replace this session's rows so edits and
+        // removals stick. Safe here — this request already won the claim above.
+        if ($request->has('deductions_present') && Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
+            DB::connection('qms')->transaction(function () use ($row, $data) {
+                DB::connection('qms')->table('packaging_session_deduction_lines')
+                    ->where('session_id', $row->session_id)
+                    ->delete();
+                foreach (($data['deductions'] ?? []) as $d) {
+                    $desc = trim((string) ($d['description'] ?? ''));
+                    $amt = $d['amount'] ?? null;
+                    if ($desc === '' && ($amt === null || $amt === '')) {
+                        continue; // skip empty rows
+                    }
+                    DB::connection('qms')->table('packaging_session_deduction_lines')->insert([
+                        'session_id' => $row->session_id,
+                        'description' => $desc,
+                        'amount' => is_numeric($amt) ? (float) $amt : 0,
+                        'created_by' => self::HO_SIGNER,
+                    ]);
+                }
+            });
         }
 
         Log::info('QC HO validation signed — sending to Director', ['token' => $token, 'project_id' => $row->project_id]);
-
-        [$subcon, , $productionGroup] = $this->subconContext($row);
         \App\Models\SubconApprovalLog::record([
             'order_id' => $subcon->id ?? null,
             'order_number' => $subcon->order_number ?? ($row->project_id ?? null),
@@ -768,7 +996,7 @@ class QcApprovalController extends Controller
      * the full inspection summary (same data the PDF shows) with both prior
      * signatures, then Approves or Rejects — no editing.
      */
-    public function directorApprovalForm(Request $request, string $token, QcReportPdfService $reportPdf)
+    public function directorApprovalForm(Request $request, string $token, QcReportPdfService $reportPdf, SubconProductionService $production)
     {
         $row = $this->findByToken($token);
 
@@ -783,10 +1011,28 @@ class QcApprovalController extends Controller
             return $guard;
         }
 
-        [$subcon, , $productionGroup] = $this->subconContext($row);
+        [$subcon, $totalCut, $productionGroup] = $this->subconContext($row);
         $report = $reportPdf->context((string) $row->project_id, (string) $row->session_id);
 
-        return view('qc.director-approval-form', compact('token', 'row', 'subcon', 'productionGroup', 'report'));
+        // Same per-size cutting/production + fabric consumption detail the HO
+        // gate shows — read-only here (no editing at the Director stage).
+        // Best-effort: VSM may be unreachable.
+        $fabricLines = $subcon ? $production->fabricLinesWithData($subcon) : [];
+        $productionGroups = [];
+        $cuttingReports = collect();
+        if ($subcon) {
+            try {
+                $productionGroups = $production->forPo($subcon->order_number);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+            $cuttingReports = \App\Models\SubconCuttingReport::where('order_id', $subcon->id)->get()->keyBy('prod_id');
+        }
+
+        return view('qc.director-approval-form', compact(
+            'token', 'row', 'subcon', 'productionGroup', 'report',
+            'totalCut', 'fabricLines', 'productionGroups', 'cuttingReports'
+        ));
     }
 
     /**
@@ -969,7 +1215,22 @@ class QcApprovalController extends Controller
             $latestVersion = $this->latestSessionVersion($projectId);
             $deductionTotal = $rpa->deductionTotal($projectId, (string) $row->session_id);
             $rpa->queueInvoice($project, $latestVersion, (string) $signedDoc);
-            $rpa->queueDeduction($project, $latestVersion, (string) $signedDoc, $deductionTotal);
+
+            // Deduction gets its own document — the debit-note page (Document
+            // No/Invoice Date blank, filled in later by the debit_note RPA bot)
+            // prepended ahead of the same inspection report — not the plain
+            // $signedDoc used for the invoice job.
+            $deductionDoc = (string) $signedDoc;
+            if ($deductionTotal > 0) {
+                $deductionDoc = $reportPdf->renderDeductionDataUri(
+                    $projectId,
+                    (string) $row->session_id,
+                    (string) ($project->po_info ?? ''),
+                    (string) ($project->po_vendor ?? ''),
+                    $deductionTotal,
+                ) ?? $deductionDoc;
+            }
+            $rpa->queueDeduction($project, $latestVersion, $deductionDoc, $deductionTotal, originalDoc: (string) $signedDoc);
 
             try {
                 DB::connection('qms')->table('packaging_projects')
@@ -1032,11 +1293,23 @@ class QcApprovalController extends Controller
     }
 
     /**
-     * Director rejection → back to MD Production (NOT back to QC): the director
-     * stamp is written with the 'Rejected:' prefix AND the HO signature is
-     * cleared in the same atomic update, re-opening stage 2. The Factory Rep
-     * signature is untouched. MD Production is re-emailed the Final Approval
-     * link (same token) with the Director's reason.
+     * Director rejection → back to Report Validation (NOT back to a full MD
+     * Production redo): only `ho_validation_signature` is cleared, re-opening
+     * step 2b (Validate & Send). `ho_approval_signature` — MD Production's
+     * consumption entry + sign-off from step 2a — is left INTACT, so MD
+     * Production does not have to re-enter Fabric Sent/Cons. Plan; they just
+     * re-review the (possibly RAF-updated) numbers and send again. The
+     * Factory Rep signature is untouched either way.
+     *
+     * `director_approval_signature` is cleared back to NULL in the same
+     * update rather than left as a lingering 'Rejected: …' stamp: both
+     * pendingValidateSends() (Report Validation tab) and directorStageGuard()
+     * treat a non-empty value as "already actioned", which would hide the row
+     * from the tab and block the re-opened Validate & Send link. The
+     * rejection itself is still permanently recorded in SubconApprovalLog
+     * below (the Director tab's decision history reads that, not this
+     * column) and the confirmation page shown to the Director still displays
+     * a locally-built signature string.
      */
     public function directorDecline(Request $request, string $token)
     {
@@ -1061,12 +1334,10 @@ class QcApprovalController extends Controller
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
 
         $reset = [
-            'director_approval_signature' => $signature,
-            'ho_approval_signature' => null, // back to MD Production
+            'director_approval_signature' => null, // re-opened, not a terminal stamp — see docblock
         ];
-        // Back to MD Production means redoing BOTH steps of the gate.
         if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_validation_signature')) {
-            $reset['ho_validation_signature'] = null;
+            $reset['ho_validation_signature'] = null; // back to Validate & Send only
         }
 
         try {
@@ -1094,8 +1365,8 @@ class QcApprovalController extends Controller
 
         Log::info('QC director authorization rejected', ['token' => $token, 'project_id' => $row->project_id ?? null, 'reason' => $reason]);
 
-        // Workflow state changed (HO signature cleared + director stamp) →
-        // re-render the shared document so nothing keeps showing the old HO sig.
+        // Workflow state changed (validation cleared) → re-render the shared
+        // document so nothing keeps showing the stale validation state.
         $this->refreshVerifiedDoc($row);
 
         [$subcon, , $productionGroup] = $this->subconContext($row);
@@ -1107,18 +1378,18 @@ class QcApprovalController extends Controller
             'decision' => 'declined',
             'actor' => $directorActor,
             'source' => $request->user() ? 'portal' : 'email',
-            'note' => 'Director rejection recorded — back to MD Production.'.($reason !== '' ? ' Reason: '.$reason : ''),
+            'note' => 'Director rejection recorded — back to Report Validation.'.($reason !== '' ? ' Reason: '.$reason : ''),
         ]);
 
-        // Re-open stage 2: send MD Production the Final Approval link again,
-        // carrying the Director's reason.
-        $this->sendHoApprovalRequest($token, $row, $reason !== ''
+        // Re-open step 2b only: send MD Production the Validate & Send link
+        // again (NOT the Review & Approve form), carrying the Director's reason.
+        $this->sendValidateSendRequest($token, $row, $directorActor, $reason !== ''
             ? 'Rejected by the Director — reason: '.$reason
-            : 'Rejected by the Director. Please review and re-approve.');
+            : 'Rejected by the Director. Please re-validate and send again.');
 
         return view('qc.approval-result', [
             'state' => 'rejected',
-            'message' => 'Director rejection recorded. MD Production has been asked to review again.',
+            'message' => 'Director rejection recorded. MD Production has been asked to re-validate and send again.',
             'signature' => $signature,
         ]);
     }
@@ -1137,7 +1408,7 @@ class QcApprovalController extends Controller
             return view('qc.approval-result', [
                 'state' => $rejected ? 'rejected' : 'already',
                 'message' => $rejected
-                    ? 'This inspection has been rejected by the Director and sent back to MD Production.'
+                    ? 'This inspection has been rejected by the Director and sent back to Report Validation.'
                     : 'This inspection has already received Director authorization.',
                 'signature' => $directorSig,
             ]);
@@ -1172,7 +1443,10 @@ class QcApprovalController extends Controller
         // (console "Complete & Sync") have an HO signature but no director
         // stamp. Authorizing one would re-queue a REAL invoice RPA job for an
         // already-invoiced project — treat completed as already actioned.
-        // Projects removed in the QC console need no authorization either.
+        // Projects archived post-completion (removed_completed) need no
+        // authorization either. A plain 'removed' status is just a
+        // device-side archive/hide (see SubconOrder::QMS_INACTIVE_PROJECT_STATUSES)
+        // and must NOT be guarded here — the Director may still need to act.
         try {
             $status = (string) DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', (string) ($row->project_id ?? ''))
@@ -1183,7 +1457,7 @@ class QcApprovalController extends Controller
                     'message' => 'This project is already completed — no Director authorization is needed.',
                 ]);
             }
-            if (str_starts_with($status, 'removed')) {
+            if ($status === 'removed_completed') {
                 return view('qc.approval-result', [
                     'state' => 'invalid',
                     'message' => 'This project has been removed in the QC console — no Director authorization is needed.',
@@ -1291,13 +1565,14 @@ class QcApprovalController extends Controller
     }
 
     /**
-     * Chain step after MD Production's Review & Approve: email the Validate &
-     * Send link (same token — the ho-approve form renders the validate step)
-     * to the MD Production list, so step 2 of the gate is reachable from the
-     * inbox. Same recipient resolution as sendHoApprovalRequest; attaches the
+     * Chain step after MD Production's Review & Approve — OR again after a
+     * Director rejection ($note set) — email the Validate & Send link (same
+     * token — the ho-approve form renders the validate step) to the MD
+     * Production list, so step 2 of the gate is reachable from the inbox.
+     * Same recipient resolution as sendHoApprovalRequest; attaches the
      * just-refreshed verified_doc.
      */
-    private function sendValidateSendRequest(string $token, object $row, string $approvedBy): void
+    private function sendValidateSendRequest(string $token, object $row, string $approvedBy, ?string $note = null): void
     {
         try {
             $to = Setting::getValue('qc_ho_approver_email');
@@ -1320,6 +1595,7 @@ class QcApprovalController extends Controller
                 trim((string) ($subcon->order_number ?? '')),
                 trim((string) ($productionGroup ?? '')),
             ])->filter()->implode(' — ');
+            $subject = ($note !== null ? 'Re-validation needed: Validate & Send Approval' : 'Validation needed: Validate & Send Approval').($ref !== '' ? ' — '.$ref : '');
 
             // One job per recipient: each link carries the recipient's address
             // (`as`) so the send is attributed to the person who clicked.
@@ -1327,7 +1603,7 @@ class QcApprovalController extends Controller
                 \App\Jobs\SendQcNotificationEmail::dispatch([
                     'view' => 'emails.qc-validate-send',
                     'recipients' => [$recipient],
-                    'subject' => 'Validation needed: Validate & Send Approval'.($ref !== '' ? ' — '.$ref : ''),
+                    'subject' => $subject,
                     'projectId' => $row->project_id ?? null,
                     'attachmentName' => 'packaging-inspection-'.($subcon->order_number ?? 'inspection'),
                     'viewData' => [
@@ -1338,6 +1614,7 @@ class QcApprovalController extends Controller
                         'orderNumber' => $subcon->order_number ?? null,
                         'remarks' => $subcon->remarks ?? null,
                         'approvedBy' => $approvedBy,
+                        'note' => $note,
                     ],
                 ]);
             }
@@ -1372,13 +1649,38 @@ class QcApprovalController extends Controller
                 return;
             }
 
-            [$subcon, , $productionGroup] = $this->subconContext($row);
+            [$subcon, $totalCut, $productionGroup] = $this->subconContext($row);
+
+            // Same per-size cutting/production + fabric consumption detail shown
+            // on the review page, condensed into the email itself so the
+            // Director sees the full picture without opening the link.
+            // Best-effort: VSM may be unreachable.
+            $production = app(SubconProductionService::class);
+            $fabricLines = $subcon ? $production->fabricLinesWithData($subcon) : [];
+            $productionGroups = [];
+            $cuttingReports = collect();
+            if ($subcon) {
+                try {
+                    $productionGroups = $production->forPo($subcon->order_number);
+                } catch (\Throwable $e) {
+                    report($e);
+                }
+                $cuttingReports = \App\Models\SubconCuttingReport::where('order_id', $subcon->id)->get()->keyBy('prod_id');
+            }
 
             $ref = collect([
                 trim((string) ($subcon->title ?? '')),
                 trim((string) ($subcon->order_number ?? '')),
                 trim((string) ($productionGroup ?? '')),
             ])->filter()->implode(' — ');
+
+            // Same figure the Invoice/Deduction RPA will actually queue on
+            // authorization — lets the Director see upfront whether this
+            // inspection carries a deduction before opening the form.
+            $deductionTotal = app(RpaQueueService::class)->deductionTotal(
+                (string) ($row->project_id ?? ''),
+                $row->session_id ?? null
+            );
 
             // One job per recipient: each link carries the recipient's address
             // (`as`) so the authorization is attributed to the person who clicked.
@@ -1396,12 +1698,61 @@ class QcApprovalController extends Controller
                         'projectId' => $row->project_id ?? null,
                         'productionGroup' => $productionGroup,
                         'orderNumber' => $subcon->order_number ?? null,
-                        'remarks' => $subcon->remarks ?? null,
+                        'vendorRemarks' => $subcon->remarks ?? null,
+                        'qcRemarks' => $row->remarks ?? null,
+                        'hoRemarks' => $row->ho_remarks ?? null,
+                        'deductionTotal' => $deductionTotal,
+                        'totalCut' => $totalCut,
+                        'fabricLines' => $fabricLines,
+                        'productionGroups' => $productionGroups,
+                        'cuttingReports' => $cuttingReports,
                     ],
                 ]);
             }
 
             Log::info('QC director approval email queued', ['token' => $token, 'to' => $recipients]);
+
+            // WhatsApp mirror of the same request — on top of the email, never
+            // instead of it. Paired by index with the email recipients so the
+            // common one-phone-per-director case still attributes the click
+            // (`as`) correctly; an unpaired phone (more phones configured than
+            // emails) falls back to the first configured director email rather
+            // than going unattributed — a phone-link approval must still record
+            // a real email as the signature reference, never the phone number
+            // itself or a generic role label when a real email is known.
+            $phones = \App\Services\WhatsAppNotificationService::parsePhoneList(
+                (string) Setting::getValue('qc_director_approver_phone', '')
+            );
+            if (! empty($phones)) {
+                $subject = 'Director Authorization Needed'.($ref !== '' ? ' — '.$ref : '');
+                foreach ($phones as $i => $phone) {
+                    $recipient = $recipients[$i] ?? ($recipients[0] ?? null);
+                    // ONE link — the review page itself carries both Authorize
+                    // & Sign and Reject actions (qc/director-approval-form.blade.php),
+                    // so there is no separate decline URL to send here.
+                    $reviewUrl = route('qc.director-approve', array_filter(['token' => $token, 'as' => $recipient]));
+                    $dedLine = $deductionTotal > 0
+                        ? 'Deduction: Rp '.number_format($deductionTotal, 0, ',', '.')
+                        : 'Deduction: None';
+                    $cutLine = 'Cutting Qty: '.number_format($totalCut).' pcs';
+                    $hasRemarks = trim((string) ($subcon->remarks ?? '')) !== ''
+                        || trim((string) ($row->remarks ?? '')) !== ''
+                        || trim((string) ($row->ho_remarks ?? '')) !== '';
+                    $remarksLine = 'Remarks: '.($hasRemarks ? 'Yes — see review page' : 'None');
+
+                    $message = self::WA_CHANNEL_TAG."\n"
+                        ."*{$subject}*\n"
+                        ."This Final inspection official report needs your final authorization.\n"
+                        .$cutLine."\n"
+                        .$dedLine."\n"
+                        .$remarksLine."\n\n"
+                        ."Review & Authorize: {$reviewUrl}\n"
+                        .'(Full cutting-per-size, consumption breakdown and remarks are on that page.)';
+
+                    \App\Jobs\SendWhatsAppNotification::dispatch($phone, $message);
+                }
+                Log::info('QC director approval WhatsApp queued', ['token' => $token, 'to' => $phones]);
+            }
         } catch (\Throwable $e) {
             Log::error('QC director approval email failed', ['token' => $token, 'error' => $e->getMessage()]);
         }
@@ -1480,7 +1831,8 @@ class QcApprovalController extends Controller
             if (trim((string) $director) === '') {
                 $director = $ho;
             }
-            foreach ([$ho, $director] as $list) {
+            $qcHead = Setting::getValue('qc_head_notification_email');        // QC Head — notification only
+            foreach ([$ho, $director, $qcHead] as $list) {
                 foreach (preg_split('/[,;]+/', (string) $list) as $e) {
                     $recipients->push(trim($e));
                 }
