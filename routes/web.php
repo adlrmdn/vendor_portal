@@ -106,6 +106,8 @@ Route::middleware(['auth'])->prefix('finance/admin')->name('finance.admin.')->gr
     Route::get('/dashboard', [FinanceAdminController::class, 'dashboard'])->name('dashboard');
     Route::get('/pending-payment', [FinanceAdminController::class, 'pendingPayment'])->name('pending-payment');
     Route::get('/pending-payment/export', [FinanceAdminController::class, 'pendingPaymentExport'])->name('pending-payment.export');
+    Route::get('/fabric-delivery', [FinanceAdminController::class, 'fabricDelivery'])->name('fabric-delivery');
+    Route::get('/fabric-delivery/export', [FinanceAdminController::class, 'fabricDeliveryExport'])->name('fabric-delivery.export');
     Route::get('/invoices', [FinanceAdminController::class, 'invoices'])->name('invoices');
     Route::get('/debit-notes', [FinanceAdminController::class, 'debitNotes'])->name('debit-notes');
     Route::post('/checks/{id}/toggle', [FinanceAdminController::class, 'toggleCheck'])->name('checks.toggle');

@@ -66,6 +66,16 @@ class User extends Authenticatable
         return $this->role === 'subcon_vendor';
     }
 
+    public function isFinanceAdmin()
+    {
+        return $this->role === 'finance_admin';
+    }
+
+    public function hasFinanceAccess()
+    {
+        return in_array($this->role, ['admin', 'finance_admin']);
+    }
+
     public function isFabricSide()
     {
         return in_array($this->role, ['admin', 'fabric_admin', 'fabric_vendor']);

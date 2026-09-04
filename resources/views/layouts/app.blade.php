@@ -297,6 +297,8 @@
             @include('layouts.subcon-admin')
         @elseif(auth()->user()->isSubconVendor())
             @include('layouts.subcon-vendor')
+        @elseif(auth()->user()->isFinanceAdmin())
+            @include('layouts.finance-admin')
         @endif
     @else
         <!-- Guest / standalone content -->
