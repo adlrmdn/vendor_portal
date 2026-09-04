@@ -110,6 +110,7 @@ Route::middleware(['auth'])->prefix('finance/admin')->name('finance.admin.')->gr
     Route::get('/fabric-delivery/export', [FinanceAdminController::class, 'fabricDeliveryExport'])->name('fabric-delivery.export');
     Route::get('/invoices', [FinanceAdminController::class, 'invoices'])->name('invoices');
     Route::get('/debit-notes', [FinanceAdminController::class, 'debitNotes'])->name('debit-notes');
+    Route::post('/debit-notes/retry-waiting', [FinanceAdminController::class, 'retryAllWaitingDebitNotes'])->name('debit-notes.retry-waiting');
     Route::post('/checks/{id}/toggle', [FinanceAdminController::class, 'toggleCheck'])->name('checks.toggle');
     Route::get('/report/{rpaType}/{id}', [FinanceAdminController::class, 'report'])->name('report');
 });

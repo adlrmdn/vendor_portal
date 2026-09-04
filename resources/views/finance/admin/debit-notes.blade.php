@@ -11,7 +11,12 @@
 @section('content')
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h4 class="mb-0"><i class="fas fa-file-circle-minus me-2"></i>Debit Notes</h4>
-    <span class="text-muted small">As of {{ now('Asia/Jakarta')->format('d M Y H:i') }} WIB &mdash; {{ $rows->total() }} total</span>
+    <div class="d-flex align-items-center gap-3">
+        <button type="button" id="retry-all-waiting" class="btn btn-sm btn-outline-warning">
+            <i class="fas fa-rotate-right me-1"></i>Retry All Waiting
+        </button>
+        <span class="text-muted small">As of {{ now('Asia/Jakarta')->format('d M Y H:i') }} WIB &mdash; {{ $rows->total() }} total</span>
+    </div>
 </div>
 
 <form method="GET" action="{{ route('finance.admin.debit-notes') }}" class="card border-0 shadow-sm mb-3">
@@ -141,6 +146,34 @@
 <script>
     (function () {
         const toggleUrlBase = "{{ url('/finance/admin/checks') }}";
+
+        const retryAllBtn = document.getElementById('retry-all-waiting');
+        if (retryAllBtn) {
+            retryAllBtn.addEventListener('click', function () {
+                if (!confirm('Retry all debit notes still stuck in "Waiting"? This sets them back to Pending so the RPA bot picks them up again.')) {
+                    return;
+                }
+
+                retryAllBtn.disabled = true;
+
+                fetch("{{ route('finance.admin.debit-notes.retry-waiting') }}", {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                        'Accept': 'application/json',
+                    },
+                })
+                    .then(response => response.json())
+                    .then(data => {
+                        alert((data.retried || 0) + ' debit note(s) queued for retry.');
+                        window.location.reload();
+                    })
+                    .catch(() => {
+                        alert('Failed to retry. Please try again.');
+                        retryAllBtn.disabled = false;
+                    });
+            });
+        }
 
         document.querySelectorAll('.finance-check-toggle').forEach(function (btn) {
             btn.addEventListener('click', function () {

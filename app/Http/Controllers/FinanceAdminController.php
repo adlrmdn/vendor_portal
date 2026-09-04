@@ -221,12 +221,13 @@ class FinanceAdminController extends Controller
      */
     public function toggleCheck(Request $request, int $id)
     {
-        $row = DB::connection('rpa')->table('rpa_queues')->where('id', $id)->first(['id', 'status', 'checked']);
+        $row = DB::connection('rpa')->table('rpa_queues')->where('id', $id)->first(['id', 'status', 'checked', 'rpa_type', 'entity_id']);
 
         if (! $row) {
             abort(404);
         }
 
+        $wasChecked = (bool) $row->checked;
         $forcedComplete = false;
 
         if ($row->status === 'completed') {
@@ -256,6 +257,10 @@ class FinanceAdminController extends Controller
             ]);
         }
 
+        if ($newValue && ! $wasChecked && $row->rpa_type === 'invoice') {
+            $this->retryWaitingDeduction($row->entity_id);
+        }
+
         if ($newValue) {
             FinanceRpaCheck::updateOrCreate(
                 ['rpa_queue_id' => $id],
@@ -273,6 +278,45 @@ class FinanceAdminController extends Controller
             'checked' => $newValue,
             'forced_complete' => $forcedComplete,
         ]);
+    }
+
+    /**
+     * Checking off an invoice signals its sibling debit note (same
+     * entity_id/packaging project) is ready to be chased again rather than
+     * sitting idle: a deduction row still stuck in 'waiting' is bumped back
+     * to 'pending' so the external RPA bot retries it on its next pass,
+     * instead of Finance having to fall back to `rpa:reconcile-po --fix`.
+     * Deliberately scoped to 'waiting' only — 'failed'/'processing' rows are
+     * left alone, since those need their own investigation, not a blind
+     * retry.
+     */
+    private function retryWaitingDeduction(?string $entityId): void
+    {
+        if ($entityId === null || $entityId === '') {
+            return;
+        }
+
+        DB::connection('rpa')->table('rpa_queues')
+            ->where('entity_id', $entityId)
+            ->where('rpa_type', 'deduction')
+            ->where('status', 'waiting')
+            ->update(['status' => 'pending', 'updated_at' => now()]);
+    }
+
+    /**
+     * Bulk version of retryWaitingDeduction() for the "Retry all waiting"
+     * button on the Debit Notes tab — bumps every deduction row still stuck
+     * in 'waiting' back to 'pending' so the RPA bot retries the lot on its
+     * next pass, rather than Finance reaching for `rpa:reconcile-po --fix`.
+     */
+    public function retryAllWaitingDebitNotes()
+    {
+        $count = DB::connection('rpa')->table('rpa_queues')
+            ->where('rpa_type', 'deduction')
+            ->where('status', 'waiting')
+            ->update(['status' => 'pending', 'updated_at' => now()]);
+
+        return response()->json(['retried' => $count]);
     }
 
     /**
