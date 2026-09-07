@@ -69,6 +69,24 @@
             </div>
 
             <div class="col-md-3">
+                <a href="{{ route('vendor.purchase-orders', ['status' => 'processing']) }}" class="text-decoration-none">
+                    <div class="card stat-card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <h6 class="card-subtitle mb-2 text-muted">Processing Items</h6>
+                                    <h3 class="card-title mb-0 text-dark">{{ $stats['processing_items'] ?? 0 }}</h3>
+                                </div>
+                                <div class="text-info">
+                                    <i class="fas fa-cogs fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+            </div>
+
+            <div class="col-md-3">
                 <a href="{{ route('vendor.purchase-orders', ['status' => 'completed']) }}" class="text-decoration-none">
                     <div class="card stat-card">
                         <div class="card-body">
@@ -84,22 +102,6 @@
                         </div>
                     </div>
                 </a>
-            </div>
-
-            <div class="col-md-3">
-                <div class="card stat-card">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <h6 class="card-subtitle mb-2 text-muted">Total POs</h6>
-                                <h3 class="card-title mb-0">{{ $recentOrders->count() ?? 0 }}</h3>
-                            </div>
-                            <div class="text-info">
-                                <i class="fas fa-file-invoice fa-2x"></i>
-                            </div>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
 

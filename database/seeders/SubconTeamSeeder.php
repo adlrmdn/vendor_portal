@@ -22,6 +22,8 @@ class SubconTeamSeeder extends Seeder
         'riena@megaputragarment.co.id',
         'dian.winarni@megaputragarment.co.id',
         'ika@megaputragarment.co.id',
+        'yosua@megaputragarment.co.id',
+        'melih@megaputragarment.co.id',
         'luki.rusli@megaperintis.co.id', // Director
         'adil.ramadhan@megaperintis.co.id', // Admin — director-flow testing
     ];

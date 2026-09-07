@@ -29,8 +29,18 @@
     <div class="wrap">
         <div class="card">
             <span class="tag">Approval Needed</span>
+            @if($isPartial ?? false)
+                <span class="tag" style="background:#e8590c;">Partial</span>
+            @endif
             <h2>{{ $gateLabel }}</h2>
             <p style="margin:0;color:#495057;">A subcontractor has submitted the {{ strtolower($gateLabel) }} for your review.</p>
+
+            @if($isPartial ?? false)
+                <div style="margin:14px 0 0; padding:12px 14px; background:#fff4e6; border:1px solid #ffa94d; border-radius:8px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:#a04a00; margin-bottom:4px;">Partial cutting report</div>
+                    <div style="font-size:13px; color:#495057;">The vendor flagged this submission as <strong>partial</strong>. After approval the work order stays at the cutting-report stage so the vendor can submit the remaining quantities; it moves to gramasi only when a final (non-partial) report is approved.</div>
+                </div>
+            @endif
 
             <table class="meta">
                 <tr><td class="k">Work Order</td><td><strong>{{ $order->order_number }}</strong></td></tr>

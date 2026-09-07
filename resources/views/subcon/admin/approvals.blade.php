@@ -18,6 +18,12 @@
     </div>
 </div>
 
+@include('subcon.partials.table-search', [
+    'route' => route('subcon.admin.approvals'),
+    'search' => $search,
+    'placeholder' => 'Search work order, vendor, style, production group…',
+])
+
 <div class="card">
     <div class="card-body p-0">
         <div class="table-responsive">
@@ -44,6 +50,9 @@
                                 <span class="badge bg-{{ $gate === 'gramasi' ? 'info' : 'warning' }}-subtle text-{{ $gate === 'gramasi' ? 'info' : 'warning' }} border border-{{ $gate === 'gramasi' ? 'info' : 'warning' }} border-opacity-25">
                                     {{ $gate === 'gramasi' ? 'Gramasi & Blister' : 'Cutting Report' }}
                                 </span>
+                                @if($gate === 'cutting' && $order->cutting_partial)
+                                    <span class="badge text-bg-danger">Partial</span>
+                                @endif
                             </td>
                             <td class="small text-muted">{{ $order->updated_at?->diffForHumans() }}</td>
                             <td class="text-end pe-4">
@@ -62,12 +71,13 @@
                                             <button type="submit" class="btn btn-sm btn-success"><i class="fas fa-check me-1"></i> Approve</button>
                                         </form>
                                     @endif
-                                    <form method="POST" action="{{ route('subcon.admin.orders.decline', $order->id) }}" class="m-0"
-                                          onsubmit="return confirm('Reject the {{ $gate === 'gramasi' ? 'gramasi & blister capacity' : 'cutting report' }} for {{ $order->order_number }}?\n\nThis returns the work order to the vendor for changes. Press OK only if you are sure.');">
-                                        @csrf
-                                        <input type="hidden" name="gate" value="{{ $gate }}">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="fas fa-times me-1"></i> Reject</button>
-                                    </form>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#rejectReasonModal"
+                                            data-action="{{ route('subcon.admin.orders.decline', $order->id) }}"
+                                            data-gate="{{ $gate }}"
+                                            data-order-number="{{ $order->order_number }}"
+                                            data-gate-label="{{ $gate === 'gramasi' ? 'gramasi & blister capacity' : 'cutting report' }}">
+                                        <i class="fas fa-times me-1"></i> Reject
+                                    </button>
                                 </div>
                             </td>
                         </tr>
@@ -116,7 +126,7 @@
                         <tr>
                             <td colspan="5" class="text-center text-muted py-5">
                                 <i class="fas fa-check-double fa-2x mb-3 text-success opacity-50 d-block"></i>
-                                No approvals pending. You're all caught up.
+                                {{ $search !== '' ? 'No pending approvals match "'.$search.'".' : "No approvals pending. You're all caught up." }}
                             </td>
                         </tr>
                     @endif
@@ -129,4 +139,40 @@
 @if($orders->hasPages())
     <div class="mt-3">{{ $orders->links() }}</div>
 @endif
+
+{{-- Shared reject-reason modal for the cutting/gramasi rows above — the
+     reason is required and shown to the vendor until they resubmit that
+     same gate. --}}
+<div class="modal fade" id="rejectReasonModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="POST" id="rejectReasonForm" class="modal-content">
+            @csrf
+            <input type="hidden" name="gate" id="rejectReasonGate">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-triangle-exclamation text-danger me-2"></i>Reject <span id="rejectReasonOrderNumber"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">This returns the <span id="rejectReasonGateLabel"></span> to the vendor for changes. The reason you enter is shown to the vendor.</p>
+                <label for="rejectReasonText" class="form-label small fw-semibold">Reason <span class="text-danger">*</span></label>
+                <textarea name="reason" id="rejectReasonText" rows="3" maxlength="1000" required class="form-control form-control-sm" placeholder="What needs to change before resubmitting?"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-danger"><i class="fas fa-times me-1"></i> Confirm Rejection</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+document.getElementById('rejectReasonModal').addEventListener('show.bs.modal', function (event) {
+    const btn = event.relatedTarget;
+    document.getElementById('rejectReasonForm').action = btn.getAttribute('data-action');
+    document.getElementById('rejectReasonGate').value = btn.getAttribute('data-gate');
+    document.getElementById('rejectReasonOrderNumber').textContent = btn.getAttribute('data-order-number');
+    document.getElementById('rejectReasonGateLabel').textContent = btn.getAttribute('data-gate-label');
+    document.getElementById('rejectReasonText').value = '';
+});
+</script>
 @endsection

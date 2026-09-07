@@ -17,6 +17,14 @@
         'CostEstimated', 'Created'      => 'secondary',
         default                         => 'secondary',
     };
+    // Cut Plan total: the fabric-bottleneck cutt_plan ((fabric_sent - retur_kain) /
+    // consumption_plan, per SubconConsumptionService) across the order's fabric
+    // lines. A garment needs
+    // ALL its fabrics, so the achievable plan is capped by the scarcest one — take the
+    // smallest cutt_plan, never sum them. Null (not zero) until at least one fabric's
+    // consumption has been entered at cutting approval, so the column stays "—" instead
+    // of showing a misleading 0.
+    $cuttPlanTotal = collect($fabricLines ?? [])->pluck('cutt_plan')->filter(fn ($v) => $v !== null)->min();
 @endphp
 
 <style>
@@ -143,11 +151,14 @@
     @php
         $totalQty = collect($g['lines'])->sum('Qty');
         $totalCuttingQty = collect($g['lines'])->sum(fn($line) => $cuttingReports->get($line->ProdId)?->cutting_qty ?? 0);
-        // Balance = Qty Cut − Order Qty: under-cut is negative, over-cut positive.
-        $totalBalance = $totalCuttingQty - $totalQty;
+        // Balance = Qty Cut − Cut Plan once Cut Plan is available, else Qty Cut − Order Qty.
+        // Under-cut is negative, over-cut positive.
+        $totalBalanceBase = $cuttPlanTotal !== null ? $cuttPlanTotal : $totalQty;
+        $totalBalance = $totalCuttingQty - $totalBalanceBase;
         $anyCut = $totalCuttingQty > 0;
         $totalBalClass = ! $anyCut ? 'text-muted' : ($totalBalance < 0 ? 'text-danger' : 'text-success');
-        $totalBalText = ! $anyCut ? '—' : ($totalBalance > 0 ? '+'.number_format($totalBalance) : number_format($totalBalance));
+        $pcsSuffix = ' <span class="text-muted small fw-normal">pcs</span>';
+        $totalBalText = ! $anyCut ? '—' : ($totalBalance > 0 ? '+'.number_format($totalBalance) : number_format($totalBalance)).$pcsSuffix;
     @endphp
     <div class="subcon-order-card mb-4">
         <!-- Sizing Table Area -->
@@ -161,7 +172,8 @@
                                 <th style="width: 150px;">PRD ID</th>
                                 <th style="width: 150px;">Status</th>
                                 <th class="text-end" style="width: 120px;">Order Qty</th>
-                                <th class="text-end" style="width: 120px;">Qty Cut</th>
+                                <th class="text-end" style="width: 110px;">Cut Plan</th>
+                                <th class="text-end" style="width: 120px;">Cut Qty</th>
                                 <th class="text-end" style="width: 110px;">Balance</th>
                                 <th class="text-end pe-4" style="width: 130px;">Gramasi (g)</th>
                             </tr>
@@ -172,9 +184,17 @@
                                     $orderQty = (int) $line->Qty;
                                     $cutQty = $cuttingReports->get($line->ProdId)?->cutting_qty;
                                     $hasCut = $cutQty !== null;
-                                    $rowBalance = (int) ($cutQty ?? 0) - $orderQty; // cut − order
+                                    // Size's share of the plan, prorated by its share of the order qty:
+                                    // orderQty / totalOrderQty * cuttPlanTotal.
+                                    $cutPlanQty = ($cuttPlanTotal !== null && $totalQty > 0)
+                                        ? (int) round($orderQty / $totalQty * $cuttPlanTotal)
+                                        : null;
+                                    // Balance measures against Cut Plan once it's available (the real
+                                    // ceiling for this size); falls back to Order Qty until then.
+                                    $balanceBase = $cutPlanQty !== null ? $cutPlanQty : $orderQty;
+                                    $rowBalance = (int) ($cutQty ?? 0) - $balanceBase;
                                     $balClass = ! $hasCut ? 'text-muted' : ($rowBalance < 0 ? 'text-danger' : 'text-success');
-                                    $balText = ! $hasCut ? '—' : ($rowBalance > 0 ? '+'.number_format($rowBalance) : number_format($rowBalance));
+                                    $balText = ! $hasCut ? '—' : ($rowBalance > 0 ? '+'.number_format($rowBalance) : number_format($rowBalance)).$pcsSuffix;
                                 @endphp
                                 <tr>
                                     @if($editCutting || $editGramasi)
@@ -187,27 +207,47 @@
                                     <td><span class="status-indicator status-indicator-{{ $prodBadge($line->ProdStatus) }}">{{ $line->ProdStatus ?: '—' }}</span></td>
                                     <td class="text-end fw-semibold text-dark">{{ number_format($orderQty) }} <span class="text-muted small fw-normal">pcs</span></td>
 
-                                    {{-- Qty Cut --}}
+                                    {{-- Cut Plan: this size's share of the fabric-bottleneck plan total --}}
+                                    <td class="text-end {{ $cutPlanQty !== null ? 'fw-semibold text-dark' : 'text-muted' }}">
+                                        @if($cutPlanQty !== null)
+                                            {{ number_format($cutPlanQty) }} <span class="text-muted small fw-normal">pcs</span>
+                                        @else
+                                            —
+                                        @endif
+                                    </td>
+
+                                    {{-- Cut Qty --}}
                                     @if($editCutting)
                                         <td class="text-end">
+                                            {{-- QoL: select the prefilled 0 on focus (typing replaces it instead of
+                                                 producing '60'/'06') and strip accidental leading zeros. --}}
                                             <input type="number" name="reports[{{ $loop->parent->index }}_{{ $loop->index }}][cutting_qty]"
                                                    class="form-control form-control-sm modern-input d-inline-block cutting-qty-input" style="width: 90px;"
                                                    value="{{ $cutQty ?? '' }}" min="0" step="1"
                                                    data-order-qty="{{ $orderQty }}"
+                                                   data-cut-plan="{{ $cutPlanQty ?? '' }}"
                                                    data-balance-target="bal_{{ $loop->parent->index }}_{{ $loop->index }}"
+                                                   onfocus="if(!parseFloat(this.value))this.select()"
+                                                   oninput="if(/^0\d/.test(this.value))this.value=this.value.replace(/^0+(?=\d)/,'')"
                                                    inputmode="numeric" placeholder="0">
                                         </td>
                                     @else
                                         <td class="text-end fw-semibold text-primary">
-                                            {{ $cutQty !== null ? number_format($cutQty) : '—' }}
+                                            @if($cutQty !== null)
+                                                {{ number_format($cutQty) }} <span class="text-muted small fw-normal">pcs</span>
+                                            @else
+                                                —
+                                            @endif
                                         </td>
                                     @endif
 
-                                    {{-- Balance (Qty Cut − Order Qty); shows only once Qty Cut is entered --}}
+                                    {{-- Balance: Cut Qty − Cut Plan once Cut Plan is available, else the
+                                         original Cut Qty − Order Qty. Shows only once Qty Cut is entered --}}
                                     <td class="text-end">
                                         <span id="bal_{{ $loop->parent->index }}_{{ $loop->index }}"
                                               class="balance-cell fw-semibold {{ $balClass }}"
-                                              data-order-qty="{{ $orderQty }}">{{ $balText }}</span>
+                                              data-order-qty="{{ $orderQty }}"
+                                              data-cut-plan="{{ $cutPlanQty ?? '' }}">{!! $balText !!}</span>
                                     </td>
 
                                     {{-- Gramasi (always grams) --}}
@@ -215,6 +255,8 @@
                                         <td class="text-end pe-4">
                                             <input type="number" step="0.01" name="reports[{{ $loop->parent->index }}_{{ $loop->index }}][gramasi]"
                                                    class="form-control form-control-sm modern-input d-inline-block gramasi-input" style="width: 72px;"
+                                                   onfocus="if(!parseFloat(this.value))this.select()"
+                                                   oninput="if(/^0\d/.test(this.value))this.value=this.value.replace(/^0+(?=\d)/,'')"
                                                    value="{{ $cuttingReports->get($line->ProdId)?->gramasi ?? '' }}" min="0" inputmode="decimal" placeholder="0.00">
                                             <span class="text-muted small fw-normal ms-1">g</span>
                                         </td>
@@ -236,11 +278,20 @@
                                 <td></td>
                                 <td></td>
                                 <td class="text-end text-dark">{{ number_format($totalQty) }} <span class="text-muted small fw-normal">pcs</span></td>
+                                <td class="text-end {{ $cuttPlanTotal !== null ? 'text-dark' : 'text-muted' }}">
+                                    @if($cuttPlanTotal !== null)
+                                        {{ number_format($cuttPlanTotal) }} <span class="text-muted small fw-normal">pcs</span>
+                                    @else
+                                        —
+                                    @endif
+                                </td>
                                 <td class="text-end text-primary">
                                     <span id="total-cutting-qty-val" class="fw-bold">{{ number_format($totalCuttingQty) }}</span> <span class="text-muted small fw-normal">pcs</span>
                                 </td>
                                 <td class="text-end">
-                                    <span id="total-balance-val" class="fw-bold {{ $totalBalClass }}">{{ $totalBalText }}</span>
+                                    <span id="total-balance-val" class="fw-bold {{ $totalBalClass }}"
+                                          data-cut-plan-total="{{ $cuttPlanTotal ?? '' }}"
+                                          data-total-order-qty="{{ $totalQty }}">{!! $totalBalText !!}</span>
                                 </td>
                                 <td class="pe-4"></td>
                             </tr>
@@ -273,42 +324,51 @@ document.addEventListener('DOMContentLoaded', function() {
     // the stage form via form="stageForm".
     const submitBtn = document.querySelector('button[type="submit"][form="stageForm"]');
 
-    // Balance = Qty Cut − Order Qty. Under-cut negative, over-cut positive.
+    // Balance = Qty Cut − Cut Plan once Cut Plan is available, else Qty Cut − Order
+    // Qty. Under-cut negative, over-cut positive.
     function balClass(b, has) {
         if (!has) return 'text-muted';
         return b < 0 ? 'text-danger' : 'text-success';
     }
     function balText(b, has) {
         if (!has) return '—';
-        return (b > 0 ? '+' : '') + fmt.format(b);
+        return (b > 0 ? '+' : '') + fmt.format(b) + ' <span class="text-muted small fw-normal">pcs</span>';
+    }
+    function parseOrNull(raw) {
+        return (raw !== '' && raw !== undefined) ? parseInt(raw) : null;
     }
 
+    const cutPlanTotal = totalBalEl ? parseOrNull(totalBalEl.dataset.cutPlanTotal) : null;
+    const totalOrderQty = totalBalEl ? (parseOrNull(totalBalEl.dataset.totalOrderQty) || 0) : 0;
+
     function recompute() {
-        let totalOrder = 0, totalCut = 0, anyFilled = false;
+        let totalCut = 0, anyFilled = false;
 
         inputs.forEach(input => {
             const orderQty = parseInt(input.dataset.orderQty) || 0;
+            const cutPlan = parseOrNull(input.dataset.cutPlan);
+            const balanceBase = cutPlan !== null ? cutPlan : orderQty;
             const raw = input.value.trim();
             const has = raw !== '';
             const cut = parseInt(raw) || 0;
             if (has) anyFilled = true;
-            totalOrder += orderQty;
             totalCut += cut;
 
-            const balance = cut - orderQty;
+            const balance = cut - balanceBase;
 
             const target = document.getElementById(input.dataset.balanceTarget);
             if (target) {
-                target.textContent = balText(balance, has);
+                target.innerHTML = balText(balance, has);
                 target.className = 'balance-cell fw-semibold ' + balClass(balance, has);
             }
         });
 
         if (totalCutEl) totalCutEl.textContent = fmt.format(totalCut);
         if (totalBalEl) {
-            const tb = totalCut - totalOrder;
+            const totalBalanceBase = cutPlanTotal !== null ? cutPlanTotal : totalOrderQty;
+            const tb = totalCut - totalBalanceBase;
             const has = totalCut > 0;
-            totalBalEl.textContent = balText(tb, has);
+            totalBalEl.innerHTML = balText(tb, has);
             totalBalEl.className = 'fw-bold ' + balClass(tb, has);
         }
 

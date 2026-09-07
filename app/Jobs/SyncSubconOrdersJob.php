@@ -80,7 +80,7 @@ class SyncSubconOrdersJob implements ShouldQueue
     {
         $base = rtrim((string) env('VSM_SYNC_URL', ''), '/');
         if ($base === '') {
-            return 'VSM sync skipped (not configured).';
+            return 'VSM: not configured.';
         }
 
         $headers = [
@@ -96,7 +96,7 @@ class SyncSubconOrdersJob implements ShouldQueue
             if (! $start->successful()) {
                 Log::warning('VSM sync trigger failed: HTTP '.$start->status());
 
-                return 'VSM refresh skipped (trigger HTTP '.$start->status().').';
+                return 'VSM: trigger failed (HTTP '.$start->status().').';
             }
 
             // Poll until the service reports it is no longer running, or we hit
@@ -109,18 +109,18 @@ class SyncSubconOrdersJob implements ShouldQueue
             } while ($running && time() < $deadline);
 
             if ($running) {
-                return 'VSM still running after timeout; continued with current data.';
+                return 'VSM: timed out, using existing data.';
             }
 
             $result = $status->json('last_result');
 
             return $result === 'success'
-                ? 'VSM refreshed.'
-                : 'VSM refresh reported '.($result ?: 'no result').'; continued anyway.';
+                ? 'VSM: refreshed.'
+                : 'VSM: '.($result ?: 'unknown').'.';
         } catch (\Throwable $e) {
             Log::warning('VSM sync step error: '.$e->getMessage());
 
-            return 'VSM refresh unavailable; continued with current data.';
+            return 'VSM: unavailable.';
         }
     }
 

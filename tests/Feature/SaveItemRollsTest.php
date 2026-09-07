@@ -238,6 +238,53 @@ class SaveItemRollsTest extends TestCase
         $response->assertDownload();
     }
 
+    public function test_partial_shipment_sibling_item_gets_non_colliding_roll_numbers()
+    {
+        // Simulates PoItem::splitToPartialShipment(): a second po_items row for
+        // the same item_number on the same PO, holding the undelivered remainder.
+        $original = $this->makeItem('YD');
+        $original->item_number = 'ITEM-SHARED';
+        $original->save();
+
+        $this->actingAs($this->user)
+            ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('vendor.item.save-rolls', $original->id), [
+                'rolls' => [
+                    ['length_yd' => '50.00'],
+                    ['length_yd' => '30.00'],
+                ],
+            ])->assertRedirect(route('vendor.item.process', $original->id));
+
+        $shadow = new PoItem([
+            'po_id' => $this->po->id,
+            'item_number' => 'ITEM-SHARED',
+            'description' => 'Test Fabric',
+            'batch' => 'BATCH-A-P2',
+            'plm_number' => 'PLM-TEST',
+            'quantity' => 20.0,
+            'unit' => 'YD',
+            'unit_price' => 5.00,
+            'total_price' => 100.00,
+            'status' => 'pending',
+        ]);
+        $shadow->id = (string) Str::uuid();
+        $shadow->save();
+
+        $this->actingAs($this->user)
+            ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('vendor.item.save-rolls', $shadow->id), [
+                'rolls' => [
+                    ['length_yd' => '20.00'],
+                ],
+            ])->assertRedirect(route('vendor.item.process', $shadow->id));
+
+        $originalNumbers = Roll::where('item_id', $original->id)->pluck('roll_number');
+        $shadowNumbers = Roll::where('item_id', $shadow->id)->pluck('roll_number');
+
+        $this->assertEmpty($originalNumbers->intersect($shadowNumbers), 'sibling po_items must not produce colliding roll_number values');
+        $this->assertSame(['PO-ROLLS-TEST-ITEM-SHARED-003'], $shadowNumbers->all());
+    }
+
     public function test_pcs_item_stores_quantity_in_weight_column()
     {
         $item = $this->makeItem('PCS');

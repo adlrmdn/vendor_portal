@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Setting;
 use App\Models\SubconOrder;
 use App\Models\SubconOrderItem;
 use App\Models\Vendor;
@@ -12,7 +13,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class SyncD365SubconOrders extends Command
@@ -241,6 +242,7 @@ class SyncD365SubconOrders extends Command
             $createdItems = 0;
             $retitled = 0;
             $deletedOrders = 0;
+            $reassigned = 0;
 
             foreach ($poMap as $poNumber => $vendorId) {
                 $h = $poHeaders[$poNumber];
@@ -248,9 +250,15 @@ class SyncD365SubconOrders extends Command
                 // --- 1. Check if Finished ---
                 $isFinished = false;
 
-                // A. Check D365 PurchaseOrderStatus
+                // A. Check D365 PurchaseOrderStatus — only a genuinely terminal
+                // status counts as finished. 'Received' is just goods-receipt on
+                // the procurement side (fabric landed in the warehouse); it says
+                // nothing about whether the subcon CMT paperwork (cutting/gramasi/
+                // labels) is done, and treating it as "finished" here was hard-
+                // deleting (or blocking creation of) orders whose portal workflow
+                // was still active or even mid-approval.
                 $d365Status = $h['PurchaseOrderStatus'] ?? null;
-                if ($d365Status && $d365Status !== 'Backorder') {
+                if ($d365Status && in_array($d365Status, ['Invoiced', 'Canceled'], true)) {
                     $isFinished = true;
                 }
 
@@ -279,12 +287,94 @@ class SyncD365SubconOrders extends Command
                     }
                 }
 
+                // C. Hard override: never call it finished while the QC Console
+                // still has an ACTIVE packaging project on this production group.
+                // D365 procurement status (A) and VSM sewing status (B) both lag
+                // or are simply orthogonal to whether the subcon paperwork
+                // (cutting/gramasi/labels, or the QC Console's own inspection →
+                // Final Approval → Director chain) is actually done — this has
+                // repeatedly caused orders to be hard-deleted (or never created)
+                // while still mid-flow. The console itself is authoritative for
+                // "done": it flips the project to completed/removed/removed_completed
+                // when it's truly finished (SubconOrder::QMS_INACTIVE_PROJECT_STATUSES).
                 if ($isFinished) {
-                    $existsLocal = SubconOrder::where('order_number', $poNumber)->exists();
-                    if ($existsLocal) {
-                        SubconOrder::where('order_number', $poNumber)->delete();
-                        $deletedOrders++;
-                        $this->info("PO {$poNumber} is finished. Deleted/removed from local portal.");
+                    // VSM first: it's the live production-system source of truth for
+                    // grouping (see below), whereas D365's TOC_ProductionGroup is a
+                    // point-in-time mirror that can go stale after a mid-production
+                    // regroup — which would otherwise make this guard miss an active
+                    // QMS project sitting under the group VSM now reports.
+                    $tocPrgForGuard = null;
+                    if (! empty($groups)) {
+                        foreach ($groups as $g) {
+                            if (! empty($g['production_group'])) {
+                                $tocPrgForGuard = $g['production_group'];
+                                break;
+                            }
+                        }
+                    }
+                    if (! $tocPrgForGuard) {
+                        $tocPrgForGuard = $h['TOC_ProductionGroup'] ?? null;
+                    }
+                    if ($tocPrgForGuard && Schema::connection('qms')->hasTable('packaging_projects')) {
+                        $activeProject = DB::connection('qms')->table('packaging_projects')
+                            ->where('production_group', $tocPrgForGuard)
+                            ->whereNotIn('status', SubconOrder::QMS_INACTIVE_PROJECT_STATUSES)
+                            ->exists();
+                        if ($activeProject) {
+                            $isFinished = false;
+                        }
+                    }
+
+                    // D. Second, independent override: an in-flight Final Approval
+                    // (Head Office has signed but the Director hasn't yet cleanly
+                    // closed it — either never reached them, or they rejected it
+                    // for revision, which resets director_approval_signature back
+                    // to null) is unambiguous proof the subcon paperwork isn't
+                    // done. Checked separately from packaging_projects.status
+                    // above because that status has, in practice, not always
+                    // caught this — an order was hard-deleted and silently
+                    // recreated under a new id mid-Director-review, orphaning its
+                    // subcon_fabric_reconciliations (MPG/PO/2606/01345 incident).
+                    if ($isFinished && $tocPrgForGuard
+                        && Schema::connection('qms')->hasTable('packaging_projects')
+                        && Schema::connection('qms')->hasTable('packaging_project_sessions')) {
+                        $projectIds = DB::connection('qms')->table('packaging_projects')
+                            ->where('production_group', $tocPrgForGuard)
+                            ->pluck('project_id');
+                        if ($projectIds->isNotEmpty()) {
+                            $inFlightApproval = DB::connection('qms')->table('packaging_project_sessions')
+                                ->whereIn('project_id', $projectIds)
+                                ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
+                                ->where(function ($q) {
+                                    $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
+                                })
+                                ->exists();
+                            if ($inFlightApproval) {
+                                $isFinished = false;
+                            }
+                        }
+                    }
+                }
+
+                if ($isFinished) {
+                    $existingLocal = SubconOrder::where('order_number', $poNumber)->first();
+                    if ($existingLocal) {
+                        // Aged deletion: a PO looking "finished" doesn't mean the
+                        // subcon paperwork is done — give it a grace period from
+                        // the first time we observe it as finished, so a status
+                        // flip doesn't instantly yank an order that's still being
+                        // worked (or was just approved) before this run.
+                        $agingDays = (int) Setting::getValue('subcon_finished_aging_days', 3);
+                        if (! $existingLocal->d365_finished_detected_at) {
+                            $existingLocal->update(['d365_finished_detected_at' => now()]);
+                            $this->info("PO {$poNumber} looks finished — aging {$agingDays}d before deletion.");
+                        } elseif ($existingLocal->d365_finished_detected_at->lte(now()->subDays($agingDays))) {
+                            $existingLocal->delete();
+                            $deletedOrders++;
+                            $this->info("PO {$poNumber} finished and aged past {$agingDays}d. Deleted/removed from local portal.");
+                        } else {
+                            $this->info("PO {$poNumber} still aging (first seen finished {$existingLocal->d365_finished_detected_at}).");
+                        }
                     } else {
                         $this->info("PO {$poNumber} is finished on D365. Skipping creation.");
                     }
@@ -299,16 +389,16 @@ class SyncD365SubconOrders extends Command
                 $dueDate = isset($h['RequestedDeliveryDate'])
                     ? Carbon::parse($h['RequestedDeliveryDate'])->format('Y-m-d')
                     : null;
-                $style = $styles[$poNumber] ?? null;
-                $title = $style
-                    ?: (! empty($h['VendorOrderReference'])
-                        ? $h['VendorOrderReference']
-                        : ('Work Order '.$poNumber));
                 $distributionId = $poDstMap[$poNumber] ?? null;
 
-                // Resolve Production Group fallback
-                $tocPrg = $h['TOC_ProductionGroup'] ?? null;
-                if (! $tocPrg && ! empty($groups)) {
+                // Resolve Production Group: VSM (production_group_lines, live) wins
+                // over D365's TOC_ProductionGroup header field. The header field is
+                // set once and can silently go stale after a mid-production regroup
+                // in VSM — trusting it over VSM left the local order (and hence the
+                // QC Console's project matching, which keys off VSM's current group)
+                // permanently pinned to a group no one uses anymore.
+                $tocPrg = null;
+                if (! empty($groups)) {
                     foreach ($groups as $g) {
                         if (! empty($g['production_group'])) {
                             $tocPrg = $g['production_group'];
@@ -316,9 +406,29 @@ class SyncD365SubconOrders extends Command
                         }
                     }
                 }
+                if (! $tocPrg) {
+                    $tocPrg = $h['TOC_ProductionGroup'] ?? null;
+                }
+
+                // forPo() came up empty above (typical for a "standalone" CMT
+                // production group with no PLM link — its only other path is a
+                // local subcon_orders lookup, which is empty for a PO not yet
+                // synced). We already know the group from the D365 header though,
+                // so resolve size/style data directly from it — this is what makes
+                // title/sizes_count correct on the very same run that creates the
+                // order, instead of only self-healing on the next sync pass.
+                if (empty($groups) && $tocPrg) {
+                    $groups = $production->forProductionGroup($tocPrg);
+                }
 
                 $summary = $production->summarize($groups);
                 $sizesCount = $summary['size_count'] ?? 0;
+
+                $style = $styles[$poNumber] ?? ($summary['style'] ?? null);
+                $title = $style
+                    ?: (! empty($h['VendorOrderReference'])
+                        ? $h['VendorOrderReference']
+                        : ('Work Order '.$poNumber));
 
                 $order = SubconOrder::firstOrCreate(
                     ['order_number' => $poNumber],
@@ -340,8 +450,23 @@ class SyncD365SubconOrders extends Command
 
                 if ($order->wasRecentlyCreated) {
                     $createdOrders++;
+                    $this->restoreFabricReconciliationFromQms($order);
                 } else {
                     $updates = [];
+                    // D365 can reassign a PO to a different vendor account after
+                    // it was first synced (e.g. a data-entry correction). Since
+                    // vendor_id gates portal visibility, a stale value here
+                    // silently hides the PO from its real vendor while leaving it
+                    // visible to whoever it was originally (wrongly) attached to.
+                    if ($order->vendor_id !== $vendorId) {
+                        Log::warning('Subcon PO vendor reassigned by D365 sync', [
+                            'order_number' => $poNumber,
+                            'from_vendor_id' => $order->vendor_id,
+                            'to_vendor_id' => $vendorId,
+                        ]);
+                        $updates['vendor_id'] = $vendorId;
+                        $reassigned++;
+                    }
                     if ($style && $order->title !== $style) {
                         $updates['title'] = $style;
                         $retitled++;
@@ -354,6 +479,9 @@ class SyncD365SubconOrders extends Command
                     }
                     if ($sizesCount !== $order->sizes_count) {
                         $updates['sizes_count'] = $sizesCount;
+                    }
+                    if ($order->d365_finished_detected_at) {
+                        $updates['d365_finished_detected_at'] = null;
                     }
                     if (! empty($updates)) {
                         $order->update($updates);
@@ -378,10 +506,8 @@ class SyncD365SubconOrders extends Command
                     }
                 }
 
-                // --- 4. Sync Qty Cutting and Gramasi from D365 and Escalate Workflow ---
-                $cuttingFilled = false;
-                $gramasiFilled = false;
-
+                // --- 4. Sync Qty Cutting and Gramasi from D365 (data only — never
+                // touches workflow_stage; see the note below the loop) ---
                 $jobTransService = app(\App\Services\D365JobTransactionService::class);
                 foreach ($groups as $g) {
                     if (empty($g['production_group'])) {
@@ -392,16 +518,19 @@ class SyncD365SubconOrders extends Command
 
                     // Process cutting quantities
                     if (! empty($erpDetails['cutting'])) {
-                        $cuttingFilled = true;
                         foreach ($g['lines'] as $line) {
                             $size = $line->Size;
                             if (isset($erpDetails['cutting'][$size])) {
                                 $qty = $erpDetails['cutting'][$size];
 
+                                // Match on size, not prod_id: D365 can reissue a
+                                // size's ProdId mid-order, and keying on the old
+                                // prod_id would leave it in place and insert a
+                                // duplicate row for the same size.
                                 \App\Models\SubconCuttingReport::updateOrCreate(
-                                    ['order_id' => $order->id, 'prod_id' => $line->ProdId],
+                                    ['order_id' => $order->id, 'size' => $size],
                                     [
-                                        'size' => $size,
+                                        'prod_id' => $line->ProdId,
                                         'cutting_qty' => $qty,
                                     ]
                                 );
@@ -411,7 +540,6 @@ class SyncD365SubconOrders extends Command
 
                     // Process gramasi
                     if (! empty($erpDetails['gramasi'])) {
-                        $gramasiFilled = true;
                         foreach ($g['lines'] as $line) {
                             $size = $line->Size;
                             if (isset($erpDetails['gramasi'][$size])) {
@@ -419,9 +547,9 @@ class SyncD365SubconOrders extends Command
                                 $grams = (float) $erpDetails['gramasi'][$size] * 1000;
 
                                 \App\Models\SubconCuttingReport::updateOrCreate(
-                                    ['order_id' => $order->id, 'prod_id' => $line->ProdId],
+                                    ['order_id' => $order->id, 'size' => $size],
                                     [
-                                        'size' => $size,
+                                        'prod_id' => $line->ProdId,
                                         'gramasi' => $grams,
                                     ]
                                 );
@@ -430,46 +558,30 @@ class SyncD365SubconOrders extends Command
                     }
                 }
 
-                // Escalate workflow if anything filled
-                if ($gramasiFilled) {
-                    $sendEmail = false;
-                    if (! in_array($order->workflow_stage, [SubconOrder::STAGE_WAITING_DISTRIBUTION, SubconOrder::STAGE_LABELS, SubconOrder::STAGE_COMPLETED], true)) {
-                        $order->workflow_stage = SubconOrder::STAGE_WAITING_DISTRIBUTION;
-                        $sendEmail = true;
-                    }
-                    if (empty($order->cutting_approved_at)) {
-                        $order->cutting_approved_at = now();
-                        $order->cutting_approved_by = 'ERP Sync';
-                    }
-                    if (empty($order->gramasi_approved_at)) {
-                        $order->gramasi_approved_at = now();
-                        $order->gramasi_approved_by = 'ERP Sync';
-                    }
-                    $order->save();
-                    if ($sendEmail) {
-                        try {
-                            $recipients = \App\Http\Controllers\SubconApprovalController::labelGeneratorRecipient();
-                            if (! empty($recipients)) {
-                                Mail::to($recipients)->send(new \App\Mail\SubconStageStatusMailable($order, 'gramasi', 'approved'));
-                            }
-                        } catch (\Throwable $e) {
-                            Log::error('Sync Subcon email failed: '.$e->getMessage());
-                        }
-                    }
-                } elseif ($cuttingFilled) {
-                    if (in_array($order->workflow_stage, [SubconOrder::STAGE_CUTTING, SubconOrder::STAGE_CUTTING_REVIEW])) {
-                        $order->workflow_stage = SubconOrder::STAGE_GRAMASI;
-                    }
-                    if (empty($order->cutting_approved_at)) {
-                        $order->cutting_approved_at = now();
-                        $order->cutting_approved_by = 'ERP Sync';
-                    }
-                    $order->save();
-                }
+                // D365 cutting/gramasi values are mirrored onto the local report
+                // above, but the sync must never push the order into the approval
+                // queue itself — only a vendor's actual in-portal submit
+                // (SubconVendorController::submitCuttingReport/submitGramasi) does
+                // that, since that's also where the mandatory fabric
+                // consumption/deduction calc (SubconConsumptionService::persist(),
+                // documented in CLAUDE.md as the merged "cutting = calculate +
+                // approve" gate) happens. Auto-promoting here used to fire a
+                // "pending approval" with no vendor action behind it — and, worse,
+                // if the order had just been declined (reject_gate still set), the
+                // very next sync run would silently bounce it right back into
+                // cutting_review with the same stale data, without the vendor ever
+                // touching it. See [[subcon-approval-silent-spawn]].
             }
 
             DB::commit();
-            $this->info("Synced subcon orders. New orders: $createdOrders, new items: $createdItems, retitled: $retitled, deleted/removed: $deletedOrders.");
+            $changes = array_filter([
+                $createdOrders > 0 ? "$createdOrders new" : null,
+                $createdItems > 0 ? "$createdItems items" : null,
+                $retitled > 0 ? "$retitled retitled" : null,
+                $deletedOrders > 0 ? "$deletedOrders removed" : null,
+                $reassigned > 0 ? "$reassigned reassigned" : null,
+            ]);
+            $this->info('Synced: '.($changes ? implode(', ', $changes).'.' : 'no changes.'));
 
             return Command::SUCCESS;
         } catch (\Exception $e) {
@@ -480,6 +592,68 @@ class SyncD365SubconOrders extends Command
             }
 
             return Command::FAILURE;
+        }
+    }
+
+    /**
+     * A recreated order (new UUID, minted because the previous row for this
+     * order_number was hard-deleted — see the Finished guard above) starts
+     * with an empty subcon_fabric_reconciliations, orphaning whatever
+     * consumption/deduction figures were entered under the old order_id. If
+     * the QC Console already published a snapshot for this production group
+     * (packaging_project_fabric_lines — keyed by production_group, so it
+     * survives the delete), restore it here rather than leaving the cutting/
+     * HO approval forms showing blank Fabric Sent/Cons. Plan/Deduction for an
+     * order that was, in reality, already reconciled. Best-effort: an
+     * unreachable/older QMS schema just skips silently.
+     */
+    private function restoreFabricReconciliationFromQms(SubconOrder $order): void
+    {
+        $pg = trim((string) ($order->production_group ?? ''));
+        if ($pg === '') {
+            return;
+        }
+
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_fabric_lines')) {
+                return;
+            }
+
+            $lines = DB::connection('qms')->table('packaging_project_fabric_lines')
+                ->where('production_group', $pg)
+                ->get();
+
+            foreach ($lines as $l) {
+                \App\Models\SubconFabricReconciliation::updateOrCreate(
+                    ['order_id' => $order->id, 'label' => $l->label],
+                    [
+                        'short_roll' => $l->short_roll ?? 0,
+                        'sisa_kain' => $l->sisa_kain ?? 0,
+                        'kepala_kain' => $l->kepala_kain ?? 0,
+                        'retur_kain' => $l->return_kain ?? 0, // QMS return_kain → portal retur_kain
+                        'fabric_sent' => $l->fabric_sent,
+                        'consumption_plan' => $l->consumption_plan,
+                        'cutt_plan' => $l->cutt_plan,
+                        'actual_consumption' => $l->actual_consumption,
+                        'overconsumption' => $l->overconsumption ?? null,
+                        'fabric_price' => $l->fabric_price ?? null,
+                        'deduction' => $l->deduction ?? null,
+                    ]
+                );
+            }
+
+            if ($lines->isNotEmpty()) {
+                Log::info('Subcon fabric reconciliation restored from QMS snapshot after order recreation', [
+                    'order_number' => $order->order_number,
+                    'production_group' => $pg,
+                    'fabric_count' => $lines->count(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Subcon fabric reconciliation restore skipped', [
+                'order_number' => $order->order_number,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

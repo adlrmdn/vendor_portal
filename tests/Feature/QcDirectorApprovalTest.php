@@ -4,11 +4,13 @@ namespace Tests\Feature;
 
 use App\Jobs\SendFinalApprovalEmail;
 use App\Jobs\SendQcNotificationEmail;
+use App\Jobs\SendWhatsAppNotification;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -33,6 +35,10 @@ class QcDirectorApprovalTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // RpaQueueService offloads heavy payloads to the real rpa_lake S3
+        // bucket — fake it so RPA queueing tests never touch production S3.
+        Storage::fake('rpa_lake');
 
         foreach (['qms', 'rpa'] as $name) {
             Config::set("database.connections.$name", [
@@ -110,7 +116,7 @@ class QcDirectorApprovalTest extends TestCase
             reject_washing INTEGER DEFAULT 0, reject_bahan INTEGER DEFAULT 0, btj INTEGER DEFAULT 0,
             barang_hilang INTEGER DEFAULT 0, created_at TEXT)');
         $qms->statement('CREATE TABLE packaging_project_fabric_lines (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, production_group TEXT, label TEXT,
+            id TEXT PRIMARY KEY, project_id TEXT, production_group TEXT, label TEXT,
             fabric_sent REAL DEFAULT 0, consumption_plan REAL DEFAULT 0, cutt_plan REAL DEFAULT 0,
             actual_consumption REAL DEFAULT 0, short_roll REAL DEFAULT 0, sisa_kain REAL DEFAULT 0,
             kepala_kain REAL DEFAULT 0, return_kain REAL DEFAULT 0, overconsumption REAL,
@@ -254,7 +260,7 @@ class QcDirectorApprovalTest extends TestCase
         $invoice = DB::connection('rpa')->table('rpa_queues')
             ->where('entity_id', $this->projectId)->where('rpa_type', 'invoice')->first();
         $this->assertNotNull($invoice);
-        $this->assertSame('incomplete', $invoice->status);
+        $this->assertSame('pending', $invoice->status);
         $payload = json_decode($invoice->payload, true);
         $this->assertSame('MPG/PO/TEST/00001', $payload['PO']);
         $this->assertEquals(50000 * 100, $payload['amount']);
@@ -272,6 +278,24 @@ class QcDirectorApprovalTest extends TestCase
             return $job->payload['view'] === 'emails.qc-completion-notification'
                 && in_array('qc-inspector@example.test', $job->payload['recipients'], true)
                 && in_array('factoryrep@example.test', $job->payload['recipients'], true);
+        });
+    }
+
+    public function test_director_approval_notifies_qc_head_when_configured(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_head_notification_email'],
+            ['value' => 'qchead@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        $this->post(route('qc.director-approve.submit', ['token' => $this->token]))->assertOk();
+
+        Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
+            return $job->payload['view'] === 'emails.qc-completion-notification'
+                && in_array('qchead@example.test', $job->payload['recipients'], true);
         });
     }
 
@@ -310,7 +334,7 @@ class QcDirectorApprovalTest extends TestCase
     // Reject: back to MD Production (not back to QC)
     // ---------------------------------------------------------------
 
-    public function test_director_rejection_returns_to_md_prod_and_keeps_factory_signature(): void
+    public function test_director_rejection_returns_to_report_validation_and_keeps_md_signature(): void
     {
         Queue::fake();
         Mail::fake();
@@ -322,19 +346,24 @@ class QcDirectorApprovalTest extends TestCase
 
         $this->post(route('qc.director-decline.submit', ['token' => $this->token]), [
             'reason' => 'Deduction figure looks wrong',
-        ])->assertOk()->assertSee('MD Production has been asked to review again');
+        ])->assertOk()->assertSee('MD Production has been asked to re-validate and send again');
 
         // The shared document is re-rendered on rejection too — it must no
-        // longer be the pre-rejection copy (which still showed the HO sig).
+        // longer be the pre-rejection copy.
         $this->assertNotSame($stale, (string) DB::connection('qms')->table('packaging_projects')
             ->where('project_id', $this->projectId)->value('verified_doc'));
 
         $session = DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)->first();
-        $this->assertStringStartsWith('Rejected: MPG Director', $session->director_approval_signature);
-        // Back to MD Production: HO signature + validation cleared (both steps
-        // of the gate redone), factory-rep signature kept.
-        $this->assertNull($session->ho_approval_signature);
+        // Director stamp is NOT left as a lingering 'Rejected:' row — it's
+        // cleared immediately so pendingValidateSends()/directorStageGuard()
+        // don't treat the row as "already actioned". The rejection itself is
+        // still in SubconApprovalLog (checked below).
+        $this->assertNull($session->director_approval_signature);
+        // Back to Report Validation ONLY: MD Production's consumption entry +
+        // sign-off (ho_approval_signature) is KEPT — they are not made to
+        // redo Review & Approve. Only the validation step is re-opened.
+        $this->assertStringStartsWith('Digitally Signed: MPG HO - MD Production', $session->ho_approval_signature);
         $this->assertNull($session->ho_validation_signature);
         $this->assertNotNull($session->approval_signature);
         $this->assertSame('approved', $session->approval_status);
@@ -344,10 +373,26 @@ class QcDirectorApprovalTest extends TestCase
             ->where('project_id', $this->projectId)->value('status'));
         $this->assertSame(0, DB::connection('rpa')->table('rpa_queues')->count());
 
-        // MD Production re-request email queued, carrying the Director's reason.
-        Queue::assertPushed(SendFinalApprovalEmail::class, function ($job) {
-            return str_contains((string) ($job->payload['note'] ?? ''), 'Deduction figure looks wrong');
+        // The row reappears on the Report Validation tab (not stuck hidden by
+        // a lingering director stamp, and not requiring a fresh Review & Approve).
+        $c = new \ReflectionClass(\App\Http\Controllers\SubconAdminController::class);
+        $m = $c->getMethod('pendingValidateSends');
+        $m->setAccessible(true);
+        $pending = collect($m->invoke(app(\App\Http\Controllers\SubconAdminController::class)));
+        $this->assertTrue($pending->contains('token', $this->token));
+
+        // Decision permanently recorded regardless of the (now-cleared) column.
+        $log = \App\Models\SubconApprovalLog::where('gate', 'director')->where('decision', 'declined')->latest()->first();
+        $this->assertNotNull($log);
+        $this->assertStringContainsString('Deduction figure looks wrong', (string) $log->note);
+
+        // MD Production is re-sent the VALIDATE & SEND link (not the old Final
+        // Approval / Review & Approve email), carrying the Director's reason.
+        Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
+            return ($job->payload['view'] ?? null) === 'emails.qc-validate-send'
+                && str_contains((string) ($job->payload['viewData']['note'] ?? ''), 'Deduction figure looks wrong');
         });
+        Queue::assertNotPushed(SendFinalApprovalEmail::class);
     }
 
     public function test_md_prod_reapproval_after_director_reject_clears_director_stamp_and_queues_raf(): void
@@ -362,7 +407,10 @@ class QcDirectorApprovalTest extends TestCase
             ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
         );
 
-        // Director rejected earlier: ho + validation cleared, director stamp 'Rejected:'.
+        // Simulates a row left over from BEFORE the "reject → Report Validation
+        // only" fix: ho + validation cleared and a lingering director 'Rejected:'
+        // stamp (the old directorDecline() behavior). hoApprove()'s defensive
+        // clearing (see its docblock) must still recover such a row today.
         DB::connection('qms')->table('packaging_project_sessions')
             ->where('session_id', $this->sessionId)
             ->update([
@@ -526,6 +574,120 @@ class QcDirectorApprovalTest extends TestCase
         }
     }
 
+    public function test_director_approval_email_carries_the_deduction_total(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        // Fabric overconsumption charge — the same figure the Director's
+        // Authorize action will queue to the deduction RPA.
+        DB::connection('qms')->table('packaging_project_fabric_lines')->insert([
+            'id' => (string) Str::uuid(), 'project_id' => $this->projectId, 'production_group' => 'MPG/PRG/TEST/000001',
+            'label' => 'Main Fabric', 'deduction' => 150000, 'created_by' => 'test', 'created_at' => now(),
+        ]);
+
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))->assertOk();
+
+        Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
+            return ($job->payload['view'] ?? null) === 'emails.qc-director-approval'
+                && (float) ($job->payload['viewData']['deductionTotal'] ?? 0) === 150000.0;
+        });
+    }
+
+    public function test_director_approval_email_shows_no_deduction_when_none(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))->assertOk();
+
+        Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
+            return ($job->payload['view'] ?? null) === 'emails.qc-director-approval'
+                && (float) ($job->payload['viewData']['deductionTotal'] ?? 0) === 0.0;
+        });
+    }
+
+    public function test_director_approval_notifies_configured_phone_alongside_email(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_phone'],
+            ['value' => '08123456789', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        DB::connection('qms')->table('packaging_project_fabric_lines')->insert([
+            'id' => (string) Str::uuid(), 'project_id' => $this->projectId, 'production_group' => 'MPG/PRG/TEST/000001',
+            'label' => 'Main Fabric', 'deduction' => 150000, 'created_by' => 'test', 'created_at' => now(),
+        ]);
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))->assertOk();
+
+        // The single configured phone pairs by index with the single email
+        // recipient, so the WhatsApp link is attributed the same way. ONE
+        // link only — the review page carries both Authorize and Reject, so
+        // no separate decline URL is sent.
+        Queue::assertPushed(SendWhatsAppNotification::class, function ($job) {
+            return $job->to === '628123456789@c.us'
+                && str_starts_with($job->message, '[Subcon Vendor Portal]')
+                && str_contains($job->message, 'Director Authorization Needed')
+                && str_contains($job->message, 'Deduction: Rp 150.000')
+                && str_contains($job->message, route('qc.director-approve', ['token' => $this->token, 'as' => 'director@example.test']))
+                && ! str_contains($job->message, route('qc.director-decline', ['token' => $this->token, 'as' => 'director@example.test']));
+        });
+    }
+
+    public function test_director_approval_skips_whatsapp_when_no_phone_configured(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_phone'],
+            ['value' => '', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]))->assertOk();
+
+        Queue::assertNotPushed(SendWhatsAppNotification::class);
+        // Email still goes out regardless — phone is additive, not a replacement.
+        Queue::assertPushed(SendQcNotificationEmail::class, fn ($job) => ($job->payload['view'] ?? null) === 'emails.qc-director-approval');
+    }
+
     public function test_ho_form_renders_validate_step_after_approval(): void
     {
         Queue::fake();
@@ -538,13 +700,161 @@ class QcDirectorApprovalTest extends TestCase
         $this->post(route('qc.ho-approve.submit', ['token' => $this->token]))
             ->assertRedirect(route('qc.ho-approve', ['token' => $this->token]));
 
-        // The same form now renders step 2: read-only + Validate & Send button
+        // The same form now renders step 2: the editable inputs POST to the
+        // Validate & Send action (full deduction list, replace semantics)
         // + the live RAF run status (queued as 'pending' by the approve).
         $this->get(route('qc.ho-approve', ['token' => $this->token]))
             ->assertOk()
             ->assertSee('Validate &amp; Send Approval', false)
+            ->assertSee(route('qc.ho-send.submit', ['token' => $this->token]), false)
+            ->assertSee('deductions_present', false)
             ->assertSee('RAF production run is still pending', false)
             ->assertDontSee('Review &amp; Approve', false);
+    }
+
+    public function test_validate_and_send_recalculates_revised_numbers_and_replaces_deductions(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        // Local order matching the seeded QMS project's production group, with
+        // the cutting-approval snapshot MD Production is about to revise.
+        $vendor = new \App\Models\Vendor([
+            'name' => 'Validate Vendor', 'vendor_code' => 'V_QCVAL', 'type' => 'subcon', 'is_active' => true,
+        ]);
+        $vendor->id = (string) Str::uuid();
+        $vendor->save();
+        $order = \App\Models\SubconOrder::create([
+            'order_number' => 'MPG/PO/TEST/00001',
+            'vendor_id' => $vendor->id,
+            'title' => 'Validate Test Article',
+            'status' => 'in_progress',
+            'order_date' => now(),
+            'production_group' => 'MPG/PRG/TEST/000001',
+            'workflow_stage' => \App\Models\SubconOrder::STAGE_COMPLETED,
+        ]);
+        \App\Models\SubconCuttingReport::create([
+            'order_id' => $order->id, 'prod_id' => 'PROD-1', 'size' => 'M', 'cutting_qty' => 100, 'gramasi' => 180,
+        ]);
+        \App\Models\SubconFabricReconciliation::create([
+            'order_id' => $order->id, 'label' => 'Main Fabric (M)',
+            'fabric_sent' => 250, 'consumption_plan' => 2.4, 'fabric_price' => 10000,
+        ]);
+        DB::connection('qms')->table('packaging_session_deduction_lines')->insert([
+            'session_id' => $this->sessionId, 'description' => 'Old row', 'amount' => 5000, 'created_by' => 'MPG HO - MD Production',
+        ]);
+
+        // Approved but not yet sent.
+        DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)
+            ->update(['ho_validation_signature' => null, 'director_approval_signature' => null]);
+
+        $this->post(route('qc.ho-send.submit', ['token' => $this->token]), [
+            'deductions_present' => '1',
+            'fabrics' => [[
+                'label' => 'Main Fabric (M)',
+                'fabric_sent' => 300, 'consumption_plan' => 2.5, 'fabric_price' => 10000,
+                'retur_kain' => 10,
+            ]],
+            'deductions' => [['description' => 'Label reprint', 'amount' => 25000]],
+        ])->assertOk()->assertSee('the Director has been notified', false);
+
+        // Revised consumption recomputed by the shared engine and overwritten:
+        // actual = (300 − 10) / 100 = 2.9; over = (2.9 − 2.5) / 2.5 = 16%;
+        // deduction = (2.9 − 2.5 × 1.03) × 100 × 10000 = 325,000.
+        $recon = \App\Models\SubconFabricReconciliation::where('order_id', $order->id)->where('label', 'Main Fabric (M)')->first();
+        $this->assertSame(300.0, (float) $recon->fabric_sent);
+        $this->assertSame(2.9, (float) $recon->actual_consumption);
+        $this->assertSame(0.16, (float) $recon->overconsumption);
+        $this->assertSame(325000.0, (float) $recon->deduction);
+
+        // Re-published to QMS under the project.
+        $line = DB::connection('qms')->table('packaging_project_fabric_lines')
+            ->where('production_group', 'MPG/PRG/TEST/000001')->where('label', 'Main Fabric (M)')->first();
+        $this->assertNotNull($line);
+        $this->assertSame($this->projectId, $line->project_id);
+        $this->assertSame(325000.0, (float) $line->deduction);
+
+        // Deduction rows replaced, not appended.
+        $deductions = DB::connection('qms')->table('packaging_session_deduction_lines')
+            ->where('session_id', $this->sessionId)->get();
+        $this->assertCount(1, $deductions);
+        $this->assertSame('Label reprint', $deductions[0]->description);
+        $this->assertSame(25000.0, (float) $deductions[0]->amount);
+
+        // Signed + sent to the Director.
+        $sig = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)->value('ho_validation_signature');
+        $this->assertStringStartsWith('Digitally Signed:', (string) $sig);
+        Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
+            return ($job->payload['view'] ?? null) === 'emails.qc-director-approval';
+        });
+    }
+
+    /**
+     * Regression: SubconFabricLinePublisher must never zero-out a QMS fabric
+     * line that already has good data just because the local reconciliation
+     * row for that label is currently missing (wiped, or never created). A
+     * label the local table DOES have a row for should still publish/update
+     * normally.
+     */
+    public function test_fabric_publish_never_overwrites_existing_qms_line_with_no_local_data(): void
+    {
+        $vendor = new \App\Models\Vendor([
+            'name' => 'Publisher Test Vendor', 'vendor_code' => 'V_PUBTEST', 'type' => 'subcon', 'is_active' => true,
+        ]);
+        $vendor->id = (string) Str::uuid();
+        $vendor->save();
+
+        $order = \App\Models\SubconOrder::create([
+            'order_number' => 'MPG/PO/TEST/00099',
+            'vendor_id' => $vendor->id,
+            'title' => 'Publisher Test Article',
+            'status' => 'in_progress',
+            'order_date' => now(),
+            'production_group' => 'MPG/PRG/TEST/000001', // matches seeded QMS project
+            'workflow_stage' => \App\Models\SubconOrder::STAGE_COMPLETED,
+        ]);
+
+        // QMS already has a good, real snapshot for "Orphan Fabric" — but the
+        // local reconciliation table has nothing for it (wiped, or never
+        // created locally at all).
+        DB::connection('qms')->table('packaging_project_fabric_lines')->insert([
+            'id' => (string) Str::uuid(),
+            'project_id' => $this->projectId,
+            'production_group' => 'MPG/PRG/TEST/000001',
+            'label' => 'Orphan Fabric (YD)',
+            'fabric_sent' => 250, 'consumption_plan' => 2.4, 'cutt_plan' => 100,
+            'actual_consumption' => 2.5, 'short_roll' => 1, 'sisa_kain' => 2,
+            'kepala_kain' => 3, 'return_kain' => 4, 'fabric_price' => 10000,
+            'created_by' => 'web_portal', 'created_at' => now(),
+        ]);
+
+        // A DIFFERENT label DOES have a local row — this one should publish
+        // normally (create/update in QMS with the local figures).
+        \App\Models\SubconFabricReconciliation::create([
+            'order_id' => $order->id, 'label' => 'Known Fabric (YD)',
+            'fabric_sent' => 500, 'consumption_plan' => 1.5, 'fabric_price' => 20000,
+        ]);
+
+        app(\App\Services\SubconFabricLinePublisher::class)->publish($order);
+
+        // Orphan label: QMS row untouched (still the original good values).
+        $orphan = DB::connection('qms')->table('packaging_project_fabric_lines')
+            ->where('production_group', 'MPG/PRG/TEST/000001')->where('label', 'Orphan Fabric (YD)')->first();
+        $this->assertSame(250.0, (float) $orphan->fabric_sent);
+        $this->assertSame(2.4, (float) $orphan->consumption_plan);
+
+        // Known label: published fresh from local data.
+        $known = DB::connection('qms')->table('packaging_project_fabric_lines')
+            ->where('production_group', 'MPG/PRG/TEST/000001')->where('label', 'Known Fabric (YD)')->first();
+        $this->assertNotNull($known);
+        $this->assertSame(500.0, (float) $known->fabric_sent);
     }
 
     // ---------------------------------------------------------------
@@ -609,7 +919,33 @@ class QcDirectorApprovalTest extends TestCase
             // Session is HO-signed with no director signature → pending row
             // linking into the existing token-based workflow form.
             ->assertSee($this->projectId)
-            ->assertSee(route('qc.director-approve', ['token' => $this->token]), false);
+            ->assertSee(route('qc.director-approve', ['token' => $this->token]), false)
+            // No fabric/deduction rows seeded for this session → "None" badge.
+            ->assertSee('None');
+    }
+
+    public function test_director_tab_shows_deduction_amount_when_present(): void
+    {
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        DB::connection('qms')->table('packaging_project_fabric_lines')->insert([
+            'id' => (string) Str::uuid(), 'project_id' => $this->projectId, 'production_group' => 'MPG/PRG/TEST/000001',
+            'label' => 'Main Fabric', 'deduction' => 150000, 'created_by' => 'test', 'created_at' => now(),
+        ]);
+        DB::connection('qms')->table('packaging_session_deduction_lines')->insert([
+            'session_id' => $this->sessionId, 'description' => 'Label reprint', 'amount' => 25000, 'created_by' => 'test',
+        ]);
+
+        // Same total the Director's Authorize action will actually queue to RPA
+        // (RpaQueueService::deductionTotal): 150,000 + 25,000 = 175,000.
+        $this->actingAs($this->makeSubconAdmin('director@example.test', 'Director'))
+            ->get(route('subcon.admin.director-approvals'))
+            ->assertOk()
+            ->assertSee('Rp 175.000')
+            ->assertDontSee('None');
     }
 
     public function test_director_tab_is_forbidden_for_regular_subcon_admins(): void
@@ -657,7 +993,7 @@ class QcDirectorApprovalTest extends TestCase
         $this->assertSame(0, DB::connection('rpa')->table('rpa_queues')->count());
     }
 
-    public function test_removed_project_is_not_listed_counted_or_actionable(): void
+    public function test_removed_project_is_still_listed_counted_and_actionable(): void
     {
         Queue::fake();
         Mail::fake();
@@ -667,10 +1003,45 @@ class QcDirectorApprovalTest extends TestCase
             ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
         );
 
-        // Deleted in the QC console after MD signed it.
+        // Archived/hidden on a device in the QC console — NOT a signal that
+        // the approval workflow is done (see SubconOrder::QMS_INACTIVE_PROJECT_STATUSES).
+        // The project is restorable via a PRG re-scan, so it must remain
+        // visible and actionable until it actually finishes the chain.
         DB::connection('qms')->table('packaging_projects')
             ->where('project_id', $this->projectId)
             ->update(['status' => 'removed']);
+
+        // Still on the Director tab and its badge…
+        $this->assertSame(1, \App\Models\SubconOrder::pendingDirectorApprovalCount());
+        $this->actingAs($this->makeSubconAdmin('director@example.test', 'Director'))
+            ->get(route('subcon.admin.director-approvals'))
+            ->assertOk()
+            ->assertSee(route('qc.director-approve', ['token' => $this->token]), false);
+
+        // …and the Director link still signs it.
+        $this->post(route('qc.director-approve.submit', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('Director authorization recorded');
+
+        $session = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)->first();
+        $this->assertNotEmpty($session->director_approval_signature);
+    }
+
+    public function test_removed_completed_project_is_not_listed_counted_or_actionable(): void
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'qc_director_approver_email'],
+            ['value' => 'director@example.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        // Archived in the QC console AFTER the project was already completed.
+        DB::connection('qms')->table('packaging_projects')
+            ->where('project_id', $this->projectId)
+            ->update(['status' => 'removed_completed']);
 
         // Off the Director tab and its badge…
         $this->assertSame(0, \App\Models\SubconOrder::pendingDirectorApprovalCount());

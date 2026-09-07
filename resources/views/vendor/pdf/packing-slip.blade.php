@@ -109,6 +109,11 @@
 </head>
 
 <body>
+    @php
+        // Item descriptions carry a leading brand word (e.g. "Minimal Fiona", "Manzone Classic")
+        // that isn't meaningful on the printed slip.
+        $stripBrand = fn ($desc) => (($s = trim(preg_replace('/^\s*\S+\s*/u', '', (string) $desc))) !== '' ? $s : trim((string) $desc));
+    @endphp
     <div class="page-one-container">
         <div class="header">
             <div class="company-info">
@@ -130,11 +135,10 @@
 
         <div class="buyer-info" style="margin-bottom: 25px; font-size: 13px; min-height: 85px;">
             <div style="float: left; width: 60%;">
-                <h3 style="margin: 0 0 5px 0; color: #003366; text-transform: uppercase;">PT. MEGA PUTRA GARMENT</h3>
+                <h3 style="margin: 0 0 5px 0; color: #003366; text-transform: uppercase;">PT Mega Putra Garment</h3>
                 <p style="margin: 0; line-height: 1.3;">
-                    JL.KARET PEDURENAN NO. 240 RT.002<br>
-                    RW.006 KEL. KARET KUNINGAN,<br>
-                    KEC.SETIABUDI, JAKARTA SELATAN 12940<br>
+                    Jl. Nasional 1 No. 245, Slatri, Wanarejan Utara<br>
+                    Kecamatan Taman, Kabupaten Pemalang, Jawa Tengah 52361<br>
                     INDONESIA
                 </p>
             </div>
@@ -177,8 +181,8 @@
                     @endphp
                     <tr>
                         <td>{{ $item->item_number }}</td>
-                        <td>{{ $item->description }}</td>
-                        <td>{{ $item->batch ?? '-' }}</td>
+                        <td>{{ $stripBrand($item->description) }}</td>
+                        <td>{{ $item->batch ? $stripBrand($item->batch) : '-' }}</td>
                         <td>{{ number_format($item->quantity, 2) }} {{ ucfirst($item->unit) }}</td>
                         <td>{{ number_format($itemActualQty, 2) }} {{ ucfirst($item->unit) }}</td>
                         <td>{{ $itemRollCount }} rolls</td>
@@ -413,7 +417,7 @@
             <tr>
                 {{-- Ensure page break happens before the table, but continuous rows inside --}}
                 <td colspan="4" class="qr-header-cell">
-                    <div style="margin: 0; border-bottom: 1px solid #ccc; font-weight: bold; font-size: 10px; padding-bottom: 2px;">Item {{ $loop->iteration }}: {{ $item->item_number }} - {{ $item->description }} (Total: {{ $item->rolls->count() }} Rolls)</div>
+                    <div style="margin: 0; border-bottom: 1px solid #ccc; font-weight: bold; font-size: 10px; padding-bottom: 2px;">Item {{ $loop->iteration }}: {{ $item->item_number }} - {{ $stripBrand($item->description) }} (Total: {{ $item->rolls->count() }} Rolls)</div>
                 </td>
             </tr>
             @foreach($item->rolls->chunk(4) as $chunk)
@@ -467,19 +471,24 @@
                                 $sUnit = $roll->unit;
                             }
 
-                            $barcodeText = 'Lot-ID ' . ($roll->internal_id ?? 'N/A') . ' | ' . number_format($pQty, 2) . ' ' . $pUnit;
+                            // The code must scan to the roll's identity, not a
+                            // description of it — lot-id/qty stay as printed
+                            // text only, so they're never mistaken for the id.
+                            $rollCode = \App\Models\Roll::qrSafeName($roll->roll_number);
+                            $qtyCaption = number_format($pQty, 2) . ' ' . $pUnit;
                             if (isset($showSecondary) && $showSecondary && $sUnit !== null) {
-                                $barcodeText .= ' (' . number_format($sQty, 2) . ' ' . $sUnit . ')';
+                                $qtyCaption .= ' (' . number_format($sQty, 2) . ' ' . $sUnit . ')';
                             }
                         @endphp
                         <td class="qr-cell">
                             <div style="margin-bottom: 2px; height: 130px; display: flex; align-items: center; justify-content: center;">
-                                <img src="data:image/svg+xml;base64, {{ base64_encode(\SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(120)->generate($barcodeText)) }}" style="max-width: 100%; max-height: 100%;">
+                                <img src="data:image/svg+xml;base64, {{ base64_encode(\SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(120)->generate($rollCode)) }}" style="max-width: 100%; max-height: 100%;">
                             </div>
                             <div style="font-size: 9px; line-height: 1.1; overflow: hidden;">
-                                <strong style="font-size: 8px;">{{ $roll->roll_number }}</strong><br>
-                                {{ $item->batch ?? 'N/A' }}<br>
-                                {{ $barcodeText }}
+                                <strong style="font-size: 8px;">{{ $rollCode }}</strong><br>
+                                {{ $item->batch ? $stripBrand($item->batch) : 'N/A' }}<br>
+                                Lot-ID {{ $roll->internal_id ?? 'N/A' }} | Bale No. {{ $roll->bale_no ?? 'N/A' }}<br>
+                                {{ $qtyCaption }}
                             </div>
                         </td>
                     @endforeach

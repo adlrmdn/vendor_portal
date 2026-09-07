@@ -73,6 +73,40 @@
     <h2 class="premium-title mb-0">Background Job Logs</h2>
 </div>
 
+<form method="GET" action="{{ route('subcon.admin.logs') }}" class="card mb-3">
+    <div class="card-body">
+        <div class="row g-2 align-items-end">
+            <div class="col-sm-4">
+                <label class="form-label small text-muted mb-1">Order #</label>
+                <input type="text" name="q" value="{{ $search }}" class="form-control form-control-sm" placeholder="Search order number…">
+            </div>
+            <div class="col-sm-3">
+                <label class="form-label small text-muted mb-1">Job Type</label>
+                <select name="job_type" class="form-select form-select-sm">
+                    <option value="">All types</option>
+                    <option value="cutting" @selected($jobType === 'cutting')>Cutting Sync</option>
+                    <option value="gramasi" @selected($jobType === 'gramasi')>Gramasi Sync</option>
+                    <option value="label_generation" @selected($jobType === 'label_generation')>Label Gen</option>
+                </select>
+            </div>
+            <div class="col-sm-3">
+                <label class="form-label small text-muted mb-1">Status</label>
+                <select name="status" class="form-select form-select-sm">
+                    <option value="">All statuses</option>
+                    <option value="success" @selected($status === 'success')>Success</option>
+                    <option value="failed" @selected($status === 'failed')>Failed</option>
+                </select>
+            </div>
+            <div class="col-sm-2 d-flex gap-2">
+                <button type="submit" class="btn btn-sm btn-primary flex-fill"><i class="fas fa-filter me-1"></i> Filter</button>
+                @if($search !== '' || $jobType !== '' || $status !== '')
+                    <a href="{{ route('subcon.admin.logs') }}" class="btn btn-sm btn-outline-secondary" title="Clear filters"><i class="fas fa-times"></i></a>
+                @endif
+            </div>
+        </div>
+    </div>
+</form>
+
 <div class="card premium-card">
     <div class="card-body p-0">
         <div class="table-responsive">
@@ -148,8 +182,12 @@
                         <tr>
                             <td colspan="5" class="text-center p-5 text-muted">
                                 <i class="fas fa-cog fa-3x mb-3 text-muted opacity-50"></i>
-                                <p class="mb-0 fw-semibold">No execution logs found.</p>
-                                <small>Logs will appear here once background sync or label generation jobs run.</small>
+                                @if($search !== '' || $jobType !== '' || $status !== '')
+                                    <p class="mb-0 fw-semibold">No logs match this filter.</p>
+                                @else
+                                    <p class="mb-0 fw-semibold">No execution logs found.</p>
+                                    <small>Logs will appear here once background sync or label generation jobs run.</small>
+                                @endif
                             </td>
                         </tr>
                     @endforelse

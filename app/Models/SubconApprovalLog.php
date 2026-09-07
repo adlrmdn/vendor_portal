@@ -53,4 +53,25 @@ class SubconApprovalLog extends Model
             \Illuminate\Support\Facades\Log::error('Subcon approval log write failed: '.$e->getMessage());
         }
     }
+
+    /**
+     * The Director's (and HO's) decline note is a free-text sentence — e.g.
+     * "Director rejection recorded — back to Report Validation. Reason: <text>"
+     * (see QcApprovalController::directorDecline) — not a dedicated reason
+     * column. Pull just the typed reason, if any.
+     */
+    public static function extractReason(?string $note): ?string
+    {
+        if (! $note) {
+            return null;
+        }
+
+        $marker = 'Reason: ';
+        $pos = strpos($note, $marker);
+        if ($pos === false) {
+            return null;
+        }
+
+        return trim(substr($note, $pos + strlen($marker))) ?: null;
+    }
 }

@@ -173,10 +173,48 @@ class SubconApprovalController extends Controller
         return view('approvals.result', ['success' => $result['ok'], 'message' => $result['message']]);
     }
 
+    /**
+     * No-login decline link from the approval email: shows a confirm page
+     * asking for a reason (mirrors the QC console's director/HO decline
+     * flow), rather than declining immediately — so scanners prefetching
+     * the emailed GET link can't trigger a rejection, and the vendor gets
+     * something more useful than a bare "declined" notice.
+     */
     public function declineSigned(string $order, string $gate)
     {
         $model = SubconOrder::with('vendor')->findOrFail($order);
-        $result = $this->doDecline($model, $gate, 'Email approval', 'email');
+
+        if (! in_array($gate, ['cutting', 'gramasi'], true)) {
+            return view('approvals.result', [
+                'success' => false,
+                'message' => 'Unknown approval stage.',
+            ]);
+        }
+
+        $expected = $gate === 'cutting' ? SubconOrder::STAGE_CUTTING_REVIEW : SubconOrder::STAGE_GRAMASI_REVIEW;
+        if ($model->workflow_stage !== $expected) {
+            return view('approvals.result', [
+                'success' => false,
+                'message' => 'This request is no longer awaiting approval (current stage: '.$model->stageLabel().').',
+            ]);
+        }
+
+        return view('subcon.decline-confirm', [
+            'order' => $model,
+            'gate' => $gate,
+            'submitUrl' => url(URL::signedRoute('subcon.decline.submit', ['order' => $model->id, 'gate' => $gate], absolute: false)),
+        ]);
+    }
+
+    /** No-login submit of the decline-confirm form — records the reason and declines. */
+    public function declineSubmit(Request $request, string $order, string $gate)
+    {
+        $model = SubconOrder::with('vendor')->findOrFail($order);
+        $data = $request->validate([
+            'reason' => 'required|string|max:1000',
+        ]);
+
+        $result = $this->doDecline($model, $gate, 'Email approval', 'email', $data['reason']);
 
         return view('approvals.result', ['success' => $result['ok'], 'message' => $result['message']]);
     }
@@ -255,8 +293,11 @@ class SubconApprovalController extends Controller
     {
         $this->authorizeAdmin();
         $gate = $request->input('gate');
+        $data = $request->validate([
+            'reason' => 'required|string|max:1000',
+        ]);
         $model = SubconOrder::with('vendor')->findOrFail($id);
-        $result = $this->doDecline($model, $gate, Auth::user()->name ?? Auth::user()->email, 'in_app');
+        $result = $this->doDecline($model, $gate, Auth::user()->name ?? Auth::user()->email, 'in_app', $data['reason']);
 
         return back()->with($result['ok'] ? 'success' : 'error', $result['message']);
     }
@@ -285,9 +326,14 @@ class SubconApprovalController extends Controller
             return ['ok' => false, 'message' => 'This request is no longer awaiting approval (current stage: '.$order->stageLabel().').'];
         }
 
-        DB::transaction(function () use ($order, $fabrics, $approver) {
+        // A PARTIAL cutting report goes back to the entry stage on approval so
+        // the vendor can keep submitting the remaining quantities; only a final
+        // (non-partial) report advances the order to gramasi.
+        $isPartial = (bool) $order->cutting_partial;
+
+        DB::transaction(function () use ($order, $fabrics, $approver, $isPartial) {
             app(SubconConsumptionService::class)->persist($order, $fabrics);
-            $order->workflow_stage = SubconOrder::STAGE_GRAMASI;
+            $order->workflow_stage = $isPartial ? SubconOrder::STAGE_CUTTING : SubconOrder::STAGE_GRAMASI;
             $order->cutting_approved_at = now();
             $order->cutting_approved_by = $approver;
             $order->save();
@@ -305,7 +351,9 @@ class SubconApprovalController extends Controller
 
         $this->notifyVendor($order, 'cutting', 'approved');
 
-        $message = 'Cutting report approved for '.$order->order_number.'. Consumption saved. The vendor may now enter gramasi & blister capacity. Values are syncing to D365 in the background.';
+        $message = $isPartial
+            ? 'Partial cutting report approved for '.$order->order_number.'. Consumption saved. The order stays at cutting-report entry so the vendor can submit the remaining quantities. Values are syncing to D365 in the background.'
+            : 'Cutting report approved for '.$order->order_number.'. Consumption saved. The vendor may now enter gramasi & blister capacity. Values are syncing to D365 in the background.';
         $this->logDecision($order, 'cutting', 'approved', $approver, $source, $message);
 
         return ['ok' => true, 'message' => $message];
@@ -323,7 +371,8 @@ class SubconApprovalController extends Controller
         }
 
         if ($gate === 'cutting') {
-            $order->workflow_stage = SubconOrder::STAGE_GRAMASI;
+            // Partial reports return to entry on approval (see applyCuttingApproval).
+            $order->workflow_stage = $order->cutting_partial ? SubconOrder::STAGE_CUTTING : SubconOrder::STAGE_GRAMASI;
             $order->cutting_approved_at = now();
             $order->cutting_approved_by = $approver;
             $order->save();
@@ -344,7 +393,9 @@ class SubconApprovalController extends Controller
         $label = $gate === 'gramasi' ? 'Gramasi & blister capacity' : 'Cutting report';
         $next = $gate === 'gramasi'
             ? ' An email has been sent to the vendor to generate packing labels.'
-            : ' The vendor may now enter gramasi & blister capacity.';
+            : ($order->cutting_partial
+                ? ' Approved as partial — the vendor can submit the remaining quantities.'
+                : ' The vendor may now enter gramasi & blister capacity.');
 
         $message = $label.' approved for '.$order->order_number.'.'.$next.' Values are syncing to D365 in the background.';
         $this->logDecision($order, $gate, 'approved', $approver, $source, $message);
@@ -352,7 +403,7 @@ class SubconApprovalController extends Controller
         return ['ok' => true, 'message' => $message];
     }
 
-    private function doDecline(SubconOrder $order, ?string $gate, string $approver, string $source = 'in_app'): array
+    private function doDecline(SubconOrder $order, ?string $gate, string $approver, string $source = 'in_app', ?string $reason = null): array
     {
         if (! in_array($gate, ['cutting', 'gramasi'], true)) {
             return ['ok' => false, 'message' => 'Unknown approval stage.'];
@@ -363,15 +414,24 @@ class SubconApprovalController extends Controller
             return ['ok' => false, 'message' => 'This request is no longer awaiting approval (current stage: '.$order->stageLabel().').'];
         }
 
+        $reason = trim((string) $reason);
+
         // Send back to the corresponding entry stage for correction & resubmit.
+        // The reason is kept on the order until the vendor resubmits this same
+        // gate (see SubconVendorController::submitCuttingReport/submitGramasi),
+        // which clears it.
         $order->workflow_stage = $gate === 'cutting' ? SubconOrder::STAGE_CUTTING : SubconOrder::STAGE_GRAMASI;
+        $order->reject_gate = $gate;
+        $order->reject_reason = $reason !== '' ? $reason : null;
+        $order->rejected_at = now();
         $order->save();
 
         $this->notifyVendor($order, $gate, 'declined');
 
         $label = $gate === 'gramasi' ? 'Gramasi & blister capacity' : 'Cutting report';
 
-        $message = $label.' for '.$order->order_number.' was returned to the vendor for changes.';
+        $message = $label.' for '.$order->order_number.' was returned to the vendor for changes.'
+            .($reason !== '' ? ' Reason: '.$reason : '');
         $this->logDecision($order, $gate, 'declined', $approver, $source, $message);
 
         return ['ok' => true, 'message' => $message];

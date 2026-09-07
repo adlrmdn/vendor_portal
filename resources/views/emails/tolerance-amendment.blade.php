@@ -62,6 +62,11 @@
                     <td style="color: #6c757d;">{{ number_format($request->poItem->quantity - $request->requested_qty, 2) }} {{ strtoupper($request->poItem->unit) }}</td>
                 </tr>
                 @else
+                @php
+                    $prevLimits = $request->poItem->getQuantityLimitsForTolerance($request->old_underdelivery, $request->old_overdelivery);
+                    $newLimits = $request->poItem->getQuantityLimitsForTolerance($request->new_underdelivery, $request->new_overdelivery);
+                    $unit = strtoupper($request->poItem->unit);
+                @endphp
                 <tr>
                     <td colspan="2" style="padding: 0;">
                         <table style="width: 100%; border-collapse: collapse; margin-top: 15px; border: 1px solid #eee;">
@@ -82,6 +87,16 @@
                                     <td style="padding: 10px; border: 1px solid #eee;"><strong>Overdelivery</strong></td>
                                     <td style="padding: 10px; border: 1px solid #eee; text-align: center;">{{ number_format($request->old_overdelivery, 2) }}%</td>
                                     <td style="padding: 10px; border: 1px solid #eee; text-align: center; color: #0d6efd; font-weight: bold;">{{ number_format($request->new_overdelivery, 2) }}%</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 10px; border: 1px solid #eee;"><strong>Min Qty ({{ $unit }})</strong></td>
+                                    <td style="padding: 10px; border: 1px solid #eee; text-align: center;">{{ number_format($prevLimits['min'], 2) }}</td>
+                                    <td style="padding: 10px; border: 1px solid #eee; text-align: center; color: #0d6efd; font-weight: bold;">{{ number_format($newLimits['min'], 2) }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 10px; border: 1px solid #eee;"><strong>Max Qty ({{ $unit }})</strong></td>
+                                    <td style="padding: 10px; border: 1px solid #eee; text-align: center;">{{ number_format($prevLimits['max'], 2) }}</td>
+                                    <td style="padding: 10px; border: 1px solid #eee; text-align: center; color: #0d6efd; font-weight: bold;">{{ number_format($newLimits['max'], 2) }}</td>
                                 </tr>
                             </tbody>
                         </table>

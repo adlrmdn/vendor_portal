@@ -356,8 +356,15 @@
                     'saveRoute' => route('subcon.vendor.orders.material-reconciliation', $order->id),
                 ])
 
-                @if($order->blister_capacity)
-                    <div class="text-muted small mb-3"><i class="fas fa-box me-1"></i> Blister capacity: <strong class="text-dark">{{ number_format($order->blister_capacity) }}</strong> pcs / blister</div>
+                @if($order->blister_capacity || $order->sack_capacity)
+                    <div class="text-muted small mb-3 d-flex flex-wrap gap-3">
+                        @if($order->blister_capacity)
+                            <span><i class="fas fa-box me-1"></i> Blister capacity: <strong class="text-dark">{{ number_format($order->blister_capacity) }}</strong> pcs / blister</span>
+                        @endif
+                        @if($order->sack_capacity)
+                            <span><i class="fas fa-gift me-1"></i> Sack (Karung) capacity: <strong class="text-dark">{{ number_format($order->sack_capacity) }}</strong> pcs / sack</span>
+                        @endif
+                    </div>
                 @endif
 
                 @include('subcon.partials.delivery-note-attachment', [

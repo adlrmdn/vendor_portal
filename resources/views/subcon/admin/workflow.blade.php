@@ -179,6 +179,17 @@
                             </div>
                         </div>
 
+                        <!-- QC Head — notification only, no approval action -->
+                        <div class="mb-4">
+                            <label for="qc_head_notification_email" class="form-label-premium">QC Head Email Address(es)</label>
+                            <input type="text" name="qc_head_notification_email" id="qc_head_notification_email" class="form-control form-control-premium @error('qc_head_notification_email') is-invalid @enderror" value="{{ old('qc_head_notification_email', $qcHeadNotificationEmail) }}" placeholder="a@mail.com, b@mail.com">
+                            @error('qc_head_notification_email')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                            <div class="form-text text-muted mt-2">
+                                <i class="fas fa-info-circle me-1 text-primary"></i>
+                                Notified when the Director authorizes and the project completes. No approval action — notification only. Separate multiple recipients with commas. Leave blank to skip.
+                            </div>
+                        </div>
+
                         <!-- Director (Authorization) Email -->
                         <div class="mb-4">
                             <label for="qc_director_approver_email" class="form-label-premium">Director Email Address(es)</label>
@@ -187,6 +198,17 @@
                             <div class="form-text text-muted mt-2">
                                 <i class="fas fa-info-circle me-1 text-primary"></i>
                                 Receives the third-stage (Director) authorization link after MD Production approves. Approval queues the Invoice &amp; Deduction RPA jobs and completes the project. Separate multiple recipients with commas. Leave blank to reuse the Final Email list.
+                            </div>
+                        </div>
+
+                        <!-- Director (Authorization) Phone — WhatsApp, alongside the email -->
+                        <div class="mb-4">
+                            <label for="qc_director_approver_phone" class="form-label-premium">Director Phone Number(s) <span class="text-muted fw-normal">(WhatsApp)</span></label>
+                            <input type="text" name="qc_director_approver_phone" id="qc_director_approver_phone" class="form-control form-control-premium @error('qc_director_approver_phone') is-invalid @enderror" value="{{ old('qc_director_approver_phone', $directorApproverPhone) }}" placeholder="08123456789, 08987654321">
+                            @error('qc_director_approver_phone')<div class="invalid-feedback">{{ $message }}</div>@enderror
+                            <div class="form-text text-muted mt-2">
+                                <i class="fab fa-whatsapp me-1 text-success"></i>
+                                Sends the same third-stage authorization link as a WhatsApp message, on top of the Director email above. Separate multiple numbers with commas. Optional — leave blank to notify by email only.
                             </div>
                         </div>
 

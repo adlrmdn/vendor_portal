@@ -22,6 +22,7 @@ class PoItem extends Model
         'item_number',
         'description',
         'batch',
+        'line_number',
         'plm_number',
         'quantity',
         'underdelivery',
@@ -90,38 +91,44 @@ class PoItem extends Model
         return $rolls;
     }
 
-    public function getMinQuantityLimit()
+    public function getOtherCompletedSiblingsDeliveredQuantity()
     {
-        $target = $this->getGlobalOrderedQuantity();
-        $under = $this->getEffectiveUnderdelivery();
-        $minGlobal = $target * (1 - $under / 100);
-
-        $otherDelivered = (float) \DB::table('rolls')
+        return (float) \DB::table('rolls')
             ->whereIn('item_id', self::where('po_id', $this->po_id)
                 ->where('item_number', $this->item_number)
                 ->where('status', 'completed')
                 ->where('id', '!=', $this->id)
                 ->pluck('id'))
             ->sum(\DB::raw(self::ROLL_QUANTITY_SQL));
+    }
 
-        return max(0, $minGlobal - $otherDelivered);
+    /**
+     * Min/max deliverable quantity for an arbitrary under/over tolerance pair,
+     * so callers (amend-tolerance UI, approval email) can preview what a
+     * proposed % actually means in the item's unit without duplicating the
+     * global-target / other-siblings-delivered math.
+     *
+     * @return array{min: float, max: float}
+     */
+    public function getQuantityLimitsForTolerance(float $under, float $over): array
+    {
+        $target = $this->getGlobalOrderedQuantity();
+        $otherDelivered = $this->getOtherCompletedSiblingsDeliveredQuantity();
+
+        return [
+            'min' => max(0, $target * (1 - $under / 100) - $otherDelivered),
+            'max' => max(0, $target * (1 + $over / 100) - $otherDelivered),
+        ];
+    }
+
+    public function getMinQuantityLimit()
+    {
+        return $this->getQuantityLimitsForTolerance($this->getEffectiveUnderdelivery(), $this->getEffectiveOverdelivery())['min'];
     }
 
     public function getMaxQuantityLimit()
     {
-        $target = $this->getGlobalOrderedQuantity();
-        $over = $this->getEffectiveOverdelivery();
-        $maxGlobal = $target * (1 + $over / 100);
-
-        $otherDelivered = (float) \DB::table('rolls')
-            ->whereIn('item_id', self::where('po_id', $this->po_id)
-                ->where('item_number', $this->item_number)
-                ->where('status', 'completed')
-                ->where('id', '!=', $this->id)
-                ->pluck('id'))
-            ->sum(\DB::raw(self::ROLL_QUANTITY_SQL));
-
-        return max(0, $maxGlobal - $otherDelivered);
+        return $this->getQuantityLimitsForTolerance($this->getEffectiveUnderdelivery(), $this->getEffectiveOverdelivery())['max'];
     }
 
     public function totalDeliveredQuantity()

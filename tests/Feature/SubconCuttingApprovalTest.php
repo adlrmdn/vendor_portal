@@ -211,8 +211,10 @@ class SubconCuttingApprovalTest extends TestCase
             ['label' => 'Cotton 30s (M)', 'item_numbers' => ['FAB-1'], 'po_numbers' => ['POFAB1'], 'fabric_price' => 999999],
         ]);
 
-        // Per-unit metric price, not the 500000 price-unit-basis nor the VSM fallback.
-        $this->assertEquals(5000.0, $pricing['Cotton 30s (M)']['price']);
+        // Per-unit metric price (5,000,000 / 1000 = 5000), not the 500000
+        // price-unit-basis nor the VSM fallback — then the 30% policy markup:
+        // 5000 * 1.30 = 6500.
+        $this->assertEquals(6500.0, $pricing['Cotton 30s (M)']['price']);
         $this->assertEquals('USD', $pricing['Cotton 30s (M)']['currency']);
     }
 
@@ -370,5 +372,79 @@ class SubconCuttingApprovalTest extends TestCase
         $this->assertEquals(0, SubconFabricReconciliation::where('order_id', $order->id)->count());
         $this->assertEquals(SubconOrder::STAGE_GRAMASI, $order->fresh()->workflow_stage);
         Queue::assertNotPushed(SyncSubconReportToD365::class);
+    }
+
+    public function test_partial_cutting_report_round_trip()
+    {
+        Queue::fake();
+        Mail::fake();
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'subcon_cutting_approver_email'],
+            ['value' => 'cutapprover@cutappr.test', 'group' => 'subcon', 'type' => 'string', 'description' => 'test']
+        );
+
+        $vendor = $this->makeVendor('V_CUTAPPR_PART');
+        $order = $this->makeOrder($vendor, SubconOrder::STAGE_CUTTING);
+
+        $user = new User([
+            'name' => 'Partial Vendor User',
+            'email' => 'partial@cutappr.test',
+            'password' => bcrypt('password'),
+            'role' => 'subcon_vendor',
+            'vendor_id' => $vendor->id,
+        ]);
+        $user->id = (string) Str::uuid();
+        $user->save();
+
+        // 1. Vendor submits a PARTIAL cutting report → flagged + under review,
+        //    and the approval email carries the partial flag.
+        $this->actingAs($user)
+            ->withoutMiddleware(ValidateCsrfToken::class)
+            ->post(route('subcon.vendor.orders.submit-cutting', $order->id), [
+                'is_partial' => '1',
+                'reports' => [['prod_id' => 'PROD-P1', 'size' => 'M', 'cutting_qty' => 100]],
+            ])->assertRedirect()->assertSessionHas('success');
+
+        $order->refresh();
+        $this->assertTrue((bool) $order->cutting_partial);
+        $this->assertEquals(SubconOrder::STAGE_CUTTING_REVIEW, $order->workflow_stage);
+        Mail::assertSent(\App\Mail\SubconApprovalRequestMailable::class, function ($mail) {
+            return $mail->isPartial === true && $mail->gateLabel === 'Partial Cutting Report';
+        });
+
+        // 2. Approving a partial report returns the order to cutting entry
+        //    (instead of gramasi) so the vendor can write again.
+        auth()->logout();
+        $url = URL::signedRoute('subcon.approve.cutting.submit', ['order' => $order->id], absolute: false);
+        $this->withoutMiddleware(ValidateCsrfToken::class)->post($url, [
+            'fabrics' => [['label' => 'Cotton 30s', 'fabric_sent' => 300, 'consumption_plan' => 1.5]],
+        ])->assertOk()->assertViewHas('success', true);
+
+        $order->refresh();
+        $this->assertEquals(SubconOrder::STAGE_CUTTING, $order->workflow_stage);
+        $this->assertNotNull($order->cutting_approved_at);
+        Queue::assertPushed(SyncSubconReportToD365::class); // partial quantities still sync
+
+        // 3. Vendor resubmits WITHOUT the toggle → flag cleared (default is not
+        //    partial), back under review.
+        $this->actingAs($user)
+            ->withoutMiddleware(ValidateCsrfToken::class)
+            ->post(route('subcon.vendor.orders.submit-cutting', $order->id), [
+                'reports' => [['prod_id' => 'PROD-P1', 'size' => 'M', 'cutting_qty' => 250]],
+            ])->assertRedirect()->assertSessionHas('success');
+
+        $order->refresh();
+        $this->assertFalse((bool) $order->cutting_partial);
+        $this->assertEquals(SubconOrder::STAGE_CUTTING_REVIEW, $order->workflow_stage);
+
+        // 4. Approving the final report advances to gramasi as usual.
+        auth()->logout();
+        $this->withoutMiddleware(ValidateCsrfToken::class)
+            ->post(URL::signedRoute('subcon.approve.cutting.submit', ['order' => $order->id], absolute: false), [
+                'fabrics' => [['label' => 'Cotton 30s', 'fabric_sent' => 300, 'consumption_plan' => 1.5]],
+            ])->assertOk()->assertViewHas('success', true);
+
+        $this->assertEquals(SubconOrder::STAGE_GRAMASI, $order->fresh()->workflow_stage);
     }
 }

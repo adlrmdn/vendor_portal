@@ -11,13 +11,22 @@
                 <div class="card-body p-4 p-md-5">
                     <div class="d-flex align-items-center gap-2 mb-1">
                         <span class="badge rounded-pill text-bg-warning">Cutting Approval</span>
+                        @if($order->cutting_partial)
+                            <span class="badge rounded-pill text-bg-danger"><i class="fas fa-scissors me-1"></i>Partial</span>
+                        @endif
                     </div>
-                    <h4 class="fw-bold mb-1">Cutting Report Approval</h4>
+                    <h4 class="fw-bold mb-1">{{ $order->cutting_partial ? 'Partial ' : '' }}Cutting Report Approval</h4>
                     <p class="text-muted mb-4">
                         Review the submitted cutting report, enter the fabric consumption
                         (<strong>Fabric Sent</strong> and <strong>Cons. Plan</strong> per fabric), then
                         <strong>Approve</strong>. The consumption is saved and the report approved in one step.
                     </p>
+                    @if($order->cutting_partial)
+                        <div class="alert alert-warning small d-flex align-items-center gap-2">
+                            <i class="fas fa-triangle-exclamation"></i>
+                            <div>The vendor flagged this submission as <strong>partial</strong>: on approval the work order <strong>stays at the cutting-report stage</strong> so the vendor can submit the remaining quantities. It moves to gramasi only when a final (non-partial) report is approved.</div>
+                        </div>
+                    @endif
 
                     <dl class="row small mb-4">
                         <dt class="col-5 col-sm-3 text-muted fw-normal">Work Order</dt>

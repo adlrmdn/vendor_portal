@@ -63,8 +63,18 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
             return;
         }
 
-        // Stage may have moved on (e.g. generated already, or reset) between
-        // dispatch and execution — only act while genuinely waiting.
+        // Labels already exist (this is a re-trigger, e.g. after the admin
+        // corrected blister/sack capacity): the packing instruction is already
+        // built in D365, so there is nothing to (re)generate via the DTT bot —
+        // just resync Coli/Blister on it with the current capacity values.
+        if (in_array($order->workflow_stage, [SubconOrder::STAGE_LABELS, SubconOrder::STAGE_COMPLETED], true)) {
+            $this->recalculateColiBlister($order);
+
+            return;
+        }
+
+        // Stage may have moved on (e.g. reset) between dispatch and execution —
+        // only run the full generation flow while genuinely waiting.
         if ($order->workflow_stage !== SubconOrder::STAGE_WAITING_DISTRIBUTION) {
             Log::info("Label generation skipped for {$order->order_number}: stage is {$order->workflow_stage}.");
             $order->clearLabelGenState();
@@ -72,10 +82,11 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
             return;
         }
 
-        $this->resolveDistributionId($order);
+        $unresolvedReason = $this->resolveDistributionId($order);
 
         if (empty($order->distribution_id)) {
-            throw new \RuntimeException("Distribution ID missing/unresolvable for {$order->order_number}.");
+            throw new \RuntimeException($unresolvedReason
+                ?? "Distribution ID missing/unresolvable for {$order->order_number}.");
         }
 
         $url = env('LABEL_GENERATOR_URL', 'http://localhost:8071/process');
@@ -150,22 +161,121 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
     }
 
     /**
-     * Best-effort resolution of distribution_id from VSM → D365 TOC_DT.
-     *
-     * Primary path: PLM 'SO Intercompany' activity → TOC_DT by SOID.
-     * Fallback: the PLM 'Budget Buying' activity carries the DST number
-     * directly (it names the same TOC_DT document the SO path resolves to) —
-     * used when the SO Intercompany activity was left unfilled in D365. The
-     * candidate is verified against TOC_DT (must exist, be Confirmed, and
-     * match the PLM's ArticleCode when both sides carry one) before use.
+     * Re-trigger path for an order that already has labels: resync Coli/Blister
+     * on the existing packing instruction against the order's current
+     * blister_capacity/sack_capacity, without touching the DTT bot or the
+     * workflow stage. Used both for the "Generate Labels" retry on an
+     * already-labelled order and for the on-demand button on the order detail
+     * page after the admin edits capacity.
      */
-    private function resolveDistributionId(SubconOrder $order): void
+    private function recalculateColiBlister(SubconOrder $order): void
     {
-        if (! empty($order->distribution_id)) {
+        if (empty($order->distribution_id)) {
+            $order->markLabelGenFailed('No distribution ID on file — labels must be generated at least once before capacity can be recalculated.');
+
             return;
         }
 
         try {
+            $stats = app(\App\Services\D365JobTransactionService::class)->syncPackingColiBlister($order);
+            Log::info("Coli/Blister recalculation for {$order->order_number}: ".json_encode($stats));
+
+            if (! empty($stats['errors'])) {
+                $order->markLabelGenFailed('Recalculation errors: '.implode('; ', $stats['errors']));
+
+                \App\Models\SubconJobLog::create([
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'job_type' => 'label_generation',
+                    'status' => 'failed',
+                    'message' => 'Coli/Blister recalculation errors: '.implode('; ', $stats['errors']),
+                ]);
+
+                return;
+            }
+
+            $order->clearLabelGenState();
+
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => 'label_generation',
+                'status' => 'success',
+                'message' => "Recalculated Coli/Blister with updated capacity ({$stats['patched']} line(s) patched, {$stats['skipped']} unchanged).",
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning("Coli/Blister recalculation threw for {$order->order_number}: ".$e->getMessage());
+            $order->markLabelGenFailed($e->getMessage());
+
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => 'label_generation',
+                'status' => 'failed',
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Best-effort resolution of distribution_id from VSM → D365 TOC_DT.
+     *
+     * Primary path: `production_groups` carries a direct PONumber → SONumber
+     * mapping — it covers "standalone" production groups (no PLMId at all;
+     * `po_lines.PLMId` being empty there is expected, not a data gap) as well
+     * as PLM-routed ones. It's preferred over the PLM chain below because
+     * it's keyed on the PO itself, whereas a single PLMId can legitimately be
+     * shared across unrelated articles/seasons (its SO Intercompany activity
+     * would then resolve to the wrong order's DST).
+     *
+     * Fallback: the PLM 'SO Intercompany' activity → TOC_DT by SOID, then the
+     * PLM 'Budget Buying' activity, which carries the DST number directly (it
+     * names the same TOC_DT document the SO path resolves to) — used when the
+     * SO Intercompany activity was left unfilled in D365. The Budget Buying
+     * candidate is verified against TOC_DT (must exist, be Confirmed, and
+     * match the PLM's ArticleCode when both sides carry one) before use.
+     *
+     * Returns null on success (or when nothing was found at all); returns a
+     * human-readable reason when a DST document was located but rejected —
+     * currently only "not confirmed" — so the caller can report the real
+     * blocker instead of the generic "missing/unresolvable".
+     */
+    private function resolveDistributionId(SubconOrder $order): ?string
+    {
+        if (! empty($order->distribution_id)) {
+            return null;
+        }
+
+        $unconfirmed = null;
+
+        try {
+            $groupSoId = DB::connection('vsm')->table('production_groups')
+                ->where('PONumber', $order->order_number)
+                ->whereNotNull('SONumber')
+                ->where('SONumber', '!=', '')
+                ->value('SONumber');
+
+            if ($groupSoId) {
+                $row = $this->fetchTocDt("SOID eq '{$groupSoId}'");
+                if (! empty($row['DistributionID'])) {
+                    if (($row['DocumentStatus'] ?? '') === 'Confirmed') {
+                        Log::info("Distribution ID for {$order->order_number} resolved via production_groups: SO {$groupSoId}.");
+                        $order->distribution_id = $row['DistributionID'];
+                        $order->save();
+
+                        return null;
+                    }
+
+                    // The DST exists but merchandising hasn't confirmed the DT
+                    // document yet — keep trying the PLM paths, but remember the
+                    // real blocker so the admin isn't told the DST is "missing".
+                    $unconfirmed = "DST {$row['DistributionID']} is not confirmed (status: "
+                        .(($row['DocumentStatus'] ?? '') !== '' ? $row['DocumentStatus'] : 'unknown')
+                        .") for {$order->order_number}.";
+                    Log::info("Distribution for {$order->order_number} found via SO {$groupSoId} but not usable: {$unconfirmed}");
+                }
+            }
+
             $plmId = DB::connection('vsm')->table('po_lines')
                 ->where('PurchaseOrderNumber', $order->order_number)
                 ->whereNotNull('PLMId')
@@ -173,7 +283,7 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
                 ->value('PLMId');
 
             if (! $plmId) {
-                return;
+                return $unconfirmed;
             }
 
             // Primary: SO Intercompany → TOC_DT by SOID.
@@ -190,7 +300,7 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
                     $order->distribution_id = $row['DistributionID'];
                     $order->save();
 
-                    return;
+                    return null;
                 }
             }
 
@@ -203,12 +313,20 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
                 ->value('ActivityNo');
 
             if (! str_contains($candidate, '/DST/')) {
-                return;
+                return $unconfirmed;
             }
 
             $row = $this->fetchTocDt("DistributionID eq '{$candidate}'");
-            if (empty($row['DistributionID']) || ($row['DocumentStatus'] ?? '') !== 'Confirmed') {
-                return;
+            if (empty($row['DistributionID'])) {
+                return $unconfirmed;
+            }
+
+            if (($row['DocumentStatus'] ?? '') !== 'Confirmed') {
+                $unconfirmed ??= "DST {$row['DistributionID']} is not confirmed (status: "
+                    .(($row['DocumentStatus'] ?? '') !== '' ? $row['DocumentStatus'] : 'unknown')
+                    .") for {$order->order_number}.";
+
+                return $unconfirmed;
             }
 
             $article = (string) DB::connection('vsm')->table('plm_activity')
@@ -216,15 +334,19 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
             if ($article !== '' && ($row['ArticleID'] ?? '') !== '' && $row['ArticleID'] !== $article) {
                 Log::warning("Distribution fallback rejected for {$order->order_number}: {$candidate} carries article {$row['ArticleID']}, PLM says {$article}.");
 
-                return;
+                return $unconfirmed;
             }
 
             Log::info("Distribution ID for {$order->order_number} resolved via Budget Buying fallback: {$candidate} (SO Intercompany unfilled in PLM).");
             $order->distribution_id = $row['DistributionID'];
             $order->save();
+
+            return null;
         } catch (\Throwable $e) {
             Log::warning("Failed to resolve distribution ID for order {$order->order_number}: ".$e->getMessage());
         }
+
+        return $unconfirmed;
     }
 
     /** First TOC_DT row (cross-company) matching the OData filter, or null. */

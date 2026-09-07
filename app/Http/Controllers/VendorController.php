@@ -40,6 +40,9 @@ class VendorController extends Controller
             'pending_items' => PoItem::whereHas('purchaseOrder', function ($q) use ($vendorId) {
                 $q->where('vendor_id', $vendorId);
             })->where('status', 'pending')->count(),
+            'processing_items' => PoItem::whereHas('purchaseOrder', function ($q) use ($vendorId) {
+                $q->where('vendor_id', $vendorId);
+            })->where('status', 'processing')->count(),
             'completed_pos' => PurchaseOrder::where('vendor_id', $vendorId) // Changed from printed_rolls
                 ->where('status', 'completed')
                 ->count(),
@@ -190,11 +193,15 @@ class VendorController extends Controller
         $validator->after(function ($validator) use ($request, $orderUnit, $primaryField) {
             $rowNo = 0;
             foreach ($request->input('rolls', []) as $key => $roll) {
-                $rowNo++;
-                // Skip validation if the roll is marked for deletion
+                // Skip validation if the roll is marked for deletion. Deleted
+                // rows must not consume a row number — the UI's "Roll N"
+                // labels (updateRollNumbers() in process-item.blade.php) only
+                // count non-deleted rows, and this counter has to match that
+                // exactly or the error message points at the wrong card.
                 if (isset($roll['delete']) && $roll['delete'] == '1') {
                     continue;
                 }
+                $rowNo++;
 
                 // The order-metric quantity is the only mandatory figure
                 $primary = $roll[$primaryField] ?? null;
@@ -236,9 +243,6 @@ class VendorController extends Controller
                 if (isset($rollData['delete']) && $rollData['delete'] == '1' && isset($rollData['id'])) {
                     $roll = Roll::find($rollData['id']);
                     if ($roll && $roll->item_id == $item->id) {
-                        if ($roll->qr_code_path && \Storage::exists($roll->qr_code_path)) {
-                            \Storage::delete($roll->qr_code_path);
-                        }
                         $roll->delete();
                         $deletedCount++;
                     }
@@ -252,7 +256,7 @@ class VendorController extends Controller
             // Prepare a list of roll data to process (Updating Existing + Creating New)
             // We need to map the inputs to the actual DB records or new entries
 
-            $nextSequence = 1;
+            $nextSequence = Roll::siblingSequenceOffset($item) + 1;
             $updatedCount = 0;
             $createdCount = 0;
 
@@ -307,8 +311,7 @@ class VendorController extends Controller
                     ];
 
                     // Generate Roll Number: PO-ITEM-SEQ
-                    $rollNumber = sprintf(
-                        '%s-%s-%03d',
+                    $rollNumber = Roll::buildRollNumber(
                         $item->purchaseOrder->po_number,
                         $item->item_number,
                         $nextSequence
@@ -316,9 +319,6 @@ class VendorController extends Controller
                     $updateData['roll_number'] = $rollNumber;
 
                     $existingRoll->update($updateData);
-
-                    // Update QR Code if name changed (optional, but good practice)
-                    // $existingRoll->generateQrCode();
 
                     $nextSequence++;
                     $updatedCount++;
@@ -340,21 +340,14 @@ class VendorController extends Controller
                 ];
 
                 // Generate Roll Number: PO-ITEM-SEQ
-                $rollNumber = sprintf(
-                    '%s-%s-%03d',
+                $rollNumber = Roll::buildRollNumber(
                     $item->purchaseOrder->po_number,
                     $item->item_number,
                     $nextSequence
                 );
                 $createData['roll_number'] = $rollNumber;
 
-                $roll = Roll::create($createData);
-
-                try {
-                    $roll->generateQrCode();
-                } catch (\Exception $e) {
-                    \Log::warning('QR generation failed for roll '.$rollNumber.': '.$e->getMessage());
-                }
+                Roll::create($createData);
 
                 $nextSequence++;
                 $createdCount++;
@@ -404,11 +397,6 @@ class VendorController extends Controller
             abort(403);
         }
 
-        // Delete QR code file if exists
-        if ($roll->qr_code_path && \Storage::exists($roll->qr_code_path)) {
-            \Storage::delete($roll->qr_code_path);
-        }
-
         $itemId = $roll->item->id;
         $roll->delete();
 
@@ -416,6 +404,21 @@ class VendorController extends Controller
             'success' => true,
             'message' => 'Roll deleted successfully',
             'item_id' => $itemId,
+        ]);
+    }
+
+    public function rollQrCode($rollId)
+    {
+        $roll = Roll::with('item.purchaseOrder')->findOrFail($rollId);
+
+        if ($roll->item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+            abort(403);
+        }
+
+        return view('rolls.qr-view', [
+            'roll' => $roll,
+            'qrSvg' => \SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(260)->generate($roll->qrPayload()),
+            'qtyCaption' => $roll->qtyCaption(),
         ]);
     }
 
@@ -514,33 +517,42 @@ class VendorController extends Controller
             \Log::error('Failed to send partial shipment notification: '.$e->getMessage());
         }
 
-        $approverBadge = Setting::getValue('Approval');
+        $approverEmails = $this->fabricApproverEmails();
 
-        // Use custom approver lookup logic from ToleranceAmendment
-        if ($approverBadge) {
-            $approverData = \DB::connection('people_function')
-                ->table('employees')
-                ->where('badge', $approverBadge)
-                ->first();
-
-            if ($approverData && ! empty($approverData->email)) {
-                try {
-                    \Mail::to($approverData->email)
-                        ->send(new \App\Mail\ToleranceAmendmentMailable($amendmentRequest));
-                } catch (\Exception $e) {
-                    \Log::error('Failed to send partial shipment email: '.$e->getMessage());
-                }
-            } else {
-                \Log::warning('Approver badge found but no email: '.$approverBadge);
-                // Fallback attempt
-                $this->sendFallbackNotification($amendmentRequest);
+        if (! empty($approverEmails)) {
+            try {
+                \Mail::to($approverEmails)->send(new \App\Mail\ToleranceAmendmentMailable($amendmentRequest));
+            } catch (\Exception $e) {
+                \Log::error('Failed to send partial shipment email: '.$e->getMessage());
             }
         } else {
-            \Log::warning('No Approver badge found in settings');
+            \Log::warning('No fabric approver email configured (Admin > Workflow)');
             $this->sendFallbackNotification($amendmentRequest);
         }
 
         return redirect()->back()->with('success', 'Partial shipment request sent successfully! You will be notified once approved.');
+    }
+
+    /**
+     * Approver(s) for fabric tolerance/partial-shipment requests, configured
+     * on the admin Workflow page (Setting `fabric_approver_email`). Replaces
+     * the old badge -> people_function lookup, which silently produced no
+     * recipient whenever the badge wasn't a valid employees.badge value.
+     *
+     * @return array<int, string>
+     */
+    private function fabricApproverEmails(): array
+    {
+        $raw = Setting::getValue('fabric_approver_email', 'leon@megaperintis.co.id');
+        $emails = [];
+        foreach (preg_split('/[,;]+/', (string) $raw) as $email) {
+            $email = trim($email);
+            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $emails[] = $email;
+            }
+        }
+
+        return $emails;
     }
 
     private function sendFallbackNotification($amendmentRequest)
@@ -653,24 +665,10 @@ class VendorController extends Controller
             abort(403);
         }
 
-        $approverBadge = Setting::getValue('Approval');
+        $approverEmails = $this->fabricApproverEmails();
 
-        if (! $approverBadge) {
-            return redirect()->back()->with('error', 'Approver badge is not configured in settings.');
-        }
-
-        // Get approver email from external database
-        $approver = DB::connection('people_function')
-            ->table('employees')
-            ->where('badge', $approverBadge)
-            ->first();
-
-        if (! $approver) {
-            return redirect()->back()->with('error', 'Approver with badge '.$approverBadge.' not found in employees database.');
-        }
-
-        if (empty($approver->email)) {
-            return redirect()->back()->with('error', 'Approver found but email is missing in employees database.');
+        if (empty($approverEmails)) {
+            return redirect()->back()->with('error', 'Fabric approver email is not configured. Set it on the admin Workflow page.');
         }
 
         $amendmentRequest = ToleranceAmendmentRequest::create([
@@ -680,7 +678,6 @@ class VendorController extends Controller
             'new_underdelivery' => $request->new_underdelivery,
             'new_overdelivery' => $request->new_overdelivery,
             'reason' => $request->reason,
-            'approver_badge' => $approverBadge,
             'status' => 'pending',
         ]);
 
@@ -693,7 +690,7 @@ class VendorController extends Controller
         }
 
         try {
-            \Mail::to($approver->email)->send(new \App\Mail\ToleranceAmendmentMailable($amendmentRequest));
+            \Mail::to($approverEmails)->send(new \App\Mail\ToleranceAmendmentMailable($amendmentRequest));
         } catch (\Exception $e) {
             return redirect()->back()->with('success', 'Amendment requested, but mail could not be sent. Check logs for details.')->with('warning', $e->getMessage());
         }

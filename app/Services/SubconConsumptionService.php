@@ -10,7 +10,7 @@ use App\Models\SubconOrder;
  * gate and derives the figures the QMS console later reads. Matches the agreed
  * spreadsheet schema (B=fabric_sent, C=consumption_plan, E=total qty cut,
  * G=short_roll, H=sisa_kain, I=kepala_kain, J=retur_kain):
- *   cutt_plan          = ROUNDDOWN(B / C, 0)
+ *   cutt_plan          = ROUNDDOWN((B − J) / C, 0)      ← ONLY retur_kain is subtracted
  *   actual_consumption = (B − J) / E                   ← ONLY retur_kain is subtracted
  *   overconsumption    = (actual_consumption − C) / C  (ratio; 0.0271 = 2.71%)
  *   deduction (IDR)    = max(0, actual_consumption − 1.03 × C) × E × fabric_price
@@ -73,7 +73,7 @@ class SubconConsumptionService
             $fabricPrice = ($f['fabric_price'] ?? null) === null || $f['fabric_price'] === ''
                 ? null : round((float) $f['fabric_price'], 2);
             $cuttPlan = ($fabricSent !== null && $consumptionPlan !== null && $consumptionPlan > 0)
-                ? (int) floor($fabricSent / $consumptionPlan) : null;
+                ? (int) floor(($fabricSent - $wasteTotal) / $consumptionPlan) : null;
             $actualConsumption = ($fabricSent !== null && $totalCut > 0)
                 ? round(($fabricSent - $wasteTotal) / $totalCut, 4) : null;
             $overconsumption = ($actualConsumption !== null && $consumptionPlan !== null && $consumptionPlan > 0)

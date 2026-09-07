@@ -42,4 +42,20 @@ return [
         'resource' => env('D365_RESOURCE'),
     ],
 
+    'rpa' => [
+        // Shared secret checked by RpaFinalizeController — automaton/pw_service/
+        // debit_note calls back into this app once it knows the real Document
+        // No/Invoice Date, so the debit-note page can be genuinely re-rendered
+        // via Blade instead of overlaid onto the existing PDF after the fact.
+        'finalize_token' => env('RPA_FINALIZE_TOKEN'),
+    ],
+
+    // Internal WhatsApp channel bot (~/channel on this box, whatsapp-web.js).
+    // Reached via the Docker bridge gateway since the bot runs on the host
+    // via pm2, not in this app's container network.
+    'whatsapp' => [
+        'base_url' => env('WA_API_BASE', 'http://172.17.0.1:3000'),
+        'api_key' => env('WA_API_KEY'),
+    ],
+
 ];

@@ -254,10 +254,21 @@
                 $unit = $unitRaw ? ' '.$unitRaw : '';
                 $unitPerPc = $unitRaw ? ' '.$unitRaw.'/pc' : '';
             @endphp
+            @php
+                $deliveryPct = $f->delivery_pct ?? null;
+                $inventoryGroup = trim((string) ($f->inventory_group ?? ''));
+            @endphp
             <tr>
                 <td style="font-size: 4.9pt; color: #334155; border-top: {{ $loop->first ? '0.6px solid #E2E8F0' : 'none' }}; padding: 2px 1px; line-height: 1.5;">
                     <div>
                         @if ($f->label)<span style="font-weight: 700; color: #0F172A; margin-right: 4px;">{{ $shortenFabric($f->label) }}</span>@endif
+                        @if ($inventoryGroup !== '')<span class="muted bold" style="text-transform: uppercase;">{{ $inventoryGroup }}</span>@endif
+                    </div>
+                    <div style="margin-top: 1px;">
+                        @if ($deliveryPct !== null)
+                            <span class="muted bold">{{ $deliveryPct >= 0 ? 'Overdelivery' : 'Underdelivery' }}:</span>
+                            <span style="color: {{ abs($deliveryPct) > 3 ? '#DC2626' : '#0F172A' }}; font-weight: {{ abs($deliveryPct) > 3 ? '700' : '500' }};">{{ number_format(abs($deliveryPct), 2) }}%</span> &nbsp;
+                        @endif
                         <span class="muted bold">Goods Receive:</span> <span style="color: #0F172A;">{{ isset($f->goods_receive) && $f->goods_receive !== null ? $n($f->goods_receive).$unit : '—' }}</span> &nbsp;
                         <span class="muted bold">Fabric Sent:</span> <span style="color: #0F172A;">{{ $f->fabric_sent !== null ? $n($f->fabric_sent).$unit : '0' }}</span> &nbsp;
                         <span class="muted bold">Short Roll:</span> <span style="color: #0F172A;">{{ $f->short_roll !== null ? $n($f->short_roll).$unit : '0' }}</span> &nbsp;
@@ -488,4 +499,41 @@
             </tr>
         @endforeach
     </table>
+@endif
+
+{{-- Material Flow return attachments — one page per delivery-note file. --}}
+@if ($attachments->isNotEmpty())
+    @foreach ($attachments as $att)
+        <div style="page-break-before: always;"></div>
+        <div class="section-title" style="margin-top: 0; margin-bottom: 10px;">
+            7. Material Return Attachment{{ $attachments->count() > 1 ? ' ('.$loop->iteration.' of '.$attachments->count().')' : '' }}
+        </div>
+        <table style="width: 100%; border-collapse: collapse; border: none;">
+            <tr>
+                <td style="border: none; padding: 0; text-align: center;">
+                    @if ($att['is_image'] && $att['image_data'])
+                        <img src="{{ $att['image_data'] }}" style="max-width: 100%; max-height: 640px; border: 0.6px solid #E2E8F0; border-radius: 4px;">
+                    @else
+                        <div style="width: 100%; padding: 60px 0; border: 0.6px solid #E2E8F0; border-radius: 6px; background-color: #F8FAFC; color: #64748B; font-style: italic; font-size: 6.5pt;">
+                            @if (! $att['is_image'])
+                                This delivery-note attachment is a PDF file ({{ $att['filename'] ?? 'file' }}) — not embedded inline; open the original file to view its content.
+                            @else
+                                Image could not be loaded ({{ $att['filename'] ?? 'file' }}).
+                            @endif
+                        </div>
+                    @endif
+                </td>
+            </tr>
+            <tr>
+                <td style="border: none; padding-top: 6px; font-size: 5.6pt; line-height: 1.6;">
+                    <span class="muted bold">File:</span> <span style="color: #0F172A;">{{ $att['filename'] ?? '—' }}</span> &nbsp;
+                    <span class="muted bold">Attached By:</span> <span style="color: #0F172A;">{{ $att['role'] === 'vendor' ? 'Vendor' : 'MD Prod' }}{{ $att['name'] ? ' — '.$att['name'] : '' }}</span> &nbsp;
+                    <span class="muted bold">Date:</span> <span style="color: #0F172A;">{{ $att['uploaded_at'] ? \Carbon\Carbon::parse($att['uploaded_at'])->timezone('Asia/Jakarta')->format('d M Y H:i') : '—' }}</span>
+                    @if (! empty($att['note']))
+                        <div style="margin-top: 2px;"><span class="muted bold">Note:</span> <span style="color: #0F172A;">{{ $att['note'] }}</span></div>
+                    @endif
+                </td>
+            </tr>
+        </table>
+    @endforeach
 @endif

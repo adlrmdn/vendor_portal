@@ -6,7 +6,13 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h2 class="mb-0">Director Authorizations</h2>
-        <small class="text-muted">Inspections signed by MD Production awaiting your final authorization</small>
+        <small class="text-muted">
+            @if($isDirector)
+                Inspections signed by MD Production awaiting your final authorization
+            @else
+                Inspections signed by MD Production awaiting the Director's final authorization — view only
+            @endif
+        </small>
     </div>
     <div class="d-flex gap-2">
         <a href="{{ route('subcon.admin.approval-logs', ['gate' => 'director']) }}" class="btn btn-outline-secondary">
@@ -14,6 +20,12 @@
         </a>
     </div>
 </div>
+
+@include('subcon.partials.table-search', [
+    'route' => route('subcon.admin.director-approvals'),
+    'search' => $search,
+    'placeholder' => 'Search work order, vendor, style, production group…',
+])
 
 <div class="card">
     <div class="card-body p-0">
@@ -25,6 +37,7 @@
                         <th>Vendor</th>
                         <th>Inspection</th>
                         <th>MD Production</th>
+                        <th>Deduction</th>
                         <th class="text-end pe-4" style="width: 360px;">Action</th>
                     </tr>
                 </thead>
@@ -49,6 +62,17 @@
                                 @endif
                             </td>
                             <td class="small text-muted">{{ $p['ho_signature'] ?: '—' }}</td>
+                            <td>
+                                @if(($p['deduction_total'] ?? 0) > 0)
+                                    <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25">
+                                        <i class="fas fa-circle-minus me-1"></i> Rp {{ number_format($p['deduction_total'], 0, ',', '.') }}
+                                    </span>
+                                @else
+                                    <span class="badge bg-success-subtle text-success border border-success border-opacity-25">
+                                        <i class="fas fa-circle-check me-1"></i> None
+                                    </span>
+                                @endif
+                            </td>
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
                                     {{-- Signed inspection report as it currently stands (QC + Factory
@@ -56,14 +80,16 @@
                                     <a href="{{ route('qc.document', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
                                         <i class="fas fa-file-pdf me-1"></i> Report
                                     </a>
-                                    {{-- Opens the existing token-based Director form (read-only summary
-                                         + Authorize & Sign) — same workflow as the email link. --}}
-                                    <a href="{{ route('qc.director-approve', ['token' => $p['token']]) }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
-                                        <i class="fas fa-stamp me-1"></i> Review &amp; Authorize
-                                    </a>
-                                    <a href="{{ route('qc.director-decline', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener">
-                                        <i class="fas fa-times me-1"></i> Reject
-                                    </a>
+                                    @if($isDirector)
+                                        {{-- Opens the existing token-based Director form (read-only summary
+                                             + Authorize & Sign) — same workflow as the email link. --}}
+                                        <a href="{{ route('qc.director-approve', ['token' => $p['token']]) }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
+                                            <i class="fas fa-stamp me-1"></i> Review &amp; Authorize
+                                        </a>
+                                        <a href="{{ route('qc.director-decline', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener">
+                                            <i class="fas fa-times me-1"></i> Reject
+                                        </a>
+                                    @endif
                                 </div>
                             </td>
                         </tr>
@@ -71,9 +97,9 @@
 
                     @if(empty($pending))
                         <tr>
-                            <td colspan="5" class="text-center text-muted py-5">
+                            <td colspan="6" class="text-center text-muted py-5">
                                 <i class="fas fa-check-double fa-2x mb-3 text-success opacity-50 d-block"></i>
-                                Nothing awaiting your authorization.
+                                {{ $search !== '' ? 'No pending authorizations match "'.$search.'".' : 'Nothing awaiting your authorization.' }}
                             </td>
                         </tr>
                     @endif

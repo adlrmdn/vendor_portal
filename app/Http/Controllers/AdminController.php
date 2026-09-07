@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Models\PoItem;
 use App\Models\PurchaseOrder;
+use App\Models\User;
 use App\Models\Vendor;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth; // Add this import
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use Smalot\PdfParser\Parser as PdfParser;
 
@@ -150,12 +152,29 @@ class AdminController extends Controller
         return view('admin.purchase-order-view', compact('purchaseOrder'));
     }
 
-    public function vendors()
+    public function vendors(Request $request)
     {
-        $vendors = Vendor::where('type', 'fabric')
+        $query = Vendor::where('type', 'fabric')
             ->withCount(['purchaseOrders', 'activePurchaseOrders'])
-            ->orderBy('name')
-            ->paginate(20);
+            ->with(['users' => function ($q) {
+                $q->where('role', 'fabric_vendor');
+            }]);
+
+        if ($search = trim((string) $request->input('search'))) {
+            $query->where(function ($q) use ($search) {
+                $term = '%'.strtolower($search).'%';
+                $q->whereRaw('LOWER(name) LIKE ?', [$term])
+                  ->orWhereRaw('LOWER(vendor_code) LIKE ?', [$term])
+                  ->orWhereRaw('LOWER("group") LIKE ?', [$term])
+                  ->orWhereHas('users', function ($userQuery) use ($term) {
+                      $userQuery->whereRaw('LOWER(email) LIKE ?', [$term]);
+                  });
+            });
+        }
+
+        $vendors = $query->orderBy('name')
+            ->paginate(20)
+            ->withQueryString();
 
         return view('admin.vendors', compact('vendors'));
     }
@@ -191,9 +210,10 @@ class AdminController extends Controller
 
     public function storeVendor(Request $request)
     {
-        $request->validate([
+        $data = $request->validate([
             'name' => 'required|string|max:255',
             'vendor_code' => 'required|string|max:50|unique:vendors,vendor_code',
+            'group' => 'nullable|string|max:100',
             'contact_person' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255',
             'phone' => 'nullable|string|max:50',
@@ -201,30 +221,218 @@ class AdminController extends Controller
             'is_active' => 'boolean',
         ]);
 
-        $vendor = \App\Models\Vendor::create([
-            'id' => \Illuminate\Support\Str::uuid(),
-            'name' => $request->name,
-            'vendor_code' => $request->vendor_code,
-            'type' => 'fabric',
-            'is_active' => $request->has('is_active'),
-            'contact_info' => [
-                'contact_person' => $request->contact_person,
-                'email' => $request->email,
-                'phone' => $request->phone,
-                'address' => $request->address,
-            ],
+        // 'id' isn't mass-assignable on Vendor (no creating hook either), so
+        // Vendor::create(['id' => ...]) silently drops it and the DB assigns
+        // its own id instead — harmless here (nothing else depends on it
+        // matching), but set it directly for correctness.
+        $vendorId = (string) Str::uuid();
+        $loginEmail = $this->deriveVendorLoginEmail($data['name']);
+        // Basic shared default password — the vendor is expected to change it.
+        $password = 'password';
+
+        DB::transaction(function () use ($request, $data, $vendorId, $loginEmail, $password) {
+            $vendor = new Vendor([
+                'name' => $data['name'],
+                'vendor_code' => $data['vendor_code'],
+                'group' => $data['group'] ?? null,
+                'type' => 'fabric',
+                'is_active' => $request->has('is_active'),
+                'contact_info' => [
+                    'contact_person' => $data['contact_person'] ?? null,
+                    'email' => $data['email'] ?? null,
+                    'phone' => $data['phone'] ?? null,
+                    'address' => $data['address'] ?? null,
+                ],
+            ]);
+            $vendor->id = $vendorId;
+            $vendor->save();
+
+            $user = new User([
+                'name' => $data['name'],
+                'email' => $loginEmail,
+                'password' => bcrypt($password),
+                'role' => 'fabric_vendor',
+                'vendor_id' => $vendorId,
+            ]);
+            $user->id = (string) Str::uuid();
+            $user->save();
+        });
+
+        // Pull this vendor's existing confirmed POs from D365 right away, off
+        // the request cycle, instead of leaving it empty until the next
+        // scheduled d365:sync-orders run.
+        \App\Jobs\SyncNewFabricVendorOrders::dispatch($data['vendor_code']);
+
+        // Flash the plaintext password once — it is never stored in readable form,
+        // so this is the only chance to copy it. Shown in a modal on redirect.
+        return redirect()->route('admin.vendors')
+            ->with('success', 'Vendor "'.$data['name'].'" created with a portal login.')
+            ->with('new_vendor_credentials', [
+                'name' => $data['name'],
+                'login_email' => $loginEmail,
+                'password' => $password,
+            ]);
+    }
+
+    /**
+     * Derive a unique, readable portal login email from a vendor name, matching
+     * the same "vendor@{abbreviated-name}.com" convention already used by
+     * `vendors:register-fabric-accounts` and the D365 fabric vendor sync, so
+     * admin-created accounts don't drift into a second naming scheme.
+     */
+    private function deriveVendorLoginEmail(string $name): string
+    {
+        $words = array_filter(explode(' ', strtolower($name)));
+        $prefixes = ['pt', 'cv', 'fa', 'ud', 'pd', 'koperasi'];
+
+        if (count($words) > 1 && in_array(reset($words), $prefixes, true)) {
+            array_shift($words);
+        }
+
+        if (empty($words)) {
+            $slug = 'fabric';
+        } else {
+            $concat = preg_replace('/[^a-z0-9]/', '', implode('', $words));
+            if (strlen($concat) <= 15) {
+                $slug = $concat;
+            } else {
+                $words = array_values($words);
+                $firstWord = preg_replace('/[^a-z0-9]/', '', $words[0]);
+                $initials = '';
+                for ($i = 1; $i < count($words); $i++) {
+                    $initials .= preg_replace('/[^a-z0-9]/', '', substr($words[$i], 0, 1));
+                }
+                $slug = substr($firstWord.$initials, 0, 15);
+            }
+        }
+
+        $email = "vendor@{$slug}.com";
+        $counter = 1;
+        while (User::where('email', $email)->exists()) {
+            $email = "vendor@{$slug}{$counter}.com";
+            $counter++;
+        }
+
+        return $email;
+    }
+
+    public function resetVendorPassword(Request $request, string $id)
+    {
+        $vendor = Vendor::where('type', 'fabric')->findOrFail($id);
+
+        $data = $request->validate([
+            'password' => 'nullable|string|min:6|max:255',
         ]);
 
-        return redirect()->back()->with('success', 'Vendor created successfully');
+        $password = $data['password'] ?? 'password';
+
+        $users = User::where('vendor_id', $vendor->id)
+            ->where('role', 'fabric_vendor')
+            ->get();
+
+        if ($users->isEmpty()) {
+            $loginEmail = $this->deriveVendorLoginEmail($vendor->name);
+            $user = new User([
+                'name' => $vendor->name,
+                'email' => $loginEmail,
+                'password' => bcrypt($password),
+                'role' => 'fabric_vendor',
+                'vendor_id' => $vendor->id,
+            ]);
+            $user->id = (string) Str::uuid();
+            $user->save();
+            $email = $loginEmail;
+        } else {
+            foreach ($users as $user) {
+                $user->password = bcrypt($password);
+                $user->save();
+            }
+            $email = $users->first()->email;
+        }
+
+        return redirect()->route('admin.vendors', $request->only('search'))
+            ->with('success', 'Password reset successfully for vendor "'.$vendor->name.'".')
+            ->with('new_vendor_credentials', [
+                'name' => $vendor->name,
+                'login_email' => $email,
+                'password' => $password,
+                'is_reset' => true,
+            ]);
+    }
+
+    public function createVendorAccount(Request $request, string $id)
+    {
+        $vendor = Vendor::where('type', 'fabric')->findOrFail($id);
+
+        $existingUser = User::where('vendor_id', $vendor->id)
+            ->where('role', 'fabric_vendor')
+            ->first();
+
+        if ($existingUser) {
+            return redirect()->route('admin.vendors', $request->only('search'))
+                ->with('warning', 'Vendor already has a portal login account ('.$existingUser->email.').');
+        }
+
+        $loginEmail = $this->deriveVendorLoginEmail($vendor->name);
+        $password = 'password';
+
+        $user = new User([
+            'name' => $vendor->name,
+            'email' => $loginEmail,
+            'password' => bcrypt($password),
+            'role' => 'fabric_vendor',
+            'vendor_id' => $vendor->id,
+        ]);
+        $user->id = (string) Str::uuid();
+        $user->save();
+
+        return redirect()->route('admin.vendors', $request->only('search'))
+            ->with('success', 'Portal login account created for vendor "'.$vendor->name.'".')
+            ->with('new_vendor_credentials', [
+                'name' => $vendor->name,
+                'login_email' => $loginEmail,
+                'password' => $password,
+            ]);
+    }
+
+    public function toggleVendorStatus(string $id)
+    {
+        $vendor = Vendor::where('type', 'fabric')->findOrFail($id);
+        $vendor->is_active = ! $vendor->is_active;
+        $vendor->save();
+
+        $status = $vendor->is_active ? 'activated' : 'deactivated';
+
+        return redirect()->route('admin.vendors')->with('success', 'Vendor '.$status.' successfully.');
+    }
+
+    public function deleteVendor(string $id)
+    {
+        $vendor = Vendor::where('type', 'fabric')->findOrFail($id);
+
+        $poCount = PurchaseOrder::where('vendor_id', $vendor->id)->count();
+        if ($poCount > 0) {
+            return redirect()->route('admin.vendors')
+                ->with('error', 'Cannot delete vendor "'.$vendor->name.'" — it has '.$poCount.' purchase order(s) on file. Deactivate it instead.');
+        }
+
+        DB::transaction(function () use ($vendor) {
+            // Delete associated portal login users to avoid orphans.
+            User::where('vendor_id', $vendor->id)->delete();
+            $vendor->delete();
+        });
+
+        return redirect()->route('admin.vendors')->with('success', 'Vendor "'.$vendor->name.'" deleted.');
     }
 
     public function updateVendor(Request $request, $id)
     {
         $vendor = Vendor::where('type', 'fabric')->findOrFail($id);
 
-        $request->validate([
+        $data = $request->validate([
             'name' => 'required|string|max:255',
             'vendor_code' => 'required|string|max:50|unique:vendors,vendor_code,'.$id,
+            'group' => 'nullable|string|max:100',
             'contact_person' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255',
             'phone' => 'nullable|string|max:50',
@@ -233,14 +441,15 @@ class AdminController extends Controller
         ]);
 
         $contactInfo = $vendor->contact_info ?? [];
-        $contactInfo['contact_person'] = $request->contact_person;
-        $contactInfo['email'] = $request->email;
-        $contactInfo['phone'] = $request->phone;
-        $contactInfo['address'] = $request->address;
+        $contactInfo['contact_person'] = $data['contact_person'] ?? null;
+        $contactInfo['email'] = $data['email'] ?? null;
+        $contactInfo['phone'] = $data['phone'] ?? null;
+        $contactInfo['address'] = $data['address'] ?? null;
 
         $vendor->update([
-            'name' => $request->name,
-            'vendor_code' => $request->vendor_code,
+            'name' => $data['name'],
+            'vendor_code' => $data['vendor_code'],
+            'group' => $data['group'] ?? null,
             'is_active' => $request->has('is_active'),
             'contact_info' => $contactInfo,
         ]);
@@ -285,10 +494,13 @@ class AdminController extends Controller
         $validator->after(function ($validator) use ($request, $orderUnit, $primaryField) {
             $rowNo = 0;
             foreach ($request->input('rolls', []) as $key => $roll) {
-                $rowNo++;
+                // Deleted rows must not consume a row number — the UI's "Roll
+                // N" labels only count non-deleted rows, and this counter has
+                // to match that exactly or the error points at the wrong card.
                 if (isset($roll['delete']) && $roll['delete'] == '1') {
                     continue;
                 }
+                $rowNo++;
 
                 $primary = $roll[$primaryField] ?? null;
                 if ((! is_numeric($primary) || $primary < 0.01) && in_array($orderUnit, ['YD', 'M'])) {
@@ -326,9 +538,6 @@ class AdminController extends Controller
                 if (isset($rollData['delete']) && $rollData['delete'] == '1' && isset($rollData['id'])) {
                     $roll = \App\Models\Roll::find($rollData['id']);
                     if ($roll && $roll->item_id == $item->id) {
-                        if ($roll->qr_code_path && \Storage::exists($roll->qr_code_path)) {
-                            \Storage::delete($roll->qr_code_path);
-                        }
                         $roll->delete();
                         $deletedCount++;
                     }
@@ -337,7 +546,7 @@ class AdminController extends Controller
 
             // 2. Process Updates and Creates (Re-sequencing)
             $existingRolls = $item->rolls()->where('item_id', $item->id)->orderBy('sequence')->orderBy('created_at')->get();
-            $nextSequence = 1;
+            $nextSequence = \App\Models\Roll::siblingSequenceOffset($item) + 1;
             $updatedCount = 0;
             $createdCount = 0;
 
@@ -389,7 +598,7 @@ class AdminController extends Controller
                         'sequence' => $nextSequence,
                     ];
 
-                    $rollNumber = sprintf('%s-%s-%03d', $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
+                    $rollNumber = \App\Models\Roll::buildRollNumber($item->purchaseOrder->po_number, $item->item_number, $nextSequence);
                     $updateData['roll_number'] = $rollNumber;
 
                     $existingRoll->update($updateData);
@@ -412,14 +621,10 @@ class AdminController extends Controller
                     'notes' => '',
                 ];
 
-                $rollNumber = sprintf('%s-%s-%03d', $item->purchaseOrder->po_number, $item->item_number, $nextSequence);
+                $rollNumber = \App\Models\Roll::buildRollNumber($item->purchaseOrder->po_number, $item->item_number, $nextSequence);
                 $createData['roll_number'] = $rollNumber;
 
-                $roll = \App\Models\Roll::create($createData);
-                try {
-                    $roll->generateQrCode();
-                } catch (\Exception $e) {
-                }
+                \App\Models\Roll::create($createData);
 
                 $nextSequence++;
                 $createdCount++;
@@ -446,14 +651,21 @@ class AdminController extends Controller
     {
         $roll = \App\Models\Roll::with('item.purchaseOrder')->findOrFail($rollId);
 
-        if ($roll->qr_code_path && \Storage::exists($roll->qr_code_path)) {
-            \Storage::delete($roll->qr_code_path);
-        }
-
         $itemId = $roll->item->id;
         $roll->delete();
 
         return response()->json(['success' => true, 'message' => 'Roll deleted successfully', 'item_id' => $itemId]);
+    }
+
+    public function rollQrCode($rollId)
+    {
+        $roll = \App\Models\Roll::with('item.purchaseOrder')->findOrFail($rollId);
+
+        return view('rolls.qr-view', [
+            'roll' => $roll,
+            'qrSvg' => \SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(260)->generate($roll->qrPayload()),
+            'qtyCaption' => $roll->qtyCaption(),
+        ]);
     }
 
     public function markItemProcessed($itemId)
@@ -660,10 +872,14 @@ class AdminController extends Controller
 
     public function settings()
     {
-        // Fabric settings only — subcon settings (group "subcon" / subcon_* keys)
-        // are managed on the subcon admin Workflow page.
+        // General settings only — subcon settings (group "subcon" / subcon_* keys)
+        // are managed on the subcon admin Workflow page, and fabric approval
+        // routing (group "fabric") is managed on the fabric admin Workflow page.
+        // whereNull('group') is required alongside the exclusion: `group != x`
+        // never matches NULL rows in SQL, so ungrouped settings would silently
+        // disappear from this page without it.
         $settings = \App\Models\Setting::where(function ($query) {
-            $query->whereNull('group')->orWhere('group', '!=', 'subcon');
+            $query->whereNull('group')->orWhereNotIn('group', ['subcon', 'fabric']);
         })
             ->where('key', 'not like', 'subcon_%')
             ->orderBy('group')
@@ -685,5 +901,79 @@ class AdminController extends Controller
         }
 
         return redirect()->back()->with('success', 'Settings updated successfully.');
+    }
+
+    /**
+     * Fabric tolerance-amendment / partial-shipment requests awaiting a
+     * decision. Mirrors the subcon admin Approvals tab — lets the admin act
+     * in-app instead of relying solely on the signed email link.
+     */
+    public function approvals(Request $request)
+    {
+        $search = trim((string) $request->query('q', ''));
+
+        $query = \App\Models\ToleranceAmendmentRequest::with('poItem.purchaseOrder.vendor')
+            ->where('status', 'pending');
+
+        if ($search !== '') {
+            $driver = DB::connection()->getDriverName();
+            $likeOperator = $driver === 'pgsql' ? 'ilike' : 'like';
+
+            $query->whereHas('poItem', function ($q) use ($search, $likeOperator) {
+                $q->where('item_number', $likeOperator, '%'.$search.'%')
+                    ->orWhereHas('purchaseOrder', function ($poQuery) use ($search, $likeOperator) {
+                        $poQuery->where('po_number', $likeOperator, '%'.$search.'%')
+                            ->orWhereHas('vendor', function ($vendorQuery) use ($search, $likeOperator) {
+                                $vendorQuery->where('name', $likeOperator, '%'.$search.'%');
+                            });
+                    });
+            });
+        }
+
+        $requests = $query->orderBy('created_at', 'desc')->paginate(20)->withQueryString();
+
+        return view('admin.approvals', compact('requests', 'search'));
+    }
+
+    /**
+     * Fabric admin Workflow settings — the static email address(es) that
+     * receive tolerance-amendment / partial-shipment approval requests.
+     */
+    public function workflow()
+    {
+        $fabricApproverEmail = \App\Models\Setting::getValue('fabric_approver_email', 'leon@megaperintis.co.id');
+
+        return view('admin.workflow', compact('fabricApproverEmail'));
+    }
+
+    public function updateWorkflow(Request $request)
+    {
+        $multiEmail = function (string $attribute, $value, $fail) {
+            foreach (preg_split('/[,;]+/', (string) $value) as $email) {
+                $email = trim($email);
+                if ($email === '') {
+                    continue;
+                }
+                if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    $fail("The {$attribute} field contains an invalid email address: {$email}");
+                }
+            }
+        };
+
+        $request->validate([
+            'fabric_approver_email' => ['required', $multiEmail],
+        ]);
+
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'fabric_approver_email'],
+            [
+                'value' => $request->input('fabric_approver_email'),
+                'group' => 'fabric',
+                'type' => 'string',
+                'description' => 'Email address(es) that receive fabric tolerance-amendment and partial-shipment approval requests (comma-separated for multiple)',
+            ]
+        );
+
+        return redirect()->back()->with('success', 'Workflow settings updated successfully.');
     }
 }

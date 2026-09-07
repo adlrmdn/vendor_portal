@@ -58,12 +58,33 @@ class SubconFabricLinePublisher
             $hasOver = Schema::connection('qms')->hasColumn(self::TABLE, 'overconsumption');
             $hasPrice = Schema::connection('qms')->hasColumn(self::TABLE, 'fabric_price');
             $hasDed = Schema::connection('qms')->hasColumn(self::TABLE, 'deduction');
+            $hasGoodsReceive = Schema::connection('qms')->hasColumn(self::TABLE, 'goods_receive');
 
             $lines = $this->production->fabricLinesWithData($order);
+            // Labels actually backed by a local reconciliation row — used below to
+            // tell "genuinely nothing entered for this fabric" apart from "a real
+            // row exists, its figures just happen to be 0/unset so far".
+            $localLabels = \App\Models\SubconFabricReconciliation::where('order_id', $order->id)
+                ->pluck('label')->flip();
             $written = 0;
 
             foreach ($lines as $f) {
                 $label = (string) $f['label'];
+
+                $exists = DB::connection('qms')->table(self::TABLE)
+                    ->where('production_group', $pg)
+                    ->where('label', $label)
+                    ->exists();
+
+                // A label with no local reconciliation row at all has nothing real
+                // to publish — either never entered, or the local table was wiped
+                // by some other bug. If QMS already has a row for it, leave that
+                // row untouched rather than overwriting good numbers with zeros;
+                // a brand-new QMS row still gets inserted below (as zeros) so the
+                // console at least knows the fabric exists.
+                if ($exists && ! isset($localLabels[$label])) {
+                    continue;
+                }
 
                 // NOT NULL numeric columns must never receive null → coalesce to 0.
                 $vals = [
@@ -86,11 +107,10 @@ class SubconFabricLinePublisher
                 if ($hasDed) {
                     $vals['deduction'] = round((float) ($f['deduction'] ?? 0), 2);
                 }
-
-                $exists = DB::connection('qms')->table(self::TABLE)
-                    ->where('production_group', $pg)
-                    ->where('label', $label)
-                    ->exists();
+                if ($hasGoodsReceive) {
+                    $vals['goods_receive'] = $f['goods_receive'] !== null ? round((float) $f['goods_receive'], 2) : null;
+                    $vals['goods_receive_date'] = $f['goods_receive_date'] ?? null;
+                }
 
                 if ($exists) {
                     // Only SET project_id when we have one; never null an existing

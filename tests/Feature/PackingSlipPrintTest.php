@@ -111,8 +111,8 @@ class PackingSlipPrintTest extends TestCase
         // Assert specific roll lot id is displayed in the rolls details table
         $this->assertStringContainsString('LOT-XYZ-789', $html);
 
-        // Assert that the barcode text contains the combined Lot-ID | Quantity Unit
-        $expectedBarcodeText = 'Lot-ID LOT-XYZ-789 | 187.00 M';
+        // Assert that the barcode text contains the combined Lot-ID | Bale No.
+        $expectedBarcodeText = 'Lot-ID LOT-XYZ-789 | Bale No. N/A';
         $this->assertStringContainsString($expectedBarcodeText, $html);
 
         // 7b. Verify the view renders HTML with secondary metric enabled (showSecondary = 1)
@@ -239,20 +239,20 @@ class PackingSlipPrintTest extends TestCase
 
         // 1. Without secondary metrics
         $html = view('vendor.pdf.packing-slip', compact('packingSlip', 'selectedItems'))->render();
-        $this->assertStringContainsString('Lot-ID LOT-PCS-123 | 5.00 PCS', $html);
+        $this->assertStringContainsString('Lot-ID LOT-PCS-123 | Bale No. N/A', $html);
 
         // 2. With secondary metrics enabled (showSecondary = 1)
         $showSecondary = 1;
         $reverseUnits = 0;
         $htmlSecondary = view('vendor.pdf.packing-slip', compact('packingSlip', 'selectedItems', 'showSecondary', 'reverseUnits'))->render();
         // Since primary is PCS, length is YD (100.00 YD)
-        $this->assertStringContainsString('Lot-ID LOT-PCS-123 | 5.00 PCS (100.00 YD)', $htmlSecondary);
+        $this->assertStringContainsString('5.00 PCS (100.00 YD)', $htmlSecondary);
 
         // 3. With reverse units enabled (reverseUnits = 1, showSecondary = 1)
         $showSecondary = 1;
         $reverseUnits = 1;
         $htmlReversed = view('vendor.pdf.packing-slip', compact('packingSlip', 'selectedItems', 'showSecondary', 'reverseUnits'))->render();
         // Since reverseUnits = 1, length is M (91.44 M)
-        $this->assertStringContainsString('Lot-ID LOT-PCS-123 | 5.00 PCS (91.44 M)', $htmlReversed);
+        $this->assertStringContainsString('5.00 PCS (91.44 M)', $htmlReversed);
     }
 }

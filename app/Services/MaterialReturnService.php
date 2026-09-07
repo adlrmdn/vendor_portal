@@ -204,7 +204,10 @@ class MaterialReturnService
      * value_stream_ops has no connection to it), this is a point-in-time
      * copy, re-synced to the latest figure every time dispatch is (re-)pressed
      * while the task is still pending. Zero-value lines aren't snapshotted —
-     * they aren't an actual return.
+     * they aren't an actual return. If that leaves the task with zero lines
+     * at all (every fabric/accessory quantity was 0), the task is
+     * auto-checked immediately — there's nothing for Material Flow to
+     * correct, so no human review is required.
      */
     public function dispatchTask(SubconOrder $order, string $requestedBy): MaterialReturnTask
     {
@@ -256,6 +259,24 @@ class MaterialReturnService
         MaterialReturnLine::where('order_id', $order->id)
             ->whereNull('task_id')
             ->update(['task_id' => $task->id]);
+
+        // Nothing to actually check — every fabric Retur Kain and accessory
+        // qty came back 0 (or was never declared), so no line exists on this
+        // task at all. Material Flow's markChecked() requires an actual qty
+        // per line, which is vacuous with zero lines — auto-clear it here
+        // instead of leaving an empty, un-actionable entry sitting in the
+        // Material Flow queue. An attachment alone (no declared qty) does
+        // NOT auto-check — a delivery note with nothing to correct is still
+        // worth a human glance.
+        if ($task->status === MaterialReturnTask::STATUS_PENDING
+            && ! MaterialReturnLine::where('task_id', $task->id)->exists()) {
+            $task->update([
+                'status' => MaterialReturnTask::STATUS_CHECKED,
+                'checked_by' => 'System (auto)',
+                'checked_at' => now(),
+                'checked_note' => 'Auto-checked — no return quantity was declared (all fabric/accessory quantities were 0).',
+            ]);
+        }
 
         return $task;
     }

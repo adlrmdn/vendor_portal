@@ -177,9 +177,17 @@
                                     <textarea name="ho_remarks" id="ho_remarks" rows="2" class="form-control form-control-sm" required placeholder="Explain your review — findings, concerns, or justification for this approval.">{{ old('ho_remarks', $row->ho_remarks ?? null) }}</textarea>
                                 </div>
 
+                                @if($validateMode && ($materialReturnTask ?? null) && ! $materialReturnTask->isChecked())
+                                    <div class="alert alert-warning small mb-0 mt-3 d-flex align-items-center gap-2">
+                                        <i class="fas fa-hourglass-half"></i>
+                                        <div>Waiting on Material Flow — the returned material must be checked by inventory before this can be sent to the Director.</div>
+                                    </div>
+                                @endif
+
                                 <div class="d-flex justify-content-end gap-2 mt-4">
                                     @if($validateMode)
-                                        <button type="submit" class="btn btn-primary px-4 fw-semibold shadow-sm">
+                                        <button type="submit" class="btn btn-primary px-4 fw-semibold shadow-sm"
+                                                {{ ($materialReturnTask ?? null) && ! $materialReturnTask->isChecked() ? 'disabled title="Waiting on Material Flow to check the returned material"' : '' }}>
                                             <i class="fas fa-paper-plane me-1"></i> Validate &amp; Send Approval
                                         </button>
                                     @else

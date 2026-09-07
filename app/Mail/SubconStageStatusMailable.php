@@ -39,7 +39,9 @@ class SubconStageStatusMailable extends Mailable
         $this->order = $order;
         $this->gate = $gate;
         $this->outcome = $outcome;
-        $this->gateLabel = $gate === 'gramasi' ? 'Gramasi & Blister Capacity' : 'Cutting Report';
+        $this->gateLabel = $gate === 'gramasi'
+            ? 'Gramasi & Blister Capacity'
+            : ($order->cutting_partial ? 'Partial Cutting Report' : 'Cutting Report');
         $this->labelsUnlocked = $gate === 'gramasi' && $outcome === 'approved';
 
         if ($this->labelsUnlocked) {

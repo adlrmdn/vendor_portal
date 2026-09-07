@@ -11,7 +11,7 @@
                 <div class="card-body text-center p-5">
                     <div class="mb-3"><i class="fas fa-triangle-exclamation fa-3x text-warning"></i></div>
                     <h4 class="fw-bold mb-2">Reject this inspection?</h4>
-                    <p class="text-muted mb-4">You are about to <strong>reject</strong> this packaging inspection at the Director stage. It will be sent <strong>back to MD Production</strong> for re-approval — the factory confirmation is kept.</p>
+                    <p class="text-muted mb-4">You are about to <strong>reject</strong> this packaging inspection at the Director stage. It will be sent <strong>back to Report Validation</strong> for MD Production to re-validate and send — their existing consumption entry and sign-off are kept, as is the factory confirmation.</p>
 
                     <dl class="row small text-start mb-4">
                         @if($subcon ?? null)

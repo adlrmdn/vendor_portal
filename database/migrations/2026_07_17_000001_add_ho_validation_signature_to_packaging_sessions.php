@@ -22,22 +22,32 @@ return new class extends Migration
 
     public function up(): void
     {
-        Schema::connection($this->connection)->table(self::TABLE, function (Blueprint $table) {
-            if (! Schema::connection($this->connection)->hasColumn(self::TABLE, 'ho_validation_signature')) {
+        $columnExisted = Schema::connection($this->connection)->hasColumn(self::TABLE, 'ho_validation_signature');
+
+        if (! $columnExisted) {
+            Schema::connection($this->connection)->table(self::TABLE, function (Blueprint $table) {
                 $table->string('ho_validation_signature')->nullable();
-            }
-        });
+            });
+        }
 
         // Backfill in-flight rows: under the single-step flow the Director was
         // emailed at HO approval, so every already-signed row must count as
         // validated — otherwise its already-sent Director link would dead-end
         // on the new directorStageGuard.
-        DB::connection($this->connection)->table(self::TABLE)
-            ->where('ho_approval_signature', 'like', 'Digitally Signed%')
-            ->where(function ($q) {
-                $q->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
-            })
-            ->update(['ho_validation_signature' => 'Auto-validated (single-step flow) [migrated 2026-07-17]']);
+        //
+        // ONLY when this run actually created the column. The qms connection
+        // always points at the shared live DB, so a re-run from a fresh
+        // migrations table (e.g. migrating database_test.sqlite, 2026-07-20
+        // incident) must NOT re-stamp rows that are now legitimately waiting
+        // for the MD's Validate & Send step.
+        if (! $columnExisted) {
+            DB::connection($this->connection)->table(self::TABLE)
+                ->where('ho_approval_signature', 'like', 'Digitally Signed%')
+                ->where(function ($q) {
+                    $q->whereNull('ho_validation_signature')->orWhere('ho_validation_signature', '');
+                })
+                ->update(['ho_validation_signature' => 'Auto-validated (single-step flow) [migrated 2026-07-17]']);
+        }
     }
 
     public function down(): void

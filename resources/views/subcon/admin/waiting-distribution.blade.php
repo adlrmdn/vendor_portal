@@ -81,16 +81,18 @@
         <span class="text-muted small"><i class="fas fa-print me-1"></i>Waiting Distribution Details</span>
     </div>
 
-    <!-- Info Alert -->
-    <div class="alert alert-info border-0 shadow-sm rounded-4 mb-4 p-3 d-flex align-items-center" style="background-color: #eff6ff; color: #1e3a8a;">
-        <div class="me-3 fs-4 text-primary">
-            <i class="fas fa-info-circle"></i>
+    <!-- Search -->
+    <form method="GET" action="{{ route('subcon.admin.orders-waiting-distribution') }}" class="mb-3">
+        <div class="input-group" style="max-width: 420px;">
+            <span class="input-group-text bg-white border-end-0"><i class="fas fa-search text-muted"></i></span>
+            <input type="text" name="q" value="{{ $search }}" class="form-control border-start-0"
+                   placeholder="Search order #, vendor, style, production group…">
+            @if($search !== '')
+                <a href="{{ route('subcon.admin.orders-waiting-distribution') }}" class="btn btn-outline-secondary" title="Clear"><i class="fas fa-times"></i></a>
+            @endif
+            <button type="submit" class="btn btn-outline-secondary">Search</button>
         </div>
-        <div>
-            <strong class="d-block mb-1">Manual Packing Label Generation</strong>
-            These orders have finished Gramasi approval and are waiting for distribution/packing label generation. In case the email link is lost, you can trigger generation directly from here.
-        </div>
-    </div>
+    </form>
 
     <!-- Orders List Card -->
     <div class="card premium-card">
@@ -110,7 +112,7 @@
                     <tbody>
                         @forelse($orders as $order)
                         <tr>
-                            <td><span class="code-pill">{{ $order->order_number }}</span></td>
+                            <td><a href="{{ route('subcon.admin.orders.view', $order->id) }}" class="fw-semibold text-decoration-none font-monospace">{{ $order->order_number }}</a></td>
                             <td>
                                 @if($order->production_group)
                                     <span class="code-pill text-primary" style="background-color: #eff6ff; border-color: #dbeafe;">{{ $order->production_group }}</span>
@@ -151,7 +153,11 @@
                         <tr>
                             <td colspan="6" class="text-center text-muted py-5">
                                 <i class="fas fa-check-circle fa-2x mb-3 text-success opacity-50"></i>
-                                <p class="mb-0 fw-semibold">No work orders currently waiting for distribution details.</p>
+                                @if($search !== '')
+                                    <p class="mb-0 fw-semibold">No orders match "{{ $search }}".</p>
+                                @else
+                                    <p class="mb-0 fw-semibold">No work orders currently waiting for distribution details.</p>
+                                @endif
                             </td>
                         </tr>
                         @endforelse

@@ -108,7 +108,10 @@
                                         data-item-id="{{ $item->id }}"
                                         data-item-number="{{ $item->item_number }}"
                                         data-under="{{ $item->getEffectiveUnderdelivery() }}"
-                                        data-over="{{ $item->getEffectiveOverdelivery() }}">
+                                        data-over="{{ $item->getEffectiveOverdelivery() }}"
+                                        data-target-qty="{{ $item->getGlobalOrderedQuantity() }}"
+                                        data-other-delivered="{{ $item->getOtherCompletedSiblingsDeliveredQuantity() }}"
+                                        data-unit="{{ strtoupper($item->unit) }}">
                                     <i class="fas fa-edit me-1"></i>Amend
                                 </button>
                             @endif
@@ -1151,7 +1154,7 @@
                     <div class="modal-body text-dark">
                         <p class="mb-3">Request to change tolerance for <strong id="amend_item_label"></strong>. This request will be sent for approval.</p>
                         
-                        <div class="row mb-3">
+                        <div class="row mb-2">
                             <div class="col-md-6">
                                 <label class="form-label fw-bold">Underdelivery (%)</label>
                                 <div class="input-group text-dark">
@@ -1166,6 +1169,13 @@
                                     <span class="input-group-text">%</span>
                                 </div>
                             </div>
+                        </div>
+
+                        <div class="alert alert-info py-2 px-3 small mb-3" id="amend_qty_helper">
+                            Allowed delivery quantity at these percentages:
+                            <strong>Min <span id="amend_min_qty">-</span></strong> &ndash;
+                            <strong>Max <span id="amend_max_qty">-</span></strong>
+                            <span id="amend_qty_unit"></span>
                         </div>
 
                         <div class="mb-3">
@@ -1189,6 +1199,35 @@
         document.addEventListener('DOMContentLoaded', function () {
             var amendModal = document.getElementById('amendToleranceModal');
             if (amendModal) {
+                // Set by show.bs.modal from the triggering button's data-* attrs;
+                // read by recalcAmendQtyHelper() on every %-field input.
+                var targetQty = 0;
+                var otherDelivered = 0;
+                var qtyUnit = '';
+
+                function recalcAmendQtyHelper() {
+                    var under = parseFloat(amendModal.querySelector('#new_underdelivery').value);
+                    var over = parseFloat(amendModal.querySelector('#new_overdelivery').value);
+                    var minEl = amendModal.querySelector('#amend_min_qty');
+                    var maxEl = amendModal.querySelector('#amend_max_qty');
+
+                    if (isNaN(under) || isNaN(over)) {
+                        minEl.textContent = '-';
+                        maxEl.textContent = '-';
+                        return;
+                    }
+
+                    // Mirrors PoItem::getQuantityLimitsForTolerance() server-side.
+                    var min = Math.max(0, targetQty * (1 - under / 100) - otherDelivered);
+                    var max = Math.max(0, targetQty * (1 + over / 100) - otherDelivered);
+
+                    minEl.textContent = min.toFixed(2);
+                    maxEl.textContent = max.toFixed(2);
+                }
+
+                amendModal.querySelector('#new_underdelivery').addEventListener('input', recalcAmendQtyHelper);
+                amendModal.querySelector('#new_overdelivery').addEventListener('input', recalcAmendQtyHelper);
+
                 amendModal.addEventListener('show.bs.modal', function (event) {
                     var button = event.relatedTarget;
                     var itemId = button.getAttribute('data-item-id');
@@ -1196,10 +1235,17 @@
                     var under = button.getAttribute('data-under');
                     var over = button.getAttribute('data-over');
 
+                    targetQty = parseFloat(button.getAttribute('data-target-qty')) || 0;
+                    otherDelivered = parseFloat(button.getAttribute('data-other-delivered')) || 0;
+                    qtyUnit = button.getAttribute('data-unit') || '';
+
                     amendModal.querySelector('#amend_item_id').value = itemId;
                     amendModal.querySelector('#amend_item_label').textContent = 'Item ' + itemNumber;
                     amendModal.querySelector('#new_underdelivery').value = under;
                     amendModal.querySelector('#new_overdelivery').value = over;
+                    amendModal.querySelector('#amend_qty_unit').textContent = qtyUnit;
+
+                    recalcAmendQtyHelper();
                 });
             }
         });

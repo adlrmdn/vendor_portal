@@ -54,10 +54,18 @@
 
                             <div class="row mb-3">
                                 <div class="col-md-6">
+                                    <label class="form-label">Group</label>
+                                    <input type="text" class="form-control" name="group"
+                                        value="{{ $vendor->group }}">
+                                </div>
+                                <div class="col-md-6">
                                     <label class="form-label">Contact Person</label>
                                     <input type="text" class="form-control" name="contact_person"
                                         value="{{ $vendor->contact_info['contact_person'] ?? '' }}">
                                 </div>
+                            </div>
+
+                            <div class="row mb-3">
                                 <div class="col-md-6">
                                     <label class="form-label">Email</label>
                                     <input type="email" class="form-control" name="email"

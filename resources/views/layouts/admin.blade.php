@@ -26,6 +26,22 @@
                         </a>
                     </li>
                     <li>
+                        @php($pendingFabricApprovals = \App\Models\ToleranceAmendmentRequest::where('status', 'pending')->count())
+                        <a href="{{ route('admin.approvals') }}"
+                            class="nav-link d-flex align-items-center {{ request()->routeIs('admin.approvals') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Approvals">
+                            <i class="fas fa-gavel me-2"></i> <span>Approvals</span>
+                            @if($pendingFabricApprovals > 0)
+                                <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingFabricApprovals }}</span>
+                            @endif
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('admin.workflow') }}"
+                            class="nav-link {{ request()->routeIs('admin.workflow*') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Workflow Settings">
+                            <i class="fas fa-sitemap me-2"></i> <span>Workflow</span>
+                        </a>
+                    </li>
+                    <li>
                         <a href="{{ route('admin.settings') }}"
                             class="nav-link {{ request()->routeIs('admin.settings') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Settings">
                             <i class="fas fa-cogs me-2"></i> <span>Settings</span>

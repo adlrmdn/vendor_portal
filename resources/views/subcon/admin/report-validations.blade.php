@@ -60,23 +60,21 @@
                             <td>
                                 @php $raf = strtolower((string) ($p['raf_status'] ?? '')); @endphp
                                 @if($raf === 'completed')
-                                    <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-robot me-1"></i>Completed</span>
+                                    <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Completed</span>
                                 @elseif(in_array($raf, ['pending', 'processing'], true))
-                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-robot me-1"></i>{{ ucfirst($raf) }}</span>
+                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-robot me-1"></i>RAF {{ ucfirst($raf) }}</span>
                                 @elseif($raf === 'failed')
-                                    <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25"><i class="fas fa-robot me-1"></i>Failed</span>
+                                    <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Failed</span>
                                 @else
-                                    <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">Unknown</span>
+                                    <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">RAF Unknown</span>
                                 @endif
-                            </td>
-                            <td class="small text-muted">
-                                {{ $p['ho_signature'] ?: '—' }}
                                 @if(($p['material_return_status'] ?? null) === 'pending')
-                                    <div><span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow pending</span></div>
+                                    <div class="mt-1"><span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Pending</span></div>
                                 @elseif(($p['material_return_status'] ?? null) === 'checked')
-                                    <div><span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow checked</span></div>
+                                    <div class="mt-1"><span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Checked</span></div>
                                 @endif
                             </td>
+                            <td class="small text-muted">{{ $p['ho_signature'] ?: '—' }}</td>
                             <td>
                                 @if(($p['deduction_total'] ?? 0) > 0)
                                     <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25">

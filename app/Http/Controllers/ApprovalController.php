@@ -134,6 +134,15 @@ class ApprovalController extends Controller
                     'underdelivery' => $amendmentRequest->new_underdelivery,
                     'overdelivery' => $amendmentRequest->new_overdelivery,
                 ]);
+            } elseif ($amendmentRequest->type === 'partial_shipment') {
+                // Execute the split immediately. Approval used to only flip the
+                // status to 'approved' and leave it to the vendor to come back
+                // and press a separate "Execute Partial Shipment" button — in
+                // practice vendors routinely never did, leaving the item stuck
+                // at its old status indefinitely. 'implemented' also blocks the
+                // manual button/endpoint from re-running the split afterward.
+                $amendmentRequest->poItem->splitToPartialShipment();
+                $amendmentRequest->update(['status' => 'implemented']);
             }
 
             DB::commit();

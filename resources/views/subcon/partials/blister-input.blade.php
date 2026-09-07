@@ -19,6 +19,8 @@
             </label>
             <input type="number" id="blister_capacity" name="blister_capacity" min="1" step="1" inputmode="numeric"
                    class="form-control form-control-sm" style="width: 140px;"
+                   onfocus="if(!parseFloat(this.value))this.select()"
+                   oninput="if(/^0\d/.test(this.value))this.value=this.value.replace(/^0+(?=\d)/,'')"
                    value="{{ old('blister_capacity', $order->blister_capacity) }}"
                    placeholder="e.g. 12"
                    {{ $editable ? '' : 'disabled' }} {{ $required ? 'required' : '' }}>
@@ -31,6 +33,8 @@
             </label>
             <input type="number" id="sack_capacity" name="sack_capacity" min="1" step="1" inputmode="numeric"
                    class="form-control form-control-sm" style="width: 140px;"
+                   onfocus="if(!parseFloat(this.value))this.select()"
+                   oninput="if(/^0\d/.test(this.value))this.value=this.value.replace(/^0+(?=\d)/,'')"
                    value="{{ old('sack_capacity', $sackValue) }}"
                    placeholder="e.g. 50"
                    {{ $editable ? '' : 'disabled' }}>

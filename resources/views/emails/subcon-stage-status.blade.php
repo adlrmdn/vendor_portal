@@ -33,11 +33,16 @@
             @if($outcome === 'approved')
                 @if($labelsUnlocked)
                     <p style="margin:0;color:#495057;">Your gramasi &amp; blister capacity have been approved. Please generate the packing labels to proceed with printing.</p>
+                @elseif($gate === 'cutting' && $order->cutting_partial)
+                    <p style="margin:0;color:#495057;">Your <strong>partial</strong> cutting report has been approved. The work order stays at the cutting-report stage — you can continue entering the remaining quantities and submit again (untick "partial" on the final submission).</p>
                 @else
                     <p style="margin:0;color:#495057;">Your cutting report has been approved. You may now enter <strong>gramasi &amp; blister capacity</strong> for this work order.</p>
                 @endif
             @else
                 <p style="margin:0;color:#495057;">Your {{ strtolower($gateLabel) }} was returned. Please review and resubmit in the portal.</p>
+                @if($order->reject_reason)
+                    <p style="margin:12px 0 0;padding:12px;background:#fff5f5;border-radius:8px;color:#c92a2a;white-space:pre-wrap;"><strong>Reason:</strong> {{ $order->reject_reason }}</p>
+                @endif
             @endif
 
             <table class="meta">

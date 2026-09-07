@@ -20,6 +20,12 @@
         <div class="card">
             <span class="tag">Validation Needed</span>
             <h2>Validate &amp; Send Approval</h2>
+            @if(!empty($note ?? null))
+                <div style="margin:10px 0; padding:12px 14px; background:#fff5f5; border:1px solid #ffc9c9; border-radius:8px;">
+                    <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:#c92a2a; margin-bottom:4px;">Returned by the Director</div>
+                    <div style="font-size:13px; color:#495057; white-space:pre-wrap;">{{ $note }}</div>
+                </div>
+            @endif
             <p style="margin:0;color:#495057;">This packaging inspection has been <strong>approved and signed by MD Production</strong> and the RAF production run was queued. Once the run has finished, validate the final numbers and send the approval to the Director. The current report is attached.</p>
 
             <table class="meta">

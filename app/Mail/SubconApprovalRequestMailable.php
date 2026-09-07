@@ -49,11 +49,17 @@ class SubconApprovalRequestMailable extends Mailable
     /** Total balance (cut − order) across resolved rows; null if none resolved. */
     public ?int $totalBalance;
 
+    /** True when this is a cutting submission the vendor flagged as partial. */
+    public bool $isPartial;
+
     public function __construct(SubconOrder $order, string $gate)
     {
         $this->order = $order;
         $this->gate = $gate;
-        $this->gateLabel = $gate === 'gramasi' ? 'Gramasi & Blister Capacity' : 'Cutting Report';
+        $this->isPartial = $gate === 'cutting' && (bool) $order->cutting_partial;
+        $this->gateLabel = $gate === 'gramasi'
+            ? 'Gramasi & Blister Capacity'
+            : ($this->isPartial ? 'Partial Cutting Report' : 'Cutting Report');
 
         // Relative signature (absolute: false) — the signed:relative middleware
         // validates against path + query only, so it survives the reverse proxy

@@ -59,7 +59,7 @@
                             @endif
                         </a>
                     </li>
-                    @if(\App\Http\Controllers\SubconAdminController::isDirectorUser(auth()->user()))
+                    @if(\App\Http\Controllers\SubconAdminController::isDirectorUser(auth()->user()) || auth()->user()->isSubconAdmin() || auth()->user()->isAdmin())
                         <li>
                             @php($pendingDirector = \App\Models\SubconOrder::pendingDirectorApprovalCount())
                             <a href="{{ route('subcon.admin.director-approvals') }}"
@@ -72,6 +72,20 @@
                             </a>
                         </li>
                     @endif
+                    <li>
+                        <a href="{{ route('subcon.admin.invoices') }}"
+                            class="nav-link {{ request()->routeIs('subcon.admin.invoices*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Invoices">
+                            <i class="fas fa-file-invoice me-2"></i> <span>Invoices</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('subcon.admin.debit-notes') }}"
+                            class="nav-link {{ request()->routeIs('subcon.admin.debit-notes*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Debit Notes">
+                            <i class="fas fa-file-circle-minus me-2"></i> <span>Debit Notes</span>
+                        </a>
+                    </li>
                     <li>
                         <a href="{{ route('subcon.admin.workflow') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.workflow*') ? 'active' : '' }}"

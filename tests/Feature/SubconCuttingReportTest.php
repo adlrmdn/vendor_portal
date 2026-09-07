@@ -109,6 +109,62 @@ class SubconCuttingReportTest extends TestCase
         ]);
     }
 
+    /**
+     * Regression: a resubmit (e.g. the partial-cutting flow, or the fabric
+     * list simply failing to load from VSM) that carries no `fabrics_recon`
+     * rows must NOT wipe existing reconciliation data — including the
+     * admin-entered consumption figures (fabric_sent/consumption_plan) that
+     * live on the same row and are never resubmitted by the vendor.
+     */
+    public function test_cutting_report_resubmit_with_no_fabric_rows_does_not_wipe_reconciliation()
+    {
+        $vendor = new Vendor([
+            'name' => 'Test Subcon Vendor', 'vendor_code' => 'V_TEST_KEEP', 'type' => 'subcon', 'is_active' => true,
+        ]);
+        $vendor->id = (string) \Illuminate\Support\Str::uuid();
+        $vendor->save();
+
+        $user = new User([
+            'name' => 'Vendor User', 'email' => 'vendor_keep@test.com', 'password' => bcrypt('password'),
+            'role' => 'subcon_vendor', 'vendor_id' => $vendor->id,
+        ]);
+        $user->id = (string) \Illuminate\Support\Str::uuid();
+        $user->save();
+
+        $order = SubconOrder::create([
+            'order_number' => 'PO-TEST-KEEP', 'vendor_id' => $vendor->id, 'title' => 'Test CMT PO',
+            'status' => 'pending', 'order_date' => now(), 'workflow_stage' => 'cutting',
+        ]);
+
+        // Admin-entered consumption figures already saved on the reconciliation
+        // row (as happens at the cutting-approval gate).
+        \App\Models\SubconFabricReconciliation::create([
+            'order_id' => $order->id, 'label' => 'Main Fabric (M)',
+            'fabric_sent' => 250, 'consumption_plan' => 2.4, 'fabric_price' => 10000,
+        ]);
+
+        $payload = [
+            'reports' => [
+                ['prod_id' => 'PROD-001', 'size' => 'M', 'cutting_qty' => 50, 'gramasi' => 180.50],
+            ],
+            // No fabrics_recon — e.g. VSM was unreachable when the form rendered.
+        ];
+
+        $response = $this->actingAs($user)
+            ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.vendor.orders.submit-cutting', $order->id), $payload);
+
+        $response->assertRedirect();
+        $response->assertSessionHas('success');
+
+        $this->assertDatabaseHas('subcon_fabric_reconciliations', [
+            'order_id' => $order->id,
+            'label' => 'Main Fabric (M)',
+            'fabric_sent' => 250,
+            'consumption_plan' => 2.4,
+        ]);
+    }
+
     public function test_subcon_vendor_can_download_template()
     {
         $vendor = new Vendor([
@@ -589,6 +645,16 @@ class SubconCuttingReportTest extends TestCase
         $response->assertRedirect();
         $this->assertEquals('first_saved', $order->fresh()->job_trans_status);
 
+        // The vendor form is only editable in the 'cutting' stage — the first
+        // submit above moved the order to 'cutting_review'. A second submit
+        // while still pending review must NOT be accepted (that used to
+        // silently re-spawn a duplicate approval email/notification on a
+        // double-click). Simulate the legitimate way back to an editable
+        // stage: a partial-cutting approval returns the order to 'cutting'.
+        // (Direct column update — $order is the stale pre-POST instance, and
+        // saving it would clobber the job_trans_status the controller just set.)
+        \Illuminate\Support\Facades\DB::table('subcon_orders')->where('id', $order->id)->update(['workflow_stage' => 'cutting']);
+
         // 2. Subsequent save with cutting qty only
         $payload2 = [
             'reports' => [
@@ -671,9 +737,9 @@ class SubconCuttingReportTest extends TestCase
                                 'variant_id' => '2508000000076',
                                 'item_code' => 'ITEM-001',
                                 'gramasi_real' => 0.150,
-                            ]
-                        ]
-                    ]
+                            ],
+                        ],
+                    ],
                 ]);
 
             $mock->shouldReceive('fetchWarehouses')
@@ -752,9 +818,9 @@ class SubconCuttingReportTest extends TestCase
                                 'variant_id' => 'ITEM-002-S',
                                 'item_code' => 'ITEM-002',
                                 'gramasi_real' => 0.150,
-                            ]
-                        ]
-                    ]
+                            ],
+                        ],
+                    ],
                 ]);
 
             $mock->shouldReceive('fetchWarehouses')
@@ -1246,6 +1312,54 @@ class SubconCuttingReportTest extends TestCase
         $this->assertEquals('gram@test.com', \App\Models\Setting::getValue('subcon_gramasi_approver_email'));
         $this->assertEquals('label@test.com', \App\Models\Setting::getValue('subcon_label_generator_email'));
         $this->assertEquals('fallback@test.com', \App\Models\Setting::getValue('subcon_notification_email'));
+    }
+
+    public function test_workflow_settings_save_the_director_phone_number()
+    {
+        $admin = new User([
+            'name' => 'Subcon Admin User',
+            'email' => 'subadmin_wfphone@test.com',
+            'password' => bcrypt('password'),
+            'role' => 'subcon_admin',
+        ]);
+        $admin->id = (string) \Illuminate\Support\Str::uuid();
+        $admin->save();
+
+        $response = $this->actingAs($admin)
+            ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.workflow.update'), [
+                'subcon_cutting_approver_email' => 'cut@test.com',
+                'subcon_gramasi_approver_email' => 'gram@test.com',
+                'subcon_label_generator_email' => 'label@test.com',
+                'qc_director_approver_phone' => '08123456789, 08987654321',
+            ]);
+
+        $response->assertRedirect();
+        $response->assertSessionHas('success');
+        $this->assertEquals('08123456789, 08987654321', \App\Models\Setting::getValue('qc_director_approver_phone'));
+    }
+
+    public function test_workflow_settings_reject_an_unusable_director_phone_number()
+    {
+        $admin = new User([
+            'name' => 'Subcon Admin User',
+            'email' => 'subadmin_wfphonebad@test.com',
+            'password' => bcrypt('password'),
+            'role' => 'subcon_admin',
+        ]);
+        $admin->id = (string) \Illuminate\Support\Str::uuid();
+        $admin->save();
+
+        $response = $this->actingAs($admin)
+            ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.workflow.update'), [
+                'subcon_cutting_approver_email' => 'cut@test.com',
+                'subcon_gramasi_approver_email' => 'gram@test.com',
+                'subcon_label_generator_email' => 'label@test.com',
+                'qc_director_approver_phone' => 'not-a-number',
+            ]);
+
+        $response->assertSessionHasErrors('qc_director_approver_phone');
     }
 
     public function test_admin_can_manage_vendors()

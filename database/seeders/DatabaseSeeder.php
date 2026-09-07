@@ -44,7 +44,7 @@ class DatabaseSeeder extends Seeder
             [
                 'id' => Str::uuid()->toString(),
                 'name' => 'Fabric Admin',
-                'password' => Hash::make('password'),
+                'password' => Hash::make('admin'),
                 'role' => 'fabric_admin',
             ]
         );

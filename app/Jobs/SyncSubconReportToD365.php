@@ -65,7 +65,21 @@ class SyncSubconReportToD365 implements ShouldQueue
             return;
         }
 
-        $d365->startJobs($group);
+        if (! $d365->startJobs($group)) {
+            $msg = "jobt-api failed to start the D365 job transaction for {$group} — sync not attempted this run.";
+            Log::warning("D365 {$this->gate} sync skipped for {$order->order_number}: {$msg}");
+
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => $this->gate,
+                'status' => 'failed',
+                'message' => $msg,
+            ]);
+
+            return;
+        }
+
         $result = $d365->syncReportToD365($group, $changed);
 
         if (! empty($result['errors'])) {

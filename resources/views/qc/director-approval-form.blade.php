@@ -17,10 +17,14 @@
     $grandTotal = $report
         ? ($ded['rejectProduksiPenalty'] + $ded['barangHilangPenalty'] + $fabricDeductionLines->sum('deduction') + $manualLines->sum('amount'))
         : 0;
+    // Fabric-bottleneck cut plan (see subcon.partials.production-detail) — a
+    // garment needs ALL its fabrics, so the achievable plan is capped by the
+    // scarcest one. Null until at least one fabric's consumption is entered.
+    $cuttPlanTotal = collect($fabricLines ?? [])->pluck('cutt_plan')->filter(fn ($v) => $v !== null)->min();
 @endphp
-<div class="container py-5">
+<div class="container-fluid py-5 px-lg-5">
     <div class="row justify-content-center">
-        <div class="col-12 col-lg-9 col-xxl-7">
+        <div class="col-12 col-xxl-11">
             <div class="card border-0 shadow-sm" style="border-radius:16px;">
                 <div class="card-body p-4 p-md-5">
                     <div class="d-flex align-items-center gap-2 mb-1">
@@ -44,7 +48,9 @@
                         <dd class="col-7 col-sm-9">{{ $row->session_id }}</dd>
                     </dl>
 
-                    @include('subcon.partials.remarks', ['remarks' => $subcon->remarks ?? null])
+                    @include('subcon.partials.remarks', ['remarks' => $subcon->remarks ?? null, 'label' => 'Vendor Remarks'])
+                    @include('subcon.partials.remarks', ['remarks' => $row->remarks ?? null, 'label' => 'QC Remarks'])
+                    @include('subcon.partials.remarks', ['remarks' => $row->ho_remarks ?? null, 'label' => 'MD Production Remarks'])
 
                     @if($report)
                         <!-- Nav Tabs -->
@@ -67,10 +73,12 @@
                                 {{-- Result + prior signatures --}}
                                 <div class="row g-3 mb-4 mt-1">
                                     <div class="col-6 col-md-3">
-                                        <div class="border rounded-3 p-3 text-center h-100">
+                                        <div class="border rounded-3 p-3 text-center h-100 d-flex flex-column">
                                             <div class="small text-muted text-uppercase fw-semibold" style="font-size:.68rem;">Result</div>
                                             @php $res = strtoupper((string) ($report['session']->result ?? 'PENDING')) ?: 'PENDING'; @endphp
-                                            <div class="fw-bold fs-5 {{ $res === 'PASSED' ? 'text-success' : ($res === 'FAILED' ? 'text-danger' : 'text-warning') }}">{{ $res }}</div>
+                                            <div class="flex-grow-1 d-flex align-items-center justify-content-center">
+                                                <div class="fw-bold fs-5 {{ $res === 'PASSED' ? 'text-success' : ($res === 'FAILED' ? 'text-danger' : 'text-warning') }}">{{ $res }}</div>
+                                            </div>
                                         </div>
                                     </div>
                                     @foreach([
@@ -95,31 +103,60 @@
                                     @endforeach
                                 </div>
 
+                                {{-- Per-size cutting/production detail (read-only) — same data the
+                                     HO gate shows, so the Director sees exactly what was approved. --}}
+                                <h6 class="fw-semibold mb-2">Cutting Report Detail (per size)</h6>
+                                <div class="mb-4">
+                                    @include('subcon.partials.production-detail', [
+                                        'productionGroups' => $productionGroups ?? [],
+                                        'cuttingReports' => $cuttingReports ?? collect(),
+                                        'fabricLines' => $fabricLines ?? [],
+                                        'mode' => 'view',
+                                    ])
+                                </div>
+
                                 {{-- Yield summary (read-only) --}}
                                 <h6 class="fw-semibold mb-2">Production Yield Summary</h6>
                                 <div class="table-responsive mb-4">
                                     <table class="table table-sm table-bordered align-middle small mb-0">
                                         <thead class="table-light">
                                             <tr class="text-center">
-                                                <th>Order Qty</th><th>Cutting Qty</th><th>Good Qty</th>
-                                                <th>Total Reject</th><th>WIP</th><th>Total Delivery FG</th>
+                                                <th>Order Qty</th><th>Cut Plan</th><th>Cutting Qty</th><th>Good Qty</th>
+                                                <th>Total Reject</th><th>Total Delivery FG</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             <tr class="text-center">
                                                 <td>{{ $n($totals['orderQty']) }}</td>
+                                                <td>{{ $cuttPlanTotal !== null ? $n($cuttPlanTotal) : '—' }}</td>
                                                 <td>{{ $n($totals['cuttingQty']) }}</td>
                                                 <td class="fw-semibold text-success">{{ $n($totals['goodGarments']) }}</td>
                                                 <td class="fw-semibold {{ $totals['totalReject'] > 0 ? 'text-danger' : '' }}">{{ $n($totals['totalReject']) }}</td>
-                                                <td>{{ $n($totals['wip']) }}</td>
                                                 <td>{{ $n($totals['totalDeliveryFG']) }}</td>
                                             </tr>
                                         </tbody>
                                     </table>
                                 </div>
 
+                                {{-- Fabric consumption / reconciliation (read-only) --}}
+                                @if($subcon)
+                                    <h6 class="fw-semibold mb-2">Fabric Consumption</h6>
+                                    @include('subcon.partials.consumption-input', [
+                                        'order' => $subcon,
+                                        'fabricLines' => $fabricLines ?? [],
+                                        'totalCut' => $totalCut ?? 0,
+                                        'editable' => false,
+                                    ])
+                                    <div class="form-text mb-4" style="font-size:.72rem;">
+                                        Cutt Plan = ROUNDDOWN((Fabric Sent − Retur Kain) ÷ Cons. Plan).
+                                        Actual Cons. = (Fabric Sent − Retur Kain) ÷ Total Qty Cut ({{ $n($totalCut ?? 0) }}).
+                                        Overconsumption = (Actual Cons. − Cons. Plan) ÷ Cons. Plan.
+                                        Deduction = MAX(0, Actual Cons. − Cons. Plan × 1.03) × Total Qty Cut × Fabric Price — charged only when Overconsumption exceeds 3%.
+                                    </div>
+                                @endif
+
                                 {{-- Deductions (read-only) --}}
-                                <h6 class="fw-semibold mb-2">Deductions</h6>
+                                <h6 class="fw-semibold mb-2 mt-4">Deductions</h6>
                                 <div class="table-responsive mb-4">
                                     <table class="table table-sm table-bordered align-middle small mb-0">
                                         <thead class="table-light">
@@ -175,7 +212,7 @@
                     </form>
                 </div>
             </div>
-            <p class="text-center text-muted small mt-3 mb-0">This link is unique to this inspection and requires no login. Rejecting sends it back to MD Production.</p>
+            <p class="text-center text-muted small mt-3 mb-0">This link is unique to this inspection and requires no login. Rejecting sends it back to Report Validation for MD Production to re-validate and send.</p>
         </div>
     </div>
 </div>
