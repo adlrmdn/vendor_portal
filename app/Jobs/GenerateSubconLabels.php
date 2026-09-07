@@ -239,11 +239,41 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
      * human-readable reason when a DST document was located but rejected —
      * currently only "not confirmed" — so the caller can report the real
      * blocker instead of the generic "missing/unresolvable".
+     *
+     * Manual overrides: some standalone PO/PRG rows never get `SONumber`
+     * filled in on the VSM `production_groups` mirror even though the SO
+     * Intercompany + DST already exist and are Confirmed in D365 (seen on
+     * MPG/PO/2607/01528 and .../01536 — production_groups never resolved,
+     * and the PLM chain was a dead end because PLM/26/05/00005 and
+     * PLM/26/05/00003 are reused for an unrelated "Manzone Raka" article
+     * under mpr, so their SO Intercompany/Budget Buying activities point at
+     * the wrong DST entirely). Rather than guess a DST via ArticleID
+     * matching — which the same PLMId-reuse problem makes unsafe to
+     * automate — known-good DSTs confirmed by hand against D365 TOC_DT are
+     * listed here and applied first, still re-verified as Confirmed.
      */
+    private const DISTRIBUTION_ID_OVERRIDES = [
+        'MPG/PO/2607/01528' => 'MTI/DST/2605/00028',
+        'MPG/PO/2607/01536' => 'MTI/DST/2605/00029',
+    ];
+
     private function resolveDistributionId(SubconOrder $order): ?string
     {
         if (! empty($order->distribution_id)) {
             return null;
+        }
+
+        if ($override = self::DISTRIBUTION_ID_OVERRIDES[$order->order_number] ?? null) {
+            $row = $this->fetchTocDt("DistributionID eq '{$override}'");
+            if (! empty($row['DistributionID']) && ($row['DocumentStatus'] ?? '') === 'Confirmed') {
+                Log::info("Distribution ID for {$order->order_number} resolved via manual override: {$override}.");
+                $order->distribution_id = $row['DistributionID'];
+                $order->save();
+
+                return null;
+            }
+
+            Log::warning("Distribution override {$override} for {$order->order_number} is no longer valid/confirmed in TOC_DT; falling back to normal resolution.");
         }
 
         $unconfirmed = null;
