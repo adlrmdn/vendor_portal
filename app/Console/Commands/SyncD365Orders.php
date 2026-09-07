@@ -10,6 +10,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class SyncD365Orders extends Command
@@ -20,8 +21,10 @@ class SyncD365Orders extends Command
      * @var string
      */
     protected $signature = 'd365:sync-orders
-                            {--since= : Backfill: only pull POs created on/after this date (Y-m-d). Overrides the default 30-day window.}
-                            {--months= : Backfill: pull POs created within the last N months. Overrides the default 30-day window.}';
+                            {--since= : Backfill: only pull POs created on/after this date (Y-m-d). Overrides the default 90-day window.}
+                            {--months= : Backfill: pull POs created within the last N months. Overrides the default 90-day window.}
+                            {--vendor=* : Limit to specific vendor code(s). Defaults to a 12-month window instead of 90 days, since a newly-added vendor may already have older confirmed POs.}
+                            {--company=mpg : D365 legal entity (dataAreaId) to restrict to. REQUIRED to avoid cross-company vendor-code collisions (e.g. V0246 = KNK in mpg but PUMA CAT in mpr) — see d365:sync-subcon-orders.}';
 
     /**
      * The console command description.
@@ -44,14 +47,22 @@ class SyncD365Orders extends Command
             return Command::FAILURE;
         }
 
-        // 1. Fetch Headers. Default window is the last 30 days (incremental daily
+        // 1. Fetch Headers. Default window is the last 90 days (incremental hourly
         // cadence); --since / --months widen it for a one-off historical backfill.
+        // Widened from 30 days so a PO that sits pending/processing for a while
+        // still falls inside the routine fetch window and picks up a D365-side
+        // vendor reassignment (see the existing-PO update loop below) without
+        // needing a manual backfill every time.
+        $vendorCodes = $this->option('vendor');
+
         if ($since = $this->option('since')) {
             $cutoffDate = Carbon::parse($since);
         } elseif ($months = $this->option('months')) {
             $cutoffDate = Carbon::now()->subMonths((int) $months);
+        } elseif (! empty($vendorCodes)) {
+            $cutoffDate = Carbon::now()->subMonths(12);
         } else {
-            $cutoffDate = Carbon::now()->subDays(30);
+            $cutoffDate = Carbon::now()->subDays(90);
         }
         $cutoff = $cutoffDate->format('Y-m-d\TH:i:s\Z');
         $this->info('Sync window: POs created on/after '.$cutoffDate->toDateString().'.');
@@ -60,6 +71,22 @@ class SyncD365Orders extends Command
             "DocumentApprovalStatus eq Microsoft.Dynamics.DataEntities.VersioningDocumentState'Confirmed'",
             "CreatedDateTime1 ge $cutoff",
         ];
+
+        if (! empty($vendorCodes)) {
+            $filters[] = '('.implode(' or ', array_map(
+                fn ($code) => "OrderVendorAccountNumber eq '$code'",
+                $vendorCodes
+            )).')';
+            $this->info('Restricting to vendor(s): '.implode(', ', $vendorCodes));
+        }
+
+        // Vendor account codes are company-scoped in D365 — the same code maps to
+        // different legal vendors across companies (e.g. V0246 = KNK in mpg but
+        // PUMA CAT in mpr). Restrict to one legal entity, same as the subcon sync.
+        $company = $this->option('company');
+        if ($company) {
+            $filters[] = "dataAreaId eq '$company'";
+        }
 
         $this->info('Fetching PO Headers...');
         $headers = $this->fetchRecords('PurchaseOrderHeadersV2', $filters);
@@ -77,6 +104,7 @@ class SyncD365Orders extends Command
 
         $validToInsert = [];
         $poMap = [];
+        $vendorAccountByPo = [];
 
         foreach ($headers as $h) {
             $poNumber = $h['PurchaseOrderNumber'];
@@ -85,6 +113,8 @@ class SyncD365Orders extends Command
             if (! isset($vendors[$vendorAccount])) {
                 continue; // Skip if vendor not in DB
             }
+
+            $vendorAccountByPo[$poNumber] = $vendorAccount;
 
             if (isset($existingPos[$poNumber])) {
                 $poMap[$poNumber] = $existingPos[$poNumber];
@@ -105,6 +135,9 @@ class SyncD365Orders extends Command
         // 3. PLM Lookup
         $this->info('Fetching PLM Mapping...');
         $plmFilters = ["ModifiedDateTimeHeader ge $cutoff"];
+        if ($company) {
+            $plmFilters[] = "dataAreaId eq '$company'";
+        }
         $plmRecords = $this->fetchRecords('TOC_PurchRequisitions', $plmFilters, ['PurchReqId', 'TOC_PLM_ID']);
 
         $plmMap = [];
@@ -125,7 +158,11 @@ class SyncD365Orders extends Command
             $parts = array_map(function ($po) {
                 return "PurchaseOrderNumber eq '$po'";
             }, $chunk);
-            $filter = '('.implode(' or ', $parts).')';
+            $lineFilters = ['('.implode(' or ', $parts).')'];
+            if ($company) {
+                $lineFilters[] = "dataAreaId eq '$company'";
+            }
+            $filter = implode(' and ', $lineFilters);
 
             $batchLines = $this->fetchRecords('PurchaseOrderLinesV2', [$filter]);
             $allLines = array_merge($allLines, $batchLines);
@@ -172,6 +209,10 @@ class SyncD365Orders extends Command
             }
 
             // Update totals + PC reference for existing POs (lines/ref may have changed).
+            $existingVendorIds = PurchaseOrder::whereIn('po_number', array_keys($existingPos))
+                ->pluck('vendor_id', 'po_number')
+                ->toArray();
+            $reassigned = 0;
             foreach ($existingPos as $poNumber => $poId) {
                 $updates = [];
                 if (isset($poTotals[$poNumber])) {
@@ -180,9 +221,32 @@ class SyncD365Orders extends Command
                 if (array_key_exists($poNumber, $refMap)) {
                     $updates['reference'] = $refMap[$poNumber];
                 }
+
+                // D365 can reassign a PO to a different vendor account after it
+                // was first synced (e.g. a data-entry correction). Since
+                // vendor_id gates portal visibility, a stale value here silently
+                // hides the PO from its real vendor while leaving it visible to
+                // whoever it was originally (wrongly) attached to.
+                if (isset($vendorAccountByPo[$poNumber])) {
+                    $newVendorId = $vendors[$vendorAccountByPo[$poNumber]];
+                    $currentVendorId = $existingVendorIds[$poNumber] ?? null;
+                    if ($currentVendorId !== $newVendorId) {
+                        Log::warning('Fabric PO vendor reassigned by D365 sync', [
+                            'po_number' => $poNumber,
+                            'from_vendor_id' => $currentVendorId,
+                            'to_vendor_id' => $newVendorId,
+                        ]);
+                        $updates['vendor_id'] = $newVendorId;
+                        $reassigned++;
+                    }
+                }
+
                 if (! empty($updates)) {
                     PurchaseOrder::where('id', $poId)->update($updates);
                 }
+            }
+            if ($reassigned > 0) {
+                $this->warn("Reassigned {$reassigned} existing PO(s) to a different vendor (D365 vendor account changed).");
             }
 
             // Insert Items
@@ -193,12 +257,15 @@ class SyncD365Orders extends Command
                     $reqId = $l['PurchaseRequisitionId'] ?? '';
                     $plmId = $plmMap[$reqId] ?? $reqId;
 
-                    // A PO can repeat the same ItemNumber across lines that differ
-                    // only by batch/colour, so batch is part of the item's identity.
+                    // A PO can repeat the same (ItemNumber, batch) across distinct
+                    // D365 lines (e.g. a quantity split), so LineNumber — D365's
+                    // actual per-line identity — must be part of the match key too,
+                    // or firstOrCreate collapses them into one row and drops the rest.
                     PoItem::firstOrCreate([
                         'po_id' => $poId,
                         'item_number' => $l['ItemNumber'],
                         'batch' => $l['ItemBatchNumber'] ?? null,
+                        'line_number' => $l['LineNumber'] ?? null,
                     ], [
                         'id' => (string) Str::uuid(),
                         'description' => $l['LineDescription'],
