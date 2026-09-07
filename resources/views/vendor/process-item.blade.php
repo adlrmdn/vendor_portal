@@ -103,17 +103,38 @@
                                 </div>
                             </div>
                             @if($item->status != 'completed')
-                                <button class="btn btn-sm btn-primary py-0 px-2 fw-bold" title="Amend Tolerance"
-                                        data-bs-toggle="modal" data-bs-target="#amendToleranceModal"
-                                        data-item-id="{{ $item->id }}"
-                                        data-item-number="{{ $item->item_number }}"
-                                        data-under="{{ $item->getEffectiveUnderdelivery() }}"
-                                        data-over="{{ $item->getEffectiveOverdelivery() }}"
-                                        data-target-qty="{{ $item->getGlobalOrderedQuantity() }}"
-                                        data-other-delivered="{{ $item->getOtherCompletedSiblingsDeliveredQuantity() }}"
-                                        data-unit="{{ strtoupper($item->unit) }}">
-                                    <i class="fas fa-edit me-1"></i>Amend
-                                </button>
+                                @php
+                                    $pendingTolerance = \App\Models\ToleranceAmendmentRequest::where('po_item_id', $item->id)
+                                        ->where('type', 'tolerance')
+                                        ->where('status', 'pending')
+                                        ->first();
+                                @endphp
+                                @if($pendingTolerance)
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span class="badge bg-warning text-dark" title="Requested {{ $pendingTolerance->created_at->format('M d, Y H:i') }}">
+                                            <i class="fas fa-clock me-1"></i>Pending: {{ number_format($pendingTolerance->new_underdelivery, 2) }}% / {{ number_format($pendingTolerance->new_overdelivery, 2) }}%
+                                        </span>
+                                        <form action="{{ route('vendor.tolerance.cancel', $pendingTolerance->id) }}" method="POST"
+                                              onsubmit="return confirm('Recall this pending request so you can submit a new one?');">
+                                            @csrf
+                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2 fw-bold" title="Recall Request">
+                                                <i class="fas fa-undo me-1"></i>Recall
+                                            </button>
+                                        </form>
+                                    </div>
+                                @else
+                                    <button class="btn btn-sm btn-primary py-0 px-2 fw-bold" title="Amend Tolerance"
+                                            data-bs-toggle="modal" data-bs-target="#amendToleranceModal"
+                                            data-item-id="{{ $item->id }}"
+                                            data-item-number="{{ $item->item_number }}"
+                                            data-under="{{ $item->getEffectiveUnderdelivery() }}"
+                                            data-over="{{ $item->getEffectiveOverdelivery() }}"
+                                            data-target-qty="{{ $item->getGlobalOrderedQuantity() }}"
+                                            data-other-delivered="{{ $item->getOtherCompletedSiblingsDeliveredQuantity() }}"
+                                            data-unit="{{ strtoupper($item->unit) }}">
+                                        <i class="fas fa-edit me-1"></i>Amend
+                                    </button>
+                                @endif
                             @endif
                         </div>
                     </div>
@@ -424,9 +445,18 @@
                                     <p class="small text-muted mb-3">Choosing "Partial Shipment" will complete the <strong>CURRENT</strong> batch and automatically create a new item for the <strong>remaining</strong> balance (<span id="modalRemainingQty" class="fw-bold text-primary"></span>) in this PO.</p>
                                     
                                     @if($pendingRequest)
-                                        <div class="alert alert-info border-0 mb-0">
-                                            <i class="fas fa-clock me-2"></i><strong>Request Pending Approval</strong><br>
-                                            <small>Submitted on: {{ $pendingRequest->created_at->format('M d, Y H:i') }}</small>
+                                        <div class="alert alert-info border-0 mb-0 d-flex align-items-center justify-content-between">
+                                            <div>
+                                                <i class="fas fa-clock me-2"></i><strong>Request Pending Approval</strong><br>
+                                                <small>Submitted on: {{ $pendingRequest->created_at->format('M d, Y H:i') }}</small>
+                                            </div>
+                                            <form action="{{ route('vendor.tolerance.cancel', $pendingRequest->id) }}" method="POST"
+                                                  onsubmit="return confirm('Recall this pending request so you can submit a new one?');">
+                                                @csrf
+                                                <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2">
+                                                    <i class="fas fa-undo me-1"></i>Recall
+                                                </button>
+                                            </form>
                                         </div>
                                     @elseif(!$isApproved)
                                         <div class="p-3 border rounded bg-white">

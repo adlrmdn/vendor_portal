@@ -149,8 +149,6 @@ class ApprovalController extends Controller
 
             $msgType = $amendmentRequest->type === 'partial_shipment' ? 'Partial shipment' : 'Tolerance amendment';
 
-            $this->notifyVendor($amendmentRequest);
-
             return ['ok' => true, 'message' => $msgType.' for Item '.$amendmentRequest->poItem->item_number.' has been approved.'];
         } catch (\Exception $e) {
             DB::rollBack();
@@ -173,21 +171,8 @@ class ApprovalController extends Controller
             'actioned_at' => now(),
         ]);
 
-        $this->notifyVendor($amendmentRequest);
-
         $requestType = $amendmentRequest->type === 'partial_shipment' ? 'Partial shipment' : 'Tolerance amendment';
 
         return ['ok' => true, 'message' => $requestType.' has been declined.'];
-    }
-
-    private function notifyVendor(ToleranceAmendmentRequest $amendmentRequest): void
-    {
-        try {
-            $vendorId = $amendmentRequest->poItem->purchaseOrder->vendor_id;
-            $vendorUsers = \App\Models\User::where('vendor_id', $vendorId)->where('role', 'fabric_vendor')->get();
-            \Illuminate\Support\Facades\Notification::send($vendorUsers, new \App\Notifications\RequestActionedNotification($amendmentRequest));
-        } catch (\Exception $e) {
-            \Log::error('Failed to send approval decision notification to vendor: '.$e->getMessage());
-        }
     }
 }

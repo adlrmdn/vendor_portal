@@ -142,6 +142,7 @@ Route::middleware(['auth'])->prefix('vendor')->name('vendor.')->group(function (
 
     // Tolerance Amendment & Partial Shipment Requests
     Route::post('/tolerance/amend', [VendorController::class, 'requestToleranceAmendment'])->name('tolerance.amend');
+    Route::post('/tolerance/{request}/cancel', [VendorController::class, 'cancelAmendmentRequest'])->name('tolerance.cancel');
     Route::post('/partial/request', [VendorController::class, 'requestPartialShipment'])->name('partial.request');
 });
 
@@ -172,6 +173,7 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
     Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
     Route::get('/report-validations', [SubconAdminController::class, 'reportValidations'])->name('report-validations');
     Route::get('/director-approvals', [SubconAdminController::class, 'directorApprovals'])->name('director-approvals');
+    Route::post('/director-approvals/{token}/recall', [SubconAdminController::class, 'recallToReportValidation'])->name('director-approvals.recall');
     Route::get('/approval-logs', [SubconAdminController::class, 'approvalLogs'])->name('approval-logs');
     Route::get('/orders', [SubconAdminController::class, 'orders'])->name('orders');
     Route::get('/orders-waiting-distribution', [SubconAdminController::class, 'waitingDistribution'])->name('orders-waiting-distribution');

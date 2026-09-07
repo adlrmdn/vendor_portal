@@ -509,14 +509,6 @@ class VendorController extends Controller
             'status' => 'pending',
         ]);
 
-        // Trigger Notifications for Admins
-        try {
-            $admins = \App\Models\User::whereIn('role', ['admin', 'fabric_admin'])->get();
-            \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\ToleranceRequestNotification($amendmentRequest));
-        } catch (\Exception $e) {
-            \Log::error('Failed to send partial shipment notification: '.$e->getMessage());
-        }
-
         $approverEmails = $this->fabricApproverEmails();
 
         if (! empty($approverEmails)) {
@@ -665,6 +657,16 @@ class VendorController extends Controller
             abort(403);
         }
 
+        // Only one pending tolerance amendment per item at a time.
+        $existing = ToleranceAmendmentRequest::where('po_item_id', $item->id)
+            ->where('type', 'tolerance')
+            ->where('status', 'pending')
+            ->first();
+
+        if ($existing) {
+            return redirect()->back()->with('error', 'There is already a pending tolerance amendment request for this item.');
+        }
+
         $approverEmails = $this->fabricApproverEmails();
 
         if (empty($approverEmails)) {
@@ -681,14 +683,6 @@ class VendorController extends Controller
             'status' => 'pending',
         ]);
 
-        // Trigger Notifications for Admins
-        try {
-            $admins = \App\Models\User::whereIn('role', ['admin', 'fabric_admin'])->get();
-            \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\ToleranceRequestNotification($amendmentRequest));
-        } catch (\Exception $e) {
-            \Log::error('Failed to send tolerance amendment notification to admins: '.$e->getMessage());
-        }
-
         try {
             \Mail::to($approverEmails)->send(new \App\Mail\ToleranceAmendmentMailable($amendmentRequest));
         } catch (\Exception $e) {
@@ -696,6 +690,36 @@ class VendorController extends Controller
         }
 
         return redirect()->back()->with('success', 'Amendment request has been sent for approval.');
+    }
+
+    /**
+     * Recall a pending tolerance/partial-shipment request. Lets a vendor
+     * invalidate a stale ask (e.g. wrong numbers, changed mind) so the "only
+     * one pending request per item" guardrail doesn't lock them out of
+     * submitting the correct one. Any signed approval-email link for a
+     * cancelled request is already rejected by ApprovalController, since it
+     * only acts on status === 'pending'.
+     */
+    public function cancelAmendmentRequest($requestId)
+    {
+        $amendmentRequest = ToleranceAmendmentRequest::with('poItem.purchaseOrder')->findOrFail($requestId);
+
+        if ($amendmentRequest->poItem->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+            abort(403);
+        }
+
+        if ($amendmentRequest->status !== 'pending') {
+            return redirect()->back()->with('error', 'Only a pending request can be cancelled.');
+        }
+
+        $amendmentRequest->update([
+            'status' => 'cancelled',
+            'actioned_at' => now(),
+        ]);
+
+        $label = $amendmentRequest->type === 'partial_shipment' ? 'Partial shipment' : 'Tolerance amendment';
+
+        return redirect()->back()->with('success', $label.' request cancelled. You can now submit a new one.');
     }
 
     public function generatePackingSlip(Request $request, $poId)
