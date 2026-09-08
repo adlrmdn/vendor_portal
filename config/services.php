@@ -58,4 +58,10 @@ return [
         'api_key' => env('WA_API_KEY'),
     ],
 
+    // Base64-encoded 32-byte key used only to mask the roll code inside
+    // packing-slip QR codes (see QrCodeCipher). Deliberately kept separate
+    // from APP_KEY so it can be handed to an external scanner app without
+    // exposing this app's own encryption key.
+    'qr_encryption_key' => env('QR_ENCRYPTION_KEY'),
+
 ];

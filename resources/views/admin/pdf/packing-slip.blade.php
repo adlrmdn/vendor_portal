@@ -367,8 +367,16 @@
                                     $unitVal .= ' (' . $sUnit . ')';
                                 }
                             @endphp
+                            @php
+                                // Same masking as the QR grid below — this table must not print the
+                                // roll number in the clear either, or the QR masking is pointless.
+                                $manifestCode = \App\Services\QrCodeCipher::mask(\App\Models\Roll::qrSafeName($roll->roll_number));
+                            @endphp
                             <tr>
-                                <td style="border: 1px solid #ddd; padding: 6px;">{{ $roll->roll_number }}</td>
+                                <td style="border: 1px solid #ddd; padding: 6px;">
+                                    <strong>#{{ sprintf('%03d', $roll->sequence) }}</strong>
+                                    <span style="color: #555;">{{ $manifestCode }}</span>
+                                </td>
                                 <td style="border: 1px solid #ddd; padding: 6px; text-align: center;">{{ $roll->internal_id ?? '-' }}</td>
                                 <td style="border: 1px solid #ddd; padding: 6px; text-align: right;">{{ $qtyVal }}</td>
                                 <td style="border: 1px solid #ddd; padding: 6px; text-align: center;">{{ $unitVal }}</td>
@@ -390,7 +398,7 @@
         }
         .qr-cell {
             width: 25%;
-            height: 190px; /* Reduced height by 5% */
+            height: 210px;
             border: 1px dashed #333;
             vertical-align: middle;
             text-align: center;
@@ -471,21 +479,29 @@
                                 $sUnit = $roll->unit;
                             }
 
-                            // The code must scan to the roll's identity, not a
+                            // The QR must scan to the roll's identity, not a
                             // description of it — lot-id/qty stay as printed
                             // text only, so they're never mistaken for the id.
+                            // The roll number is masked into opaque hex (see
+                            // QrCodeCipher) before printing/encoding into the
+                            // QR — no visible structure, neither a glance nor
+                            // a scan reveals it without the key.
                             $rollCode = \App\Models\Roll::qrSafeName($roll->roll_number);
+                            $maskedCode = \App\Services\QrCodeCipher::mask($rollCode);
                             $qtyCaption = number_format($pQty, 2) . ' ' . $pUnit;
                             if (isset($showSecondary) && $showSecondary && $sUnit !== null) {
                                 $qtyCaption .= ' (' . number_format($sQty, 2) . ' ' . $sUnit . ')';
                             }
                         @endphp
                         <td class="qr-cell">
-                            <div style="margin-bottom: 2px; height: 130px; display: flex; align-items: center; justify-content: center;">
-                                <img src="data:image/svg+xml;base64, {{ base64_encode(\SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(120)->generate($rollCode)) }}" style="max-width: 100%; max-height: 100%;">
+                            <div style="margin-bottom: 2px; height: 145px; display: flex; align-items: center; justify-content: center;">
+                                <img src="data:image/svg+xml;base64, {{ base64_encode(\SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(140)->generate($maskedCode)) }}" style="max-width: 100%; max-height: 100%;">
                             </div>
                             <div style="font-size: 9px; line-height: 1.1; overflow: hidden;">
-                                <strong style="font-size: 8px;">{{ $rollCode }}</strong><br>
+                                <strong style="font-size: 9px;">#{{ sprintf('%03d', $roll->sequence) }}</strong><br>
+                                {{-- wordwrap() forces real line breaks at whitespace; dompdf doesn't
+                                     reliably wrap one long unbroken token via CSS word-break alone. --}}
+                                <span style="font-size: 6.5px; line-height: 1.3; color: #555;">{{ wordwrap($maskedCode, 13, ' ', true) }}</span><br>
                                 {{ $item->batch ? $stripBrand($item->batch) : 'N/A' }}<br>
                                 Lot-ID {{ $roll->internal_id ?? 'N/A' }} | Bale No. {{ $roll->bale_no ?? 'N/A' }}<br>
                                 {{ $qtyCaption }}
