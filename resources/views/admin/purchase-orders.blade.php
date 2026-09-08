@@ -9,52 +9,70 @@
         </div>
 
         <!-- Filters -->
-        <div class="card mb-4">
+        <div class="card mb-4 po-filter-card">
             <div class="card-body">
-                <form method="GET" action="{{ route('admin.purchase-orders') }}" class="row g-3">
-                    <div class="col-md-3">
-                        <label for="search" class="form-label">Search</label>
-                        <div class="input-group">
-                            <input type="text" class="form-control" name="search" placeholder="PO, PC, PLM or style name"
-                                value="{{ request('search') }}">
-                            <button class="btn btn-outline-secondary" type="submit"><i class="fas fa-search"></i></button>
-                        </div>
-                    </div>
-
-                    <div class="col-md-2">
-                        <label for="status" class="form-label">Status</label>
-                        <select class="form-select searchable" id="status" name="status">
-                            <option value="">All Status</option>
-                            <option value="pending" {{ request('status') == 'pending' ? 'selected' : '' }}>Pending</option>
-                            <option value="processing" {{ request('status') == 'processing' ? 'selected' : '' }}>Processing
-                            </option>
-                            <option value="completed" {{ request('status') == 'completed' ? 'selected' : '' }}>Completed
-                            </option>
-                            <option value="cancelled" {{ request('status') == 'cancelled' ? 'selected' : '' }}>Cancelled
-                            </option>
-                        </select>
-                    </div>
-
-                    <div class="col-md-3">
-                        <label for="vendor_id" class="form-label">Vendor</label>
-                        <select class="form-select searchable" id="vendor_id" name="vendor_id">
-                            <option value="">All Vendors</option>
-                            @foreach($vendors as $vendor)
-                                <option value="{{ $vendor->id }}" {{ request('vendor_id') == $vendor->id ? 'selected' : '' }}>
-                                    {{ $vendor->name }}
-                                </option>
-                            @endforeach
-                        </select>
-                    </div>
-
-                    <div class="col-md-4 d-flex align-items-end">
-                        <div class="d-grid gap-2 w-100">
-                            <button type="submit" class="btn btn-primary">
-                                <i class="fas fa-filter me-2"></i>Filter
-                            </button>
-                            <a href="{{ route('admin.purchase-orders', ['reset' => 1]) }}" class="btn btn-secondary py-1" style="font-size: 0.8rem;">
-                                <i class="fas fa-redo me-1"></i>Reset
+                <form method="GET" action="{{ route('admin.purchase-orders') }}">
+                    <div class="po-search-bar mb-3">
+                        <i class="fas fa-search po-search-icon"></i>
+                        <input type="text" class="form-control form-control-lg po-search-input" name="search"
+                            placeholder="Search by PO number, PC, PLM or style name..." value="{{ request('search') }}">
+                        @if(request('search'))
+                            <a href="{{ route('admin.purchase-orders', array_filter(request()->except(['search', 'page']))) }}"
+                                class="po-search-clear" title="Clear search">
+                                <i class="fas fa-times"></i>
                             </a>
+                        @endif
+                        <button class="btn btn-primary po-search-submit" type="submit">Search</button>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-md-2">
+                            <label for="status" class="form-label">Status</label>
+                            <select class="form-select searchable" id="status" name="status">
+                                <option value="">All Status</option>
+                                <option value="pending" {{ request('status') == 'pending' ? 'selected' : '' }}>Pending</option>
+                                <option value="processing" {{ request('status') == 'processing' ? 'selected' : '' }}>Processing
+                                </option>
+                                <option value="completed" {{ request('status') == 'completed' ? 'selected' : '' }}>Completed
+                                </option>
+                                <option value="cancelled" {{ request('status') == 'cancelled' ? 'selected' : '' }}>Cancelled
+                                </option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-2">
+                            <label for="item_number" class="form-label">Item Number</label>
+                            <input type="text" class="form-control" id="item_number" name="item_number"
+                                placeholder="e.g. FAB-1023" value="{{ request('item_number') }}">
+                        </div>
+
+                        <div class="col-md-2">
+                            <label for="style" class="form-label">Style</label>
+                            <input type="text" class="form-control" id="style" name="style"
+                                placeholder="e.g. MOC Eagle Blue" value="{{ request('style') }}">
+                        </div>
+
+                        <div class="col-md-3">
+                            <label for="vendor_id" class="form-label">Vendor</label>
+                            <select class="form-select searchable" id="vendor_id" name="vendor_id">
+                                <option value="">All Vendors</option>
+                                @foreach($vendors as $vendor)
+                                    <option value="{{ $vendor->id }}" {{ request('vendor_id') == $vendor->id ? 'selected' : '' }}>
+                                        {{ $vendor->name }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+
+                        <div class="col-md-3 d-flex align-items-end">
+                            <div class="d-grid gap-2 w-100">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="fas fa-filter me-2"></i>Apply Filters
+                                </button>
+                                <a href="{{ route('admin.purchase-orders', ['reset' => 1]) }}" class="btn btn-secondary py-1" style="font-size: 0.8rem;">
+                                    <i class="fas fa-redo me-1"></i>Reset
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </form>
@@ -67,6 +85,8 @@
                     @if(request('search')) <input type="hidden" name="search" value="{{ request('search') }}"> @endif
                     @if(request('status')) <input type="hidden" name="status" value="{{ request('status') }}"> @endif
                     @if(request('vendor_id')) <input type="hidden" name="vendor_id" value="{{ request('vendor_id') }}"> @endif
+                    @if(request('item_number')) <input type="hidden" name="item_number" value="{{ request('item_number') }}"> @endif
+                    @if(request('style')) <input type="hidden" name="style" value="{{ request('style') }}"> @endif
                     <span class="me-2 fw-bold text-muted small text-uppercase">Show</span>
                     <select name="per_page" class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()">
                         <option value="10" {{ ($perPage ?? 25) == 10 ? 'selected' : '' }}>10</option>
@@ -85,11 +105,12 @@
                     <table class="table table-hover">
                         <thead>
                             <tr>
-                                <th style="width: 30%;">PO Details</th>
-                                <th style="width: 20%;">Dates</th>
-                                <th style="width: 15%;">Item Status</th>
-                                <th style="width: 15%;">Amount</th>
-                                <th style="width: 10%;">Status</th>
+                                <th style="width: 22%;">PO Details</th>
+                                <th style="width: 20%;">Items</th>
+                                <th style="width: 15%;">Dates</th>
+                                <th style="width: 13%;">Item Status</th>
+                                <th style="width: 12%;">Amount</th>
+                                <th style="width: 8%;">Status</th>
                                 <th style="width: 10%;">Actions</th>
                             </tr>
                         </thead>
@@ -104,6 +125,20 @@
                                         <div class="small text-muted text-truncate" style="max-width: 250px;"
                                             title="{{ $order->vendor->vendor_code ?? '' }} - {{ $order->vendor->name ?? '' }}">
                                             {{ $order->vendor->vendor_code ?? '' }} - {{ $order->vendor->name ?? 'N/A' }}
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="po-items-cell small">
+                                            @forelse($order->items as $item)
+                                                <div class="po-items-row">
+                                                    <span class="fw-semibold">{{ $item->item_number }}</span>
+                                                    @if($item->batch)
+                                                        <div class="text-muted">{{ $item->batch }}</div>
+                                                    @endif
+                                                </div>
+                                            @empty
+                                                <span class="text-muted">&mdash;</span>
+                                            @endforelse
                                         </div>
                                     </td>
                                     <td>
@@ -202,7 +237,7 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="6" class="text-center py-4">
+                                    <td colspan="7" class="text-center py-4">
                                         <div class="text-muted">
                                             <i class="fas fa-inbox fa-2x mb-3"></i>
                                             <p>No purchase orders found</p>
@@ -273,6 +308,56 @@
 
         .badge-cancelled {
             background-color: #dc3545;
+        }
+
+        .po-search-bar {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .po-search-icon {
+            position: absolute;
+            left: 1.1rem;
+            color: #6c757d;
+            font-size: 1.05rem;
+            pointer-events: none;
+        }
+
+        .po-search-input {
+            padding-left: 2.75rem;
+            padding-right: 6.5rem;
+            border-radius: 0.6rem;
+            border: 2px solid #dee2e6;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+
+        .po-search-input:focus {
+            border-color: #86b7fe;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.15);
+        }
+
+        .po-search-clear {
+            position: absolute;
+            right: 5.75rem;
+            color: #6c757d;
+        }
+
+        .po-search-submit {
+            position: absolute;
+            right: 0.35rem;
+            border-radius: 0.4rem;
+        }
+
+        .po-items-cell {
+            max-height: 130px;
+            overflow-y: auto;
+        }
+
+        .po-items-row:not(:last-child) {
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px dashed #e9ecef;
         }
     </style>
 

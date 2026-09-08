@@ -76,6 +76,8 @@ class VendorController extends Controller
         $vendorId = Auth::user()->vendor_id;
         $search = $request->input('search');
         $status = $request->input('status');
+        $itemNumber = $request->input('item_number');
+        $styleFilter = $request->input('style');
 
         $query = PurchaseOrder::where('vendor_id', $vendorId)
             ->withCount([
@@ -92,7 +94,7 @@ class VendorController extends Controller
                         ->where('batch', 'not like', '%-P%');
                 },
             ])
-            ->with('items:id,po_id,status'); // Eager load for button logic
+            ->with('items:id,po_id,status,item_number,batch'); // Eager load for button logic + Items column
 
         if ($search) {
             // Smart style-name search: split the query into words and require an
@@ -120,6 +122,19 @@ class VendorController extends Controller
             $query->where('status', $status);
         }
 
+        // Additional combinable filters (AND'd with search/status above).
+        if ($itemNumber) {
+            $query->whereHas('items', function ($iq) use ($itemNumber) {
+                $iq->where('item_number', 'like', '%'.$itemNumber.'%');
+            });
+        }
+
+        if ($styleFilter) {
+            $query->whereHas('items', function ($iq) use ($styleFilter) {
+                $iq->whereRaw('LOWER(batch) LIKE ?', ['%'.mb_strtolower($styleFilter).'%']);
+            });
+        }
+
         $perPage = (int) $request->get('per_page', 25);
         if (! in_array($perPage, [10, 25, 50])) {
             $perPage = 25;
@@ -129,7 +144,7 @@ class VendorController extends Controller
             ->paginate($perPage)
             ->appends($request->all());
 
-        return view('vendor.purchase-orders', compact('purchaseOrders', 'search', 'status', 'perPage'));
+        return view('vendor.purchase-orders', compact('purchaseOrders', 'search', 'status', 'itemNumber', 'styleFilter', 'perPage'));
     }
 
     public function viewPurchaseOrder($id)

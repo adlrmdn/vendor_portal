@@ -64,7 +64,7 @@ class AdminController extends Controller
     {
         // Sticky filters: remember the last-used search/filter so they survive
         // navigating into a PO and back (in-app "Back" button, breadcrumb, sidebar).
-        $filterKeys = ['search', 'status', 'vendor_id', 'per_page'];
+        $filterKeys = ['search', 'status', 'vendor_id', 'item_number', 'style', 'per_page'];
         if ($request->has('reset')) {
             $request->session()->forget('admin_po_filters');
 
@@ -79,6 +79,8 @@ class AdminController extends Controller
         $search = $request->input('search');
         $status = $request->input('status');
         $vendorId = $request->input('vendor_id');
+        $itemNumber = $request->input('item_number');
+        $styleFilter = $request->input('style');
 
         $query = PurchaseOrder::with(['vendor'])
             ->withCount([
@@ -95,7 +97,7 @@ class AdminController extends Controller
                         ->where('batch', 'not like', '%-P%');
                 },
             ])
-            ->with('items:id,po_id,status'); // Eager load for button logic
+            ->with('items:id,po_id,status,item_number,batch'); // Eager load for button logic + Items column
 
         if ($search) {
             // Smart style-name search: split the query into words and require an
@@ -127,6 +129,19 @@ class AdminController extends Controller
             $query->where('vendor_id', $vendorId);
         }
 
+        // Additional combinable filters (AND'd with search/status/vendor above).
+        if ($itemNumber) {
+            $query->whereHas('items', function ($iq) use ($itemNumber) {
+                $iq->where('item_number', 'like', '%'.$itemNumber.'%');
+            });
+        }
+
+        if ($styleFilter) {
+            $query->whereHas('items', function ($iq) use ($styleFilter) {
+                $iq->whereRaw('LOWER(batch) LIKE ?', ['%'.mb_strtolower($styleFilter).'%']);
+            });
+        }
+
         $perPage = (int) $request->get('per_page', 25);
         if (! in_array($perPage, [10, 25, 50])) {
             $perPage = 25;
@@ -137,7 +152,7 @@ class AdminController extends Controller
             ->appends($request->all());
         $vendors = Vendor::where('type', 'fabric')->where('is_active', true)->orderBy('name')->get();
 
-        return view('admin.purchase-orders', compact('purchaseOrders', 'vendors', 'search', 'status', 'vendorId', 'perPage'));
+        return view('admin.purchase-orders', compact('purchaseOrders', 'vendors', 'search', 'status', 'vendorId', 'itemNumber', 'styleFilter', 'perPage'));
     }
 
     public function viewPurchaseOrder($id)
