@@ -156,6 +156,19 @@
                                 };
                             @endphp
                             <span class="badge-workflow bg-{{ $badge }}">{{ ucfirst(str_replace('_', ' ', $order->status)) }}</span>
+                            {{-- Once the local workflow says "Completed" it stops saying
+                                 anything further — but the QC-console inspection → approval
+                                 → debit-note pipeline is often still running behind it. This
+                                 shows admins where each completed order actually stands
+                                 without opening it (see SubconAdminController::
+                                 qcPipelineStatusForOrders()). --}}
+                            @if(isset($qcPipelineByOrder[$order->id]))
+                                <div class="mt-1">
+                                    <span class="badge bg-{{ $qcPipelineByOrder[$order->id]['badge'] }}" style="font-size:.68rem;" title="QC / Finance pipeline status">
+                                        {{ $qcPipelineByOrder[$order->id]['label'] }}
+                                    </span>
+                                </div>
+                            @endif
                         </td>
                         <td class="text-end">
                             <a href="{{ route('subcon.admin.orders.view', $order->id) }}" class="btn btn-sm btn-outline-primary rounded-pill px-3">

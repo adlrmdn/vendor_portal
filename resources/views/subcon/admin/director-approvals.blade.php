@@ -3,6 +3,18 @@
 @section('title', 'Director Authorizations')
 
 @section('content')
+@if(session('success'))
+    <div class="alert alert-success alert-dismissible fade show" role="alert">
+        {{ session('success') }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+@endif
+@if(session('error'))
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        {{ session('error') }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+@endif
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h2 class="mb-0">Director Authorizations</h2>
@@ -80,6 +92,15 @@
                                     <a href="{{ route('qc.document', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
                                         <i class="fas fa-file-pdf me-1"></i> Report
                                     </a>
+                                    {{-- Pulls the row back to Report Validation without a rejection
+                                         reason or email — a quiet correction path open to any subcon
+                                         admin, not just the Director (see recallToReportValidation). --}}
+                                    <form action="{{ route('subcon.admin.director-approvals.recall', ['token' => $p['token']]) }}" method="POST" class="d-inline" onsubmit="return confirm('Recall {{ $p['order_number'] }} back to Report Validation? No email will be sent — this just re-opens Validate &amp; Send.');">
+                                        @csrf
+                                        <button type="submit" class="btn btn-sm btn-outline-warning">
+                                            <i class="fas fa-rotate-left me-1"></i> Recall
+                                        </button>
+                                    </form>
                                     @if($isDirector)
                                         {{-- Opens the existing token-based Director form (read-only summary
                                              + Authorize & Sign) — same workflow as the email link. --}}
@@ -132,9 +153,13 @@
                                 <td class="font-monospace">{{ $log->order_number ?? '—' }}</td>
                                 <td>{{ $log->vendor_name ?? '—' }}</td>
                                 <td>
-                                    <span class="badge {{ $log->decision === 'approved' ? 'bg-success-subtle text-success border-success' : 'bg-danger-subtle text-danger border-danger' }} border border-opacity-25">
-                                        {{ $log->decision === 'approved' ? 'Authorized' : 'Rejected' }}
-                                    </span>
+                                    @if($log->decision === 'approved')
+                                        <span class="badge bg-success-subtle text-success border-success border border-opacity-25">Authorized</span>
+                                    @elseif($log->decision === 'recalled')
+                                        <span class="badge bg-warning-subtle text-warning-emphasis border-warning border border-opacity-25">Recalled</span>
+                                    @else
+                                        <span class="badge bg-danger-subtle text-danger border-danger border border-opacity-25">Rejected</span>
+                                    @endif
                                 </td>
                                 <td class="small text-muted">{{ $log->note ?? '—' }}</td>
                                 <td class="small text-muted">{{ $log->created_at?->diffForHumans() ?? '—' }}</td>

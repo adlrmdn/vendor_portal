@@ -339,28 +339,90 @@ class QcReportPdfService
         // a miss here just leaves both enrichments off.
         $subcon = $this->resolveSubconOrder($project);
 
-        // Enrich each fabric line with its D365 inventory group ("fabric type")
-        // and the RAW VSM-sourced ordered qty (fabricLinesForPo()'s fabric_sent,
-        // i.e. the PO's OrderedPurchaseQuantity BEFORE any admin override that
-        // may since have changed $f->fabric_sent on the qms row) so
-        // over/underdelivery can be compared against what was actually ordered.
-        // One batched fabricLinesForPo() call for the whole report, not per row.
+        // BOM Final (VSM `bom_lines`) — the style's complete material list. Used
+        // ONLY as a completeness check now (does every BOM material appear
+        // somewhere in our PO-derived fabric/accessory lists?). Its RequiredQty
+        // is a SCALED TOTAL for whichever order last triggered a BOM Final
+        // recalculation for this PLM (one row per PLM in `bom_final_rm_status`
+        // — there is no per-order history), so dividing it by cutting qty is
+        // only correct when this order happens to be the most recent one to
+        // touch that PLM. The real per-pc consumption RATE (not a total, so
+        // this staleness risk barely applies to it) comes from D365's
+        // `TOC_FinalRMPrices` instead — see $finalRmConsumption below.
+        $bomMaterials = $subcon ? $this->bomMaterialsForOrder($subcon) : [];
+        $fabricItemNumbers = [];
+
+        // Real per-pc consumption rate, direct from D365 (TOC_FinalRMPrices,
+        // TOC_Consumption) — NOT derived by dividing bom_lines' RequiredQty by
+        // this order's cutting qty. See D365JobTransactionService::
+        // fetchFinalRMConsumption()'s docblock for why this is a materially
+        // better source than the RequiredQty division this replaced. Keyed by
+        // ItemId, used for the accessory table's Cons. Plan (BOM/pc) column.
+        $finalRmConsumption = [];
+        if ($subcon && ! empty($subcon->order_number)) {
+            try {
+                $plmIdsForOrder = DB::connection('vsm')->table('po_lines')
+                    ->where('PurchaseOrderNumber', $subcon->order_number)
+                    ->whereNotNull('PLMId')->where('PLMId', '!=', '')
+                    ->distinct()->pluck('PLMId')->all();
+                if (! empty($plmIdsForOrder)) {
+                    $finalRmConsumption = app(D365JobTransactionService::class)->fetchFinalRMConsumption($plmIdsForOrder);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('QC report PDF: final RM consumption fetch failed', ['project' => $projectId, 'error' => $e->getMessage()]);
+            }
+        }
+
+        // Real, already-posted material consumption — VSM `material_issue_lines`
+        // (D365's production journal), keyed by ItemNumber, scoped to this
+        // order's OWN production runs via ProductionGroup. No division, no
+        // cross-PO risk — see materialIssueForOrder()'s docblock. `proposal`
+        // and `consumption` both feed the fabric cards (reference cross-checks
+        // against the admin-entered Fabric Sent / Actual Cons. — same figures
+        // that already prefill the live Final Approval / Report Validation
+        // form's Fabric Sent field via fabricLinesWithData()) and the accessory
+        // table (its Mats Sent fallback + actual Consumption column, replacing
+        // the one this service used to derive from BOM Final).
+        $materialIssue = $subcon ? $this->production->materialIssueForOrder((string) $subcon->production_group) : [];
+
+        // Enrich each fabric line with its D365 inventory group ("fabric type"),
+        // item number, the RAW VSM-sourced ordered qty (fabricLinesForPo()'s
+        // fabric_sent, i.e. the PO's OrderedPurchaseQuantity BEFORE any admin
+        // override that may since have changed $f->fabric_sent on the qms row)
+        // so over/underdelivery can be compared against what was actually
+        // ordered, and the real posted D365 consumption. One batched
+        // fabricLinesForPo() call for the whole report, not per row.
         if ($subcon && ! empty($subcon->order_number) && $fabricLines->isNotEmpty()) {
             try {
                 $vsmFabricLines = $this->production->fabricLinesForPo((string) $subcon->order_number);
                 $vsmByLabel = [];
                 foreach ($vsmFabricLines as $vl) {
                     $vsmByLabel[$vl['label']] = $vl;
+                    foreach (array_filter(array_map('trim', explode(',', (string) ($vl['item_number'] ?? '')))) as $it) {
+                        $fabricItemNumbers[$it] = true;
+                    }
                 }
                 foreach ($fabricLines as $f) {
                     $vl = $vsmByLabel[$f->label] ?? null;
                     $f->inventory_group = $vl['inventory_group'] ?? null;
+                    $f->item_number = $vl['item_number'] ?? null;
                     $orderedQty = isset($vl['fabric_sent']) ? (float) $vl['fabric_sent'] : null;
                     $f->ordered_qty = $orderedQty;
                     $goodsReceive = isset($f->goods_receive) ? (float) $f->goods_receive : null;
                     $f->delivery_pct = ($orderedQty !== null && $orderedQty > 0 && $goodsReceive !== null)
                         ? (($goodsReceive - $orderedQty) / $orderedQty) * 100
                         : null;
+
+                    $f->issue_consumption = null;
+                    $f->issue_proposal = null;
+                    $f->issue_all_posted = true;
+                    foreach (array_filter(array_map('trim', explode(',', (string) $f->item_number))) as $it) {
+                        if (isset($materialIssue[$it])) {
+                            $f->issue_consumption = ($f->issue_consumption ?? 0) + $materialIssue[$it]['consumption'];
+                            $f->issue_proposal = ($f->issue_proposal ?? 0) + $materialIssue[$it]['proposal'];
+                            $f->issue_all_posted = $f->issue_all_posted && $materialIssue[$it]['all_posted'];
+                        }
+                    }
                 }
             } catch (\Throwable $e) {
                 Log::warning('QC report PDF: fabric line enrichment failed', ['project' => $projectId, 'error' => $e->getMessage()]);
@@ -376,6 +438,7 @@ class QcReportPdfService
                 $attachments = app(MaterialReturnService::class)->attachmentsFor($subcon)
                     ->map(function ($att) {
                         $isImage = str_starts_with((string) $att->mime_type, 'image/');
+                        $isPdf = $att->mime_type === 'application/pdf';
                         $imageData = null;
                         if ($isImage) {
                             try {
@@ -385,6 +448,18 @@ class QcReportPdfService
                                 }
                             } catch (\Throwable $e) {
                                 Log::warning('QC report PDF: attachment image fetch failed', ['attachment_id' => $att->id, 'error' => $e->getMessage()]);
+                            }
+                        } elseif ($isPdf) {
+                            try {
+                                $bytes = Storage::disk($att->s3_disk)->get($att->s3_path);
+                                if ($bytes !== null && $bytes !== '') {
+                                    $imageData = $this->rasterizePdfFirstPage($bytes);
+                                    if ($imageData !== null) {
+                                        $isImage = true;
+                                    }
+                                }
+                            } catch (\Throwable $e) {
+                                Log::warning('QC report PDF: attachment PDF rasterize failed', ['attachment_id' => $att->id, 'error' => $e->getMessage()]);
                             }
                         }
 
@@ -400,6 +475,241 @@ class QcReportPdfService
                     });
             } catch (\Throwable $e) {
                 Log::warning('QC report PDF: material return attachments read failed', ['project' => $projectId, 'error' => $e->getMessage()]);
+            }
+        }
+
+        // Accessory reconciliation ("Retur Qty") — the other half of Material
+        // Recon (fabric's is $fabricLines above). No deduction formula applies,
+        // but the same "compare declared vs. an independently-derived expected
+        // figure" cross-check fabric gets does: Expected Retur = Mats Sent −
+        // Estimated Consumption (see below). Feeds section 6 (Granular
+        // Breakdown). Union of the PO-line-derived list (accessoryLinesForPo)
+        // and BOM Final ($bomMaterials, minus fabric item numbers) — BOM is
+        // authoritative for completeness: a real order was found where BOM
+        // carried an accessory item never surfaced on the PO's own accessory
+        // lines at all.
+        // `mats_sent`: the admin-entered MaterialReturnLine.qty_sent wins when
+        // present; otherwise falls back to D365's own posted ProposalBOMQuantity
+        // ($materialIssue) — same "saved value wins, otherwise a real prefill"
+        // precedent resolveFabricPricing() already uses for Fabric Price.
+        // `consumption` (a raw total quantity) reads $materialIssue's real
+        // posted ConsumptionBOMQuantity directly — genuine actual usage,
+        // including any unplanned/supplemental draws.
+        // `cons_plan_bom` is the REAL per-pc design rate from D365
+        // TOC_FinalRMPrices ($finalRmConsumption) — NOT derived by dividing
+        // bom_lines' RequiredQty by cutting qty (that approach was replaced:
+        // RequiredQty is a scaled total for whichever order last recalculated
+        // the BOM, so dividing it was only correct by coincidence; TOC_Consumption
+        // is already the per-unit rate, no division needed).
+        // `est_consumption` = Σ(rate × that row's own SIZE's real cutting
+        // qty) — the plan scaled back up to a total using genuine production
+        // output (never D365's own order-qty planning figures — see
+        // fetchFinalRMConsumption()'s docblock for why that mattered), and
+        // what Expected Retur is actually computed against (NOT the real
+        // `consumption` total: real Consumption can include ad-hoc
+        // supplemental postings with no Proposal behind them, which made
+        // Mats Sent − real Consumption swing arbitrarily/falsely negative).
+        // `actual_cons` is still the real $consumption total ÷ that same
+        // applicable qty, shown as a rate for reference/comparison only.
+        $accessoryBreakdown = [];
+        if ($subcon && ! empty($subcon->order_number)) {
+            try {
+                $accessoryLines = $this->production->accessoryLinesForPo((string) $subcon->order_number);
+                $accessoryRecon = app(MaterialReturnService::class)->linesFor($subcon)
+                    ->where('item_type', 'accessory')->keyBy('label');
+
+                // Goods Receive: same D365 packing-slip lookup fabric uses
+                // (resolveGoodsReceipts), scoped to each accessory's OWN source
+                // PO(s) — NOT the subcon/CMT PO, which only ever receives the
+                // finished-garment service line, never raw accessory receipts.
+                $accGoodsReceive = [];
+                try {
+                    $accGoodsReceive = $this->production->resolveGoodsReceipts($accessoryLines);
+                } catch (\Throwable $e) {
+                    Log::warning('QC report PDF: accessory goods receipt fetch failed', ['project' => $projectId, 'error' => $e->getMessage()]);
+                }
+
+                $cuttingQtyForAcc = (float) ($totals['cuttingQty'] ?? 0);
+                // Real per-size cutting qty (production's actual output, from
+                // the QC yield matrix built earlier in this method — see
+                // $rows) — used to scale each TOC_FinalRMPrices row's rate
+                // back up to a total. Deliberately NOT D365's own
+                // TOC_QtyOrder/OrderQty (planning figures): scaling by those
+                // made "Mats Sent vs. this scaled-up rate" tautological,
+                // since Mats Sent's own fallback (Material Issue's
+                // ProposalBOMQuantity) is ALSO computed by D365 against order
+                // qty — comparing plan-scaled-by-order-qty against
+                // plan-scaled-by-order-qty always cancels to ~0 regardless of
+                // what actually happened (confirmed live on real orders).
+                // Cutting qty is genuinely independent, real production data,
+                // so it's the only basis capable of showing real signal.
+                $cuttingQtyBySize = [];
+                foreach ($rows as $r) {
+                    if (($r['size'] ?? '—') !== '—') {
+                        $cuttingQtyBySize[$r['size']] = (float) ($r['cuttingQty'] ?? 0);
+                    }
+                }
+
+                $seenItemNumbers = [];
+                $buildAccRow = function (string $vsmLabel, string $displayLabel, ?string $itemNumberCsv, string $unit, ?float $qty, ?float $matsSentAdmin, ?float $priceAdmin = null, ?float $priceVsm = null) use ($bomMaterials, $finalRmConsumption, $materialIssue, $accGoodsReceive, $cuttingQtyForAcc, $cuttingQtyBySize, &$seenItemNumbers) {
+                    $itemNums = array_filter(array_map('trim', explode(',', (string) $itemNumberCsv)));
+                    $inBom = false;
+                    $consPlanBom = null;
+                    $consPlanConsistent = true;
+                    $estConsumption = null;
+                    $consumption = null;
+                    $matsSentD365 = null;
+                    $allPosted = true;
+                    foreach ($itemNums as $it) {
+                        $seenItemNumbers[$it] = true;
+                        if (isset($bomMaterials[$it])) {
+                            $inBom = true;
+                        }
+                        if (isset($finalRmConsumption[$it])) {
+                            // consumption: real per-pc rate from D365
+                            // TOC_FinalRMPrices — a rate, not a total, so
+                            // multiple item numbers on one grouped row are
+                            // averaged (below), not summed, for DISPLAY.
+                            // est_consumption sums rate × THAT row's own
+                            // size's REAL cutting qty (whole-order cutting
+                            // qty when the row has no size) — never the whole
+                            // order's cutting qty for a size-specific row, or
+                            // a size-specific item's total comes out inflated
+                            // by however much of the order that size doesn't
+                            // cover.
+                            $consPlanBom = ($consPlanBom ?? 0) + $finalRmConsumption[$it]['consumption'];
+                            $consPlanConsistent = $consPlanConsistent && $finalRmConsumption[$it]['consistent'];
+                            foreach ($finalRmConsumption[$it]['rows'] as $rmRow) {
+                                $qtyBasis = ($rmRow['size'] !== null && isset($cuttingQtyBySize[$rmRow['size']]))
+                                    ? $cuttingQtyBySize[$rmRow['size']]
+                                    : $cuttingQtyForAcc;
+                                $estConsumption = ($estConsumption ?? 0) + $rmRow['consumption'] * $qtyBasis;
+                            }
+                        }
+                        if (isset($materialIssue[$it])) {
+                            $consumption = ($consumption ?? 0) + $materialIssue[$it]['consumption'];
+                            $matsSentD365 = ($matsSentD365 ?? 0) + $materialIssue[$it]['proposal'];
+                            $allPosted = $allPosted && $materialIssue[$it]['all_posted'];
+                        }
+                    }
+                    if ($consPlanBom !== null && count($itemNums) > 1) {
+                        $consPlanBom /= count($itemNums);
+                    }
+                    $goodsReceive = $accGoodsReceive[$vsmLabel]['qty'] ?? null;
+                    $matsSent = $matsSentAdmin ?? $matsSentD365;
+                    $matsSentSource = $matsSentAdmin !== null ? 'admin' : ($matsSentD365 !== null ? 'd365' : null);
+                    // Actual Cons. (pc) must divide by the SAME applicable qty
+                    // Cons. Plan's rate is scoped to — derived back out as
+                    // est_consumption ÷ cons_plan_bom (e.g. 306 ÷ 1.00 = 306
+                    // for a size-S-only label) — NOT the whole order's cutting
+                    // qty. Dividing a size-specific item's real consumption by
+                    // the whole order's qty produced a misleadingly tiny rate
+                    // (e.g. 0.2061/pc) sitting right next to a Cons. Plan rate
+                    // of 1.0000/pc for the exact same quantity, even though
+                    // the two totals actually agreed exactly. Falls back to
+                    // the whole order's cutting qty only when there's no BOM
+                    // rate to derive the real scope from.
+                    $applicableQty = ($estConsumption !== null && $consPlanBom !== null && $consPlanBom != 0)
+                        ? $estConsumption / $consPlanBom
+                        : $cuttingQtyForAcc;
+                    $actualConsRate = ($consumption !== null && $applicableQty > 0) ? $consumption / $applicableQty : null;
+
+                    // Expected Retur = Mats Sent − Estimated Consumption (the
+                    // BOM-plan rate × this material's own applicable qty —
+                    // e.g. sent 2,000, plan 1.00/pc, cutting qty 1,800 →
+                    // estimated 1,800 needed → expected retur 200). NOT real
+                    // Consumption: real posted usage can include unplanned
+                    // supplemental draws with no Proposal behind them, which
+                    // would make Sent − real Consumption swing on noise
+                    // unrelated to whether material is actually left over to
+                    // return. When a form's Mats Sent gets submitted with the
+                    // D365-suggested prefill left untouched, this correctly
+                    // nets to ~0 — that IS the right answer for that data (sent
+                    // exactly what the plan called for, nothing more), not a
+                    // bug; it only reads as "always zero" on orders where
+                    // nobody has yet entered a Mats Sent that actually differs
+                    // from the plan. NOT Goods Receive − Consumption either:
+                    // Goods Receive is scoped to whatever PO the accessory was
+                    // bought on, which is often ONE PO shared across every
+                    // colorway of a style (unlike fabric, bought per
+                    // colorway) — that batch-wide figure isn't this order's
+                    // own share.
+                    $expectedRetur = ($matsSent !== null && $estConsumption !== null)
+                        ? $matsSent - $estConsumption
+                        : null;
+
+                    // Price: same precedence as fabric's fabric_price
+                    // (fabricLinesWithData()) — the admin's saved
+                    // MaterialReturnLine.unit_price wins, else the VSM-derived
+                    // weighted-average reference (accessoryLinesForPo()'s
+                    // unit_price). Value (ref) is informational only — there is
+                    // no deduction formula for accessories, unlike fabric.
+                    $price = $priceAdmin ?? $priceVsm;
+                    $value = ($price !== null && $consumption !== null) ? $price * $consumption : null;
+
+                    return [
+                        'display_label' => $displayLabel,
+                        'item_number' => $itemNumberCsv ?: null,
+                        'unit' => $unit ?: 'PCS',
+                        'qty' => $qty,
+                        'mats_sent' => $matsSent,
+                        'mats_sent_source' => $matsSentSource,
+                        'goods_receive' => $goodsReceive,
+                        'consumption' => $consumption,
+                        'consumption_all_posted' => $allPosted,
+                        'cons_plan_bom' => $consPlanBom,
+                        'cons_plan_consistent' => $consPlanConsistent,
+                        'est_consumption' => $estConsumption,
+                        'actual_cons' => $actualConsRate,
+                        'cutting_qty' => $cuttingQtyForAcc,
+                        'expected_retur' => $expectedRetur,
+                        'price' => $price,
+                        'value' => $value,
+                        'from_bom_only' => false,
+                        'in_bom' => $inBom,
+                    ];
+                };
+
+                $accVsmLabels = array_map(fn ($al) => $al['label'], $accessoryLines);
+                foreach ($accessoryLines as $al) {
+                    $rec = $accessoryRecon->get($al['label']);
+                    $accessoryBreakdown[] = $buildAccRow(
+                        $al['label'],
+                        $al['display_label'] ?? $al['label'],
+                        $al['item_number'] ?? null,
+                        $al['unit'] ?: 'PCS',
+                        $rec ? (float) $rec->qty_declared : null,
+                        $rec && isset($rec->qty_sent) ? (float) $rec->qty_sent : null,
+                        $rec && $rec->unit_price !== null ? (float) $rec->unit_price : null,
+                        $al['unit_price'] ?? null
+                    );
+                }
+                foreach ($accessoryRecon as $rec) {
+                    if (! in_array($rec->label, $accVsmLabels, true)) {
+                        $accessoryBreakdown[] = $buildAccRow(
+                            $rec->label,
+                            $rec->label,
+                            null,
+                            $rec->unit ?: 'PCS',
+                            (float) $rec->qty_declared,
+                            isset($rec->qty_sent) ? (float) $rec->qty_sent : null,
+                            $rec->unit_price !== null ? (float) $rec->unit_price : null
+                        );
+                    }
+                }
+
+                // BOM Final items never covered by a PO recon line at all
+                // (fabric item numbers excluded — those live in $fabricLines).
+                foreach ($bomMaterials as $itemNum => $bm) {
+                    if (isset($fabricItemNumbers[$itemNum]) || isset($seenItemNumbers[$itemNum])) {
+                        continue;
+                    }
+                    $row = $buildAccRow($bm['description'], $bm['description'], $itemNum, $bm['unit'] ?: 'PCS', null, null);
+                    $row['from_bom_only'] = true;
+                    $accessoryBreakdown[] = $row;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('QC report PDF: accessory reconciliation read failed', ['project' => $projectId, 'error' => $e->getMessage()]);
             }
         }
 
@@ -461,6 +771,7 @@ class QcReportPdfService
             'totals' => $totals,
             'deductions' => $deductions,
             'fabricLines' => $fabricLines,
+            'accessoryBreakdown' => $accessoryBreakdown,
             'deductionLines' => $deductionLines,
             'defectImages' => $defectImages,
             'attachments' => $attachments,
@@ -581,6 +892,115 @@ class QcReportPdfService
             Log::warning('QC report PDF: subcon order resolve failed', ['error' => $e->getMessage()]);
 
             return null;
+        }
+    }
+
+    /**
+     * Complete BOM Final material list (fabric + accessory) for the order's PLM
+     * style, read straight from VSM `bom_lines` (+ `item_master` for a display
+     * name). `RequiredQty` is the BOM's OWN total — verified by cross-checking
+     * `po_lines` that the same PLMId is shared by every PO ever cut against
+     * this style (18 POs on one sampled style), not just this one order — so it
+     * can NOT be safely divided by this order's own qty to get a per-pc figure
+     * (that would need this order's share of the shared total, which isn't
+     * derivable from local data). Returned as a raw reference total only.
+     * Keyed by ItemId (D365 item number) so callers can cross-reference against
+     * fabric/accessory lines already resolved by item number elsewhere.
+     *
+     * @return array<string, array{description: string, unit: ?string, required_qty: float}>
+     */
+    private function bomMaterialsForOrder(SubconOrder $order): array
+    {
+        try {
+            $plmIds = DB::connection('vsm')->table('po_lines')
+                ->where('PurchaseOrderNumber', $order->order_number)
+                ->whereNotNull('PLMId')->where('PLMId', '!=', '')
+                ->distinct()->pluck('PLMId')->all();
+            if (empty($plmIds)) {
+                return [];
+            }
+
+            $rows = DB::connection('vsm')->table('bom_lines')
+                ->whereIn('PLMId', $plmIds)
+                ->get(['ItemId', 'RequiredQty', 'Unit']);
+            if ($rows->isEmpty()) {
+                return [];
+            }
+
+            $itemIds = $rows->pluck('ItemId')->unique()->values()->all();
+            $names = DB::connection('vsm')->table('item_master')
+                ->whereIn('ItemId', $itemIds)->pluck('SearchName', 'ItemId');
+
+            $out = [];
+            foreach ($rows as $r) {
+                $id = (string) $r->ItemId;
+                $out[$id] ??= ['description' => $names[$id] ?? $id, 'unit' => $r->Unit, 'required_qty' => 0.0];
+                $out[$id]['required_qty'] += (float) $r->RequiredQty;
+            }
+
+            return $out;
+        } catch (\Throwable $e) {
+            Log::warning('QC report PDF: BOM materials read failed', ['order' => $order->order_number ?? null, 'error' => $e->getMessage()]);
+
+            return [];
+        }
+    }
+
+    /**
+     * Rasterizes a PDF's first page to a PNG data URI so a material-return
+     * delivery-note attachment can be embedded in the report the same way an
+     * image attachment already is (DomPDF only lays out HTML/images, it
+     * cannot embed another PDF's pages as-is). Tries the Imagick extension
+     * first (its PDF delegate shells out to Ghostscript), then falls back to
+     * calling Ghostscript directly if Imagick isn't compiled in. Best-effort:
+     * returns null on any failure (missing Imagick/Ghostscript, corrupt PDF,
+     * encrypted file, ...) and the caller shows the "open the original file"
+     * placeholder instead — never blocks the rest of the report.
+     */
+    private function rasterizePdfFirstPage(string $pdfBytes): ?string
+    {
+        $tmpBase = sys_get_temp_dir().'/qcret_'.bin2hex(random_bytes(8));
+        $tmpPdf = $tmpBase.'.pdf';
+        $tmpPng = $tmpBase.'.png';
+
+        try {
+            file_put_contents($tmpPdf, $pdfBytes);
+
+            if (extension_loaded('imagick')) {
+                try {
+                    $imagick = new \Imagick();
+                    $imagick->setResolution(150, 150);
+                    $imagick->readImage($tmpPdf.'[0]');
+                    $imagick->setImageFormat('png');
+                    $imagick->setImageBackgroundColor('white');
+                    $imagick->setImageAlphaChannel(\Imagick::ALPHACHANNEL_REMOVE);
+                    $blob = $imagick->getImageBlob();
+                    $imagick->clear();
+                    if ($blob !== '') {
+                        return 'data:image/png;base64,'.base64_encode($blob);
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('QC report PDF: Imagick PDF rasterize failed, trying Ghostscript', ['error' => $e->getMessage()]);
+                }
+            }
+
+            $gsBinary = trim((string) shell_exec('which gs 2>/dev/null'));
+            if ($gsBinary !== '') {
+                $cmd = escapeshellarg($gsBinary)
+                    .' -q -dNOPAUSE -dBATCH -dSAFER -sDEVICE=png16m -r150'
+                    .' -dFirstPage=1 -dLastPage=1'
+                    .' -sOutputFile='.escapeshellarg($tmpPng).' '.escapeshellarg($tmpPdf)
+                    .' 2>&1';
+                shell_exec($cmd);
+                if (is_file($tmpPng) && filesize($tmpPng) > 0) {
+                    return 'data:image/png;base64,'.base64_encode(file_get_contents($tmpPng));
+                }
+            }
+
+            return null;
+        } finally {
+            @unlink($tmpPdf);
+            @unlink($tmpPng);
         }
     }
 

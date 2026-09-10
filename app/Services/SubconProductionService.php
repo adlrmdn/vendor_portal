@@ -192,10 +192,12 @@ class SubconProductionService
     private const FABRIC_POOL_PREFIX = 'Fab-';
 
     // Accessories/trims (labels, zippers, thread, polybags, hangtags, tape,
-    // interlining, ...) live under a SEPARATE PO pool, not on the fabric-pool
-    // PO — confirmed live 2026-09-03 (MPG/PO/2606/00643: 15 real Acc-Local
-    // lines, 0 PCS lines on the Fab-Import PO). Units vary — labels are CM,
-    // thread/tape/lakban are YD, most others are PCS — never assume PCS.
+    // interlining, ...) mostly live under a SEPARATE PO pool, not the
+    // fabric-pool PO — confirmed live 2026-09-03 (MPG/PO/2606/00643: 15 real
+    // Acc-Local lines, 0 PCS lines on the Fab-Import PO). Units vary — labels
+    // are CM, thread/tape/lakban are YD, most others are PCS — never assume
+    // PCS. Exception: knit collars ride on the fabric PO itself as PCS lines
+    // and never get their own Acc-* PO — see accessoryLinesForPo()'s docblock.
     private const ACCESSORY_POOL_PREFIX = 'Acc-';
 
     /**
@@ -322,13 +324,21 @@ class SubconProductionService
     }
 
     /**
-     * The accessory/trim counterpart to fabricLinesForPo() — same fabric-pool
-     * PO lines (joined by PLMId), but keeping exactly the PCS-unit rows that
-     * method deliberately skips ("PCS lines on fabric POs are trims/accessories,
-     * not fabric"). Used to seed real, D365-sourced accessory return-quantity
-     * rows (see MaterialReturnService) instead of free-typing item names.
+     * The accessory/trim counterpart to fabricLinesForPo() — same PLMId join,
+     * mainly the dedicated Acc-* pool PO lines, PLUS the PCS-unit lines on the
+     * Fab-* pool PO that fabricLinesForPo() deliberately skips ("not fabric").
+     * That second part matters: accessory-like components — confirmed live to
+     * be exclusively knit collars ("FLATKNIT COLLAR ...", zero noise across
+     * every PCS line found on a Fab-* PO in `vsm`) — sometimes ride on the
+     * fabric PO itself and never get their own Acc-* PO. Without also pulling
+     * those, they vanish from BOTH fabricLinesForPo() (excluded as "not
+     * fabric") and this method (not on an Acc-* PO) — a real "accessories not
+     * appearing" gap confirmed live on PLM/25/10/00050 (MPG/PO/2510/00612: 3
+     * COLLAR lines, no Acc-* PO for that PLM at all).
+     * Used to seed real, D365-sourced accessory return-quantity rows (see
+     * MaterialReturnService) instead of free-typing item names.
      *
-     * @return array<int, array{label: string, display_label: string, unit: ?string, item_number: string, ordered_qty: float}>
+     * @return array<int, array{label: string, display_label: string, unit: ?string, item_number: string, item_numbers: array<int,string>, po_numbers: array<int,string>, ordered_qty: float, unit_price: ?float}>
      */
     public function accessoryLinesForPo(string $poNumber): array
     {
@@ -348,8 +358,14 @@ class SubconProductionService
             $lines = DB::connection('vsm')->table('po_lines as l')
                 ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
                 ->whereIn('l.PLMId', $plmIds)
-                ->where('h.PurchPoolId', 'like', self::ACCESSORY_POOL_PREFIX.'%')
-                ->get(['l.LineDescription', 'l.PurchaseUnitSymbol', 'l.OrderedPurchaseQuantity', 'l.ItemNumber']);
+                ->where(function ($q) {
+                    $q->where('h.PurchPoolId', 'like', self::ACCESSORY_POOL_PREFIX.'%')
+                        ->orWhere(function ($q2) {
+                            $q2->where('h.PurchPoolId', 'like', self::FABRIC_POOL_PREFIX.'%')
+                                ->where('l.PurchaseUnitSymbol', 'PCS');
+                        });
+                })
+                ->get(['l.LineDescription', 'l.PurchaseUnitSymbol', 'l.OrderedPurchaseQuantity', 'l.LineAmount', 'l.ItemNumber', 'l.PurchaseOrderNumber']);
 
             $grouped = [];
             foreach ($lines as $ln) {
@@ -360,11 +376,15 @@ class SubconProductionService
                 }
                 $key = $desc.'|'.$unit;
                 if (! isset($grouped[$key])) {
-                    $grouped[$key] = ['description' => $desc, 'unit' => $unit, 'ordered_qty' => 0.0, 'item_numbers' => []];
+                    $grouped[$key] = ['description' => $desc, 'unit' => $unit, 'ordered_qty' => 0.0, 'total_amount' => 0.0, 'item_numbers' => [], 'po_numbers' => []];
                 }
                 $grouped[$key]['ordered_qty'] += (float) ($ln->OrderedPurchaseQuantity ?? 0);
+                $grouped[$key]['total_amount'] += (float) ($ln->LineAmount ?? 0);
                 if (! empty($ln->ItemNumber)) {
                     $grouped[$key]['item_numbers'][$ln->ItemNumber] = true;
+                }
+                if (! empty($ln->PurchaseOrderNumber)) {
+                    $grouped[$key]['po_numbers'][$ln->PurchaseOrderNumber] = true;
                 }
             }
 
@@ -384,10 +404,22 @@ class SubconProductionService
             }
 
             return array_values(array_map(function ($g) use ($itemMaster) {
+                // Weighted unit price = Σ LineAmount / Σ ordered qty — same
+                // VSM-only reference as fabricLinesForPo()'s fabric_price (no
+                // currency; see resolveFabricPricing()'s docblock for why this
+                // layering does not extend to accessories).
+                $g['unit_price'] = $g['ordered_qty'] > 0 ? round($g['total_amount'] / $g['ordered_qty'], 2) : null;
+                unset($g['total_amount']);
                 $g['ordered_qty'] = round($g['ordered_qty'], 2);
                 $itemNumbers = array_keys($g['item_numbers']);
                 $g['item_number'] = implode(', ', $itemNumbers);
-                unset($g['item_numbers']);
+                // item_numbers/po_numbers kept (not unset, unlike fabric's own
+                // copy used to be) — resolveGoodsReceipts() needs both arrays to
+                // scope the D365 lookup to the RIGHT PO (the accessory's own
+                // supplier PO, never the CMT subcon PO — that only ever receives
+                // the finished-garment service line).
+                $g['item_numbers'] = $itemNumbers;
+                $g['po_numbers'] = array_keys($g['po_numbers']);
                 $g['label'] = $g['description'].' ('.$g['unit'].')';
                 $itemMasterDescription = null;
                 foreach ($itemNumbers as $it) {
@@ -611,12 +643,69 @@ class SubconProductionService
     }
 
     /**
+     * Real, already-posted material consumption for an order — read straight
+     * from VSM `material_issue_lines`, synced from D365's production-journal
+     * BOM entity (`ProdJournalBomCDREntities`: `BOMProposal`/`BOMConsump` map to
+     * this table's `ProposalBOMQuantity`/`ConsumptionBOMQuantity`). Keyed by
+     * `ProductionGroup` — this order's OWN production runs only (one row per
+     * size's production order), unlike VSM `bom_lines` (BOM Final), which is a
+     * style-wide design template shared across every PO that ever reused the
+     * same PLM (confirmed: up to 18 POs on one sampled style) and so cannot be
+     * safely divided into a per-order figure. This is the real posted number:
+     * no division/estimation, no cross-PO contamination — verified against a
+     * real order where the summed consumption for a fabric item matched its
+     * admin-entered Fabric Sent to the decimal (420.00 = 420.00).
+     *
+     * `proposal` = D365's suggested/planned issue quantity (BOM standard × qty
+     * produced) computed before consumption was posted — the closest available
+     * proxy for "material sent for production" absent a dedicated dispatch
+     * event in this app. `consumption` = what was actually posted as consumed.
+     * `all_posted` is false if any contributing line is still a draft
+     * (`IsPosted` = No) — those figures may still move.
+     *
+     * @return array<string, array{proposal: float, consumption: float, all_posted: bool}>
+     */
+    public function materialIssueForOrder(string $productionGroup): array
+    {
+        $productionGroup = trim($productionGroup);
+        if ($productionGroup === '') {
+            return [];
+        }
+
+        try {
+            $rows = DB::connection('vsm')->table('material_issue_lines')
+                ->where('ProductionGroup', $productionGroup)
+                ->get(['ItemNumber', 'ProposalBOMQuantity', 'ConsumptionBOMQuantity', 'IsPosted']);
+
+            $out = [];
+            foreach ($rows as $r) {
+                $item = (string) $r->ItemNumber;
+                $out[$item] ??= ['proposal' => 0.0, 'consumption' => 0.0, 'all_posted' => true];
+                $out[$item]['proposal'] += (float) $r->ProposalBOMQuantity;
+                $out[$item]['consumption'] += (float) $r->ConsumptionBOMQuantity;
+                if (strcasecmp((string) $r->IsPosted, 'Yes') !== 0) {
+                    $out[$item]['all_posted'] = false;
+                }
+            }
+
+            return $out;
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
      * Per-fabric lines for an order, enriched with locally-stored reconciliation
      * AND consumption (fabric_sent / consumption_plan / cutt_plan /
      * actual_consumption / overconsumption). The fabric set is the union of
      * VSM-linked fabrics and any reconciliation rows already saved (so
      * vendor-added fabrics persist). Consumption fields are null until the admin
      * fills them at cutting approval. See SubconConsumptionService for the formulas.
+     * `fabric_sent_issue` is a reference/prefill only (D365's real Material
+     * Issue posting for this order) — never persisted itself, purely a UI
+     * default when `fabric_sent` hasn't been entered yet.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -636,6 +725,26 @@ class SubconProductionService
         // Actual goods-received quantity per fabric (direct D365, always — no
         // local mirror exists for this).
         $receipts = $this->resolveGoodsReceipts(array_values($vsm));
+
+        // Real D365 Material Issue posting (production journal) — same source
+        // materialIssueForOrder() already gives the accessory side's Mats Sent
+        // prefill. Used below as a reference/prefill for Fabric Sent when no
+        // admin value is saved yet: this order's OWN production runs only
+        // (ProductionGroup-scoped), unlike bom_lines' style-wide BOM Final.
+        $materialIssue = $this->materialIssueForOrder((string) $order->production_group);
+        $issueSent = function (?string $itemNumberCsv) use ($materialIssue) {
+            if (! $itemNumberCsv) {
+                return null;
+            }
+            $sum = null;
+            foreach (array_filter(array_map('trim', explode(',', $itemNumberCsv))) as $it) {
+                if (isset($materialIssue[$it])) {
+                    $sum = ($sum ?? 0) + $materialIssue[$it]['proposal'];
+                }
+            }
+
+            return $sum;
+        };
 
         $labels = array_keys($vsm + $recon->all());
 
@@ -686,6 +795,7 @@ class SubconProductionService
                 'item_number' => $vsm[$label]['item_number'] ?? null,
                 'inventory_group' => $vsm[$label]['inventory_group'] ?? null,
                 'goods_receive' => $receipts[$label]['qty'] ?? null,
+                'fabric_sent_issue' => $issueSent($vsm[$label]['item_number'] ?? null),
                 'goods_receive_date' => $receipts[$label]['date'] ?? null,
                 'short_roll' => $r ? (float) $r->short_roll : 0,
                 'sisa_kain' => $r ? (float) $r->sisa_kain : 0,

@@ -70,6 +70,8 @@
                                 @endif
                                 @if(($p['material_return_status'] ?? null) === 'pending')
                                     <div class="mt-1"><span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Pending</span></div>
+                                @elseif(($p['material_return_status'] ?? null) === 'auto_approved')
+                                    <div class="mt-1"><span class="badge bg-info-subtle text-info border border-info border-opacity-25" title="Admin override — inventory has not actually checked this order."><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Auto-Approved</span></div>
                                 @elseif(($p['material_return_status'] ?? null) === 'checked')
                                     <div class="mt-1"><span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Checked</span></div>
                                 @endif

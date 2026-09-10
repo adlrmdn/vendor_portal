@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\Vendor;
 use App\Services\QcReportPdfService;
 use App\Services\RpaQueueReadService;
+use App\Services\SubconConsumptionService;
 use App\Services\SubconLabelService;
 use App\Services\SubconProductionService;
 use Illuminate\Http\Request;
@@ -602,7 +603,12 @@ class SubconAdminController extends Controller
         $orders = $query->orderBy('created_at', 'desc')->paginate(20);
         $vendors = Vendor::where('type', 'subcon')->where('is_active', true)->orderBy('name')->get();
 
-        return view('subcon.admin.orders.index', compact('orders', 'vendors'));
+        // Post-completion QC/Finance pipeline stage, batched for the page of
+        // "Completed" rows only — see qcPipelineStatusForOrders()'s docblock
+        // for why the plain workflow_stage/status columns go silent here.
+        $qcPipelineByOrder = $this->qcPipelineStatusForOrders(collect($orders->items()));
+
+        return view('subcon.admin.orders.index', compact('orders', 'vendors', 'qcPipelineByOrder'));
     }
 
     /** Orders currently awaiting a cutting or gramasi approval decision. */
@@ -784,16 +790,23 @@ class SubconAdminController extends Controller
 
             // Material Flow status per order — one batched read, best-effort
             // (an unreachable `wms` connection just leaves the badge off).
+            // Uses the REAL gate (MaterialReturnService::pendingStatusForOrders(),
+            // the same rule hoApprove()'s isReturnCheckPending() enforces) —
+            // not just the latest task's own status, which can say "checked"
+            // while newer undispatched lines still block Report Validation.
             $materialReturnByOrder = [];
             try {
                 $orderIds = $ordersByPg->pluck('id')->filter()->unique()->values()->all();
-                if (! empty($orderIds)) {
-                    $materialReturnByOrder = \App\Models\MaterialReturnTask::whereIn('order_id', $orderIds)
-                        ->orderByDesc('created_at')
-                        ->get()
-                        ->groupBy('order_id')
-                        ->map(fn ($g) => $g->first()->status);
-                }
+                $materialReturnSvc = app(\App\Services\MaterialReturnService::class);
+                $autoApprovedIds = $materialReturnSvc->autoApprovedStatusForOrders($orderIds);
+                $materialReturnByOrder = collect($materialReturnSvc->pendingStatusForOrders($orderIds))
+                    ->map(function ($pending, $oid) use ($autoApprovedIds) {
+                        if (isset($autoApprovedIds[$oid])) {
+                            return 'auto_approved';
+                        }
+
+                        return $pending ? 'pending' : 'checked';
+                    });
             } catch (\Throwable $e) {
                 // Leave empty — the "Send to Material Flow" state just shows as unknown.
             }
@@ -921,6 +934,78 @@ class SubconAdminController extends Controller
             ->get();
 
         return view('subcon.admin.director-approvals', compact('pending', 'recentDecisions', 'isDirector', 'search'));
+    }
+
+    /**
+     * Admin-initiated recall: pulls a session back from the Director queue to
+     * Report Validation by clearing `ho_validation_signature`. Unlike Director
+     * Reject (QcApprovalController::directorDecline) this is silent — no
+     * reason prompt, no email to MD Production, no "Rejected" stamp — just an
+     * internal correction path any subcon admin can use to pull a row back
+     * before the Director acts on it (e.g. to fix a mistake spotted after
+     * Validate & Send). Logged under its own 'recalled' decision so it does
+     * not show up as a Director rejection on the Report Validation tab.
+     */
+    public function recallToReportValidation(Request $request, string $token)
+    {
+        if (! Str::isUuid($token)) {
+            return back()->with('error', 'Invalid inspection reference.');
+        }
+
+        if (! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature')) {
+            return back()->with('error', 'Recall is not available on this environment.');
+        }
+
+        $row = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('approval_token', $token)->first();
+
+        if (! $row) {
+            return back()->with('error', 'Inspection not found.');
+        }
+
+        if (trim((string) ($row->director_approval_signature ?? '')) !== '') {
+            return back()->with('error', 'This inspection has already been actioned by the Director and can no longer be recalled.');
+        }
+
+        $affected = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('approval_token', $token)
+            ->where(function ($q) {
+                $q->whereNull('director_approval_signature')->orWhere('director_approval_signature', '');
+            })
+            ->update(['ho_validation_signature' => null]);
+
+        if ($affected === 0) {
+            return back()->with('error', 'This inspection is no longer awaiting Director authorization.');
+        }
+
+        try {
+            $doc = $this->reportPdf->renderDataUri((string) $row->project_id, (string) $row->session_id);
+            if ($doc !== null) {
+                $this->reportPdf->writeVerifiedDoc((string) $row->project_id, $doc);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('QC verified_doc refresh failed after recall', ['project' => $row->project_id ?? null, 'error' => $e->getMessage()]);
+        }
+
+        $pg = null;
+        if (Schema::connection('qms')->hasTable('packaging_projects')) {
+            $pg = DB::connection('qms')->table('packaging_projects')->where('project_id', $row->project_id)->value('production_group');
+        }
+        $subcon = $pg ? SubconOrder::where('production_group', $pg)->first() : null;
+
+        $actor = Auth::user()->name ?: Auth::user()->email;
+        \App\Models\SubconApprovalLog::record([
+            'order_id' => $subcon->id ?? null,
+            'order_number' => $subcon->order_number ?? ($row->project_id ?? null),
+            'vendor_name' => $subcon?->vendor?->name,
+            'gate' => 'director',
+            'decision' => 'recalled',
+            'actor' => $actor,
+            'source' => 'portal',
+            'note' => 'Recalled to Report Validation by '.$actor.'.',
+        ]);
+
+        return back()->with('success', 'Recalled to Report Validation.');
     }
 
     /**
@@ -1229,11 +1314,389 @@ class SubconAdminController extends Controller
         }
         $totalCut = $production->totalCutForOrder($order);
 
+        // Accessory counterpart of $fabricLines — same VSM-sourced lines +
+        // D365 Goods Receive / Material Issue reference data the Final
+        // Approval form (QcApprovalController::hoApprovalForm) already shows;
+        // wired into this page too (via $showAccessory below) so admins don't
+        // have to wait for the QC-console stage to see accessory reconciliation
+        // at all. Best-effort — a VSM/D365 hiccup must not 500 the order page.
+        try {
+            $accessoryLines = $production->accessoryLinesForPo($order->order_number);
+        } catch (\Throwable $e) {
+            report($e);
+            $accessoryLines = [];
+        }
+        try {
+            $accessoryGoodsReceive = $production->resolveGoodsReceipts($accessoryLines);
+        } catch (\Throwable $e) {
+            report($e);
+            $accessoryGoodsReceive = [];
+        }
+        try {
+            $accessoryIssue = $production->materialIssueForOrder((string) $order->production_group);
+        } catch (\Throwable $e) {
+            report($e);
+            $accessoryIssue = [];
+        }
+
         $materialReturnService = app(\App\Services\MaterialReturnService::class);
         $materialReturns = $materialReturnService->attachmentsFor($order);
         $materialReturnTask = $materialReturnService->activeTaskFor($order);
+        // See QcApprovalController::hoApprovalForm()'s identical comment —
+        // must reflect the real gate, not just the latest task's status.
+        $materialReturnPending = $materialReturnService->isReturnCheckPending($order);
+        $materialReturnAutoApproved = $materialReturnService->isAutoApproved($order);
+        $accessoryRecon = $materialReturnService->linesFor($order)->where('item_type', 'accessory')->keyBy('label');
 
-        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'totalCut', 'materialReturns', 'materialReturnTask'));
+        // Post-labels report pipeline (QC-console inspection → Final Approval →
+        // Report Validation → Director): currently only traceable by hunting for
+        // this PO across the separate Approvals / Report Validation / Director
+        // Approvals tabs. Surfaced here so the order page itself tracks which
+        // QMS project this order is and exactly where its report sits.
+        // Best-effort — never blocks the order page.
+        $qcPipeline = $this->qcPipelineStatusFor($order);
+        // Richer fallback for production-detail.blade.php's per-size table when
+        // VSM's PLM chain is broken — see qcSizeOrderQtyFor()'s docblock.
+        $qcSizeOrderQty = $this->qcSizeOrderQtyFor($order);
+
+        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'totalCut', 'accessoryLines', 'accessoryGoodsReceive', 'accessoryIssue', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcPipeline', 'qcSizeOrderQty'));
+    }
+
+    /**
+     * Standalone "Save Material Reconciliation" — persists the Fabric
+     * consumption table AND the Accessory return-quantity table, independent
+     * of any workflow-stage gate. Before this, editing consumption was only
+     * possible as a side effect of the cutting-gate Approve action
+     * (SubconApprovalController::approveInApp) or the QC-console Final
+     * Approval form (QcApprovalController::hoApprove/hoSendApproval) — an
+     * admin who just needed to correct a figure, or fill in reconciliation
+     * for an order stuck outside the cutting-review window (e.g. no VSM/PLM
+     * link at all — manual "Add fabric"/"Add accessory" rows are the only
+     * path for those), had no way to do so without re-triggering an
+     * approval. This route changes only SubconFabricReconciliation /
+     * MaterialReturnLine — it never touches workflow_stage.
+     *
+     * Same two persistence calls the approval gates already use
+     * (SubconConsumptionService::persist() for fabric,
+     * MaterialReturnService::persistReconciliation() for accessory — fabric
+     * side passed empty since consumption already covers it), same
+     * validation shape as QcApprovalController::hoApprove(), same
+     * lockReturKain:false (admin's submitted Retur Kain wins, matching the
+     * approval forms' "approver can override it directly" rule).
+     */
+    public function saveMaterialReconciliation(Request $request, string $id, SubconConsumptionService $consumption, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $order = SubconOrder::with('vendor')->findOrFail($id);
+
+        $data = $request->validate([
+            'fabrics' => 'nullable|array',
+            'fabrics.*.label' => 'required_with:fabrics|string|max:500',
+            'fabrics.*.short_roll' => 'nullable|numeric|min:0',
+            'fabrics.*.sisa_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.kepala_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.retur_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
+            'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
+            'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
+            'accessories_recon' => 'nullable|array',
+            'accessories_recon.*.label' => 'required_with:accessories_recon|string|max:500',
+            'accessories_recon.*.qty' => 'nullable|numeric|min:0',
+            'accessories_recon.*.mats_sent' => 'nullable|numeric|min:0',
+            'accessories_recon.*.price' => 'nullable|numeric|min:0',
+            'accessories_recon.*.unit' => 'nullable|string|max:20',
+        ]);
+
+        DB::transaction(function () use ($consumption, $order, $data) {
+            $consumption->persist($order, $data['fabrics'] ?? []);
+        });
+
+        $actor = Auth::user()->name ?: Auth::user()->email;
+        $materialReturns->persistReconciliation(
+            $order,
+            [],
+            $data['accessories_recon'] ?? [],
+            \App\Models\MaterialReturnAttachment::ROLE_ADMIN,
+            $actor,
+            lockReturKain: false
+        );
+
+        return back()->with('success', 'Material reconciliation saved.');
+    }
+
+    /**
+     * Best-effort per-size Order Qty from the QC console's own report-line
+     * snapshot (`qms.packaging_project_reports`, `session_id IS NULL` — the
+     * base "system" line every session's reject/session figures are computed
+     * against). This is the SAME source the signed inspection report's own
+     * per-size table reads Order Qty from (QcReportPdfService::context()) —
+     * captured once at inspection time and stored in QMS, decoupled from a
+     * live VSM `production_group_lines` lookup that can go missing/archived
+     * on VSM's side even after a real inspection already ran and the figures
+     * are sitting right here. Exists as a richer fallback for
+     * production-detail.blade.php when the VSM/PLM chain is broken but the
+     * order has already been through QC inspection.
+     *
+     * Returns [] if there's no QMS project for this order yet, or the `qms`
+     * connection/schema is unavailable.
+     *
+     * @return array<string,int> size => order qty
+     */
+    private function qcSizeOrderQtyFor(SubconOrder $order): array
+    {
+        if (empty($order->production_group)) {
+            return [];
+        }
+
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_projects')
+                || ! Schema::connection('qms')->hasTable('packaging_project_reports')) {
+                return [];
+            }
+
+            $projectId = DB::connection('qms')->table('packaging_projects')
+                ->where('production_group', $order->production_group)
+                ->orderByDesc('created_at')
+                ->value('project_id');
+
+            if (! $projectId) {
+                return [];
+            }
+
+            return DB::connection('qms')->table('packaging_project_reports')
+                ->where('project_id', $projectId)
+                ->whereNull('session_id')
+                ->pluck('qty_order', 'size_val')
+                ->map(fn ($v) => (int) $v)
+                ->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Best-effort QC-console pipeline status for one order, sourced from `qms`
+     * (latest packaging_projects row + its latest session, both joined by
+     * production_group — same key SubconOrder::qmsColumnQuery() and
+     * QcApprovalController::subconContext() resolve through). Mirrors the
+     * staging logic behind pendingFinalApprovalCount()/pendingValidateSendCount()/
+     * pendingDirectorApprovalCount(), but scoped to a single order instead of a
+     * portal-wide count, so the order page can show exactly where this PO sits
+     * without the admin having to search the separate tabs for it.
+     *
+     * `steps` is an explicit sent/not-sent checklist (Inspection → Final
+     * Approval → Report Validation → Director) rather than just one collapsed
+     * label — "Final Approval" and "Report Validation" ('Validate & Send') are
+     * two distinct signatures (ho_approval_signature / ho_validation_signature)
+     * and admins need to see which of the two has actually gone out, not just
+     * an overall stage name. Each step's 'done'/'name'/'date' comes from
+     * QcReportPdfService::parseSignature() on the matching signature column.
+     *
+     * ALWAYS returns a checklist (never null just because the order hasn't
+     * reached this pipeline yet) — an admin looking at a cutting-stage order
+     * needs to see "Final Approval: not yet sent" just as clearly as one at
+     * the director stage needs to see who signed and when. Only a genuine
+     * `qms` connection/schema failure returns null (best-effort: the card
+     * just doesn't render rather than erroring the order page).
+     *
+     * @return array{stage:string,label:string,badge:string,token:?string,project_id:?string,session_id:?string,steps:array<int,array>}|null
+     */
+    private function qcPipelineStatusFor(SubconOrder $order): ?array
+    {
+        try {
+            if (empty($order->production_group)) {
+                return [
+                    'stage' => 'no_pg', 'label' => 'No production group linked', 'badge' => 'secondary',
+                    'token' => null, 'project_id' => null, 'session_id' => null,
+                    'steps' => $this->buildQcSteps(false, null, '', '', ''),
+                ];
+            }
+
+            if (! Schema::connection('qms')->hasTable('packaging_projects')
+                || ! Schema::connection('qms')->hasTable('packaging_project_sessions')) {
+                return null;
+            }
+
+            $project = DB::connection('qms')->table('packaging_projects')
+                ->where('production_group', $order->production_group)
+                ->orderByDesc('created_at')
+                ->first();
+
+            if (! $project) {
+                return [
+                    'stage' => 'no_session', 'label' => 'Not yet in QC console', 'badge' => 'secondary',
+                    'token' => null, 'project_id' => null, 'session_id' => null,
+                    'steps' => $this->buildQcSteps(false, null, '', '', ''),
+                ];
+            }
+
+            $session = DB::connection('qms')->table('packaging_project_sessions')
+                ->where('project_id', $project->project_id)
+                ->orderByDesc('cycle_number')
+                ->first();
+
+            $ho = trim((string) ($session->ho_approval_signature ?? ''));
+            $validation = trim((string) ($session->ho_validation_signature ?? ''));
+            $director = trim((string) ($session->director_approval_signature ?? ''));
+            $isInactive = in_array($project->status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true);
+
+            [$stage, $label, $badge] = self::classifyQcStage($ho, $validation, $director, $isInactive, (bool) $session, $session->approval_status ?? null);
+
+            $steps = $this->buildQcSteps((bool) $session, $session->approval_status ?? null, $ho, $validation, $director);
+
+            return [
+                'stage' => $stage,
+                'label' => $label,
+                'badge' => $badge,
+                'token' => $session->approval_token ?? null,
+                'project_id' => $project->project_id ?? null,
+                'session_id' => $session->session_id ?? null,
+                'steps' => $steps,
+            ];
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Shared stage classification for the QC-console pipeline — the same
+     * priority order qcPipelineStatusFor() and qcPipelineStatusForOrders() both
+     * need, extracted once so the list (batched) and single-order (detailed)
+     * reads can never drift apart on what counts as "awaiting X".
+     *
+     * @return array{0:string,1:string,2:string} [stage, label, badge]
+     */
+    private static function classifyQcStage(string $ho, string $validation, string $director, bool $isInactive, bool $hasSession, ?string $approvalStatus): array
+    {
+        return match (true) {
+            $isInactive => ['completed', 'Completed', 'success'],
+            ! $hasSession => ['no_session', 'Not yet in QC console', 'secondary'],
+            str_starts_with($director, 'Rejected') => ['director_rejected', 'Director rejected', 'danger'],
+            $director !== '' => ['director_approved', 'Director approved', 'success'],
+            $validation !== '' => ['awaiting_director', 'Awaiting Director', 'warning'],
+            str_starts_with($ho, 'Rejected') => ['ho_rejected', 'MD Production rejected', 'danger'],
+            $ho !== '' => ['awaiting_validation', 'Awaiting Report Validation', 'warning'],
+            $approvalStatus === 'approved' => ['awaiting_final', 'Awaiting Final Approval', 'warning'],
+            default => ['inspecting', 'Inspection in progress', 'info'],
+        };
+    }
+
+    /**
+     * The explicit sent/not-sent checklist (Inspection → Final Approval →
+     * Report Validation → Director) shared by every qcPipelineStatusFor()
+     * return path, including the "nothing in QMS yet" ones — so a
+     * cutting-stage order shows "Final Approval: not yet sent" just as
+     * plainly as a director-stage one shows who signed and when, instead of
+     * the card just not existing yet.
+     *
+     * @return array<int,array{key:string,label:string,sent:bool,sig:?array,note:?string}>
+     */
+    private function buildQcSteps(bool $hasSession, ?string $approvalStatus, string $ho, string $validation, string $director): array
+    {
+        $sig = fn (string $raw) => $raw === '' ? null : $this->reportPdf->parseSignature($raw);
+
+        return [
+            [
+                'key' => 'inspection',
+                'label' => 'Inspection',
+                'sent' => $hasSession,
+                'sig' => null,
+                'note' => $hasSession ? ($approvalStatus === 'approved' ? 'Passed' : 'In progress') : 'Not started',
+            ],
+            [
+                'key' => 'final_approval',
+                'label' => 'Final Approval',
+                'sent' => $ho !== '',
+                'sig' => $sig($ho),
+                'note' => $ho !== '' ? null : 'Not yet sent to Final Approval',
+            ],
+            [
+                'key' => 'report_validation',
+                'label' => 'Report Validation (sent to Director)',
+                'sent' => $validation !== '',
+                'sig' => $sig($validation),
+                'note' => $validation !== '' ? null : 'Not sent yet',
+            ],
+            [
+                'key' => 'director',
+                'label' => 'Director Authorization',
+                'sent' => $director !== '',
+                'sig' => $sig($director),
+                'note' => $director !== '' ? null : 'Not sent yet',
+            ],
+        ];
+    }
+
+    /**
+     * Batched QC-pipeline stage for every given order that has reached
+     * STAGE_COMPLETED — the point where SubconOrder::stageLabel()/status stop
+     * saying anything further, even though the QC-console inspection →
+     * approval → debit-note pipeline is often still running behind it. Without
+     * this the orders LIST shows "Completed" for every such order with no way
+     * to tell which ones are still waiting on someone vs. actually done —
+     * admins had to open each order individually (qcPipelineStatusFor()) to
+     * find out. One batched read per collection (not N+1): mirrors
+     * pendingValidateSends()'s batching shape. Best-effort — an unreachable
+     * `qms` connection just leaves every row without a badge.
+     *
+     * @param  \Illuminate\Support\Collection<int,SubconOrder>  $orders
+     * @return array<string,array{stage:string,label:string,badge:string}> keyed by order id
+     */
+    private function qcPipelineStatusForOrders($orders): array
+    {
+        $completed = $orders->filter(fn ($o) => $o->workflow_stage === SubconOrder::STAGE_COMPLETED && ! empty($o->production_group));
+        if ($completed->isEmpty()) {
+            return [];
+        }
+
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_projects')
+                || ! Schema::connection('qms')->hasTable('packaging_project_sessions')) {
+                return [];
+            }
+
+            $pgs = $completed->pluck('production_group')->unique()->values()->all();
+
+            // Latest project per production_group.
+            $projects = DB::connection('qms')->table('packaging_projects')
+                ->whereIn('production_group', $pgs)
+                ->orderByDesc('created_at')
+                ->get(['project_id', 'production_group', 'status'])
+                ->unique('production_group')
+                ->keyBy('production_group');
+
+            $projectIds = $projects->pluck('project_id')->values()->all();
+            if (empty($projectIds)) {
+                return [];
+            }
+
+            // Latest session per project_id.
+            $sessions = DB::connection('qms')->table('packaging_project_sessions')
+                ->whereIn('project_id', $projectIds)
+                ->orderByDesc('cycle_number')
+                ->get(['project_id', 'ho_approval_signature', 'ho_validation_signature', 'director_approval_signature', 'approval_status'])
+                ->unique('project_id')
+                ->keyBy('project_id');
+
+            $result = [];
+            foreach ($completed as $order) {
+                $project = $projects->get($order->production_group);
+                if (! $project) {
+                    continue;
+                }
+                $session = $sessions->get($project->project_id);
+                $ho = trim((string) ($session->ho_approval_signature ?? ''));
+                $validation = trim((string) ($session->ho_validation_signature ?? ''));
+                $director = trim((string) ($session->director_approval_signature ?? ''));
+                $isInactive = in_array($project->status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true);
+
+                [$stage, $label, $badge] = self::classifyQcStage($ho, $validation, $director, $isInactive, (bool) $session, $session->approval_status ?? null);
+                $result[$order->id] = ['stage' => $stage, 'label' => $label, 'badge' => $badge];
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            return [];
+        }
     }
 
     /**
@@ -1257,6 +1720,26 @@ class SubconAdminController extends Controller
         $materialReturns->upload($order, $data['file'], $data['note'] ?? null, \App\Models\MaterialReturnAttachment::ROLE_ADMIN, Auth::user()->name);
 
         return back()->with('success', 'Material-return delivery note attached.');
+    }
+
+    /**
+     * Removes an admin-uploaded delivery note. Same window as
+     * uploadMaterialReturn() above; scoped to admin's own uploads — see
+     * MaterialReturnService::deleteAttachment()'s docblock.
+     */
+    public function deleteMaterialReturn(string $id, string $attachment, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $order = SubconOrder::with('vendor')->findOrFail($id);
+
+        if (! $order->materialReturnAdminWindowOpen()) {
+            return back()->with('error', 'A material-return note can only be removed between Final Approval and Report Validation.');
+        }
+
+        $error = $materialReturns->deleteAttachment($order, $attachment, \App\Models\MaterialReturnAttachment::ROLE_ADMIN);
+
+        return $error
+            ? back()->with('error', $error)
+            : back()->with('success', 'Delivery note removed.');
     }
 
     /**
@@ -1568,8 +2051,9 @@ class SubconAdminController extends Controller
         $qcHeadNotificationEmail = \App\Models\Setting::getValue('qc_head_notification_email', '');
         $directorApproverEmail = \App\Models\Setting::getValue('qc_director_approver_email', '');
         $directorApproverPhone = \App\Models\Setting::getValue('qc_director_approver_phone', '');
+        $materialFlowAutoApprove = app(\App\Services\MaterialReturnService::class)->autoApproveActive();
 
-        return view('subcon.admin.workflow', compact('cuttingApproverEmail', 'gramasiApproverEmail', 'labelGeneratorEmail', 'finalApproverEmail', 'qcHeadNotificationEmail', 'directorApproverEmail', 'directorApproverPhone'));
+        return view('subcon.admin.workflow', compact('cuttingApproverEmail', 'gramasiApproverEmail', 'labelGeneratorEmail', 'finalApproverEmail', 'qcHeadNotificationEmail', 'directorApproverEmail', 'directorApproverPhone', 'materialFlowAutoApprove'));
     }
 
     /**
@@ -1701,6 +2185,38 @@ class SubconAdminController extends Controller
                 'description' => 'Director WhatsApp number(s) for the third-stage authorization, sent alongside the email (comma-separated for multiple, e.g. 08123456789)',
             ]
         );
+
+        // Material Flow auto-approve override — see MaterialReturnService::
+        // autoApproveActive(). A checkbox: absent from the request entirely
+        // when unchecked. "Keep note" — log every actual flip (not every
+        // save) as its own audit row, distinct from the per-send note
+        // QcApprovalController::hoApprove() appends when a send goes through
+        // under this override.
+        $materialFlowAutoApproveNew = $request->boolean('subcon_material_flow_auto_approve');
+        $materialFlowAutoApproveWas = app(\App\Services\MaterialReturnService::class)->autoApproveActive();
+        \App\Models\Setting::updateOrCreate(
+            ['key' => 'subcon_material_flow_auto_approve'],
+            [
+                'value' => $materialFlowAutoApproveNew ? '1' : '0',
+                'group' => 'subcon',
+                'type' => 'boolean',
+                'description' => 'Bypasses the "inventory must check returned material" Material Flow gate for every order while on — an operational override, not a real check. See MaterialReturnService::autoApproveActive().',
+            ]
+        );
+        if ($materialFlowAutoApproveNew !== $materialFlowAutoApproveWas) {
+            \App\Models\SubconApprovalLog::record([
+                'order_id' => null,
+                'order_number' => null,
+                'vendor_name' => null,
+                'gate' => 'material_flow_override',
+                'decision' => $materialFlowAutoApproveNew ? 'enabled' : 'disabled',
+                'actor' => $request->user()->name ?? 'Admin',
+                'source' => 'portal',
+                'note' => $materialFlowAutoApproveNew
+                    ? 'Material Flow check auto-approve turned ON — applies to every order until turned off.'
+                    : 'Material Flow check auto-approve turned OFF — the real inventory-check gate is enforced again.',
+            ]);
+        }
 
         return redirect()->back()->with('success', 'Workflow settings updated successfully.');
     }

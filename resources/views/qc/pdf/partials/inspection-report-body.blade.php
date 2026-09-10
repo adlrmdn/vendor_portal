@@ -459,10 +459,219 @@
     </tr>
 </table>
 
+{{-- Section 6: Granular Breakdown — full Material Recon + Consumption detail
+     behind the compact fabric-summary lines above. Both Fabric and Accessory
+     follow the same left-to-right narrative: what came IN (Goods Receive) →
+     what went OUT to the vendor (Fabric Sent / Mats Sent) → what was actually
+     consumed (real D365-posted figures, cross-checked against the admin
+     figures that drive billing) → what came back (declared Retur vs. an
+     independently-computed Expected Retur). --}}
+@php
+    $totalCuttingQtyForBreakdown = (float) ($totals['cuttingQty'] ?? 0);
+    // Quantities in this section (Goods Receive, Mats Sent, Consumption, Retur
+    // Qty, Fabric Sent, waste columns...) come straight off D365/VSM source
+    // data and are frequently fractional (e.g. a thread consumption of
+    // 230.44 YD) — $n() above rounds to 0 decimals and silently hides that.
+    // Fixed 2 decimals, dot as the decimal point (same convention as $n/$rp),
+    // matches how these quantities actually appear in the source systems.
+    $n2 = fn ($v) => ($v !== null && $v !== '') ? number_format((float) $v, 2, '.', ',') : '—';
+    // Same, but trims a trailing ".00" — a whole-number quantity (most PCS
+    // counts) doesn't need decimal noise, while a genuinely fractional one
+    // (a YD/CM/KG remainder, or an odd PCS journal artifact — both real,
+    // seen in this data) stays fully visible. Only for QUANTITIES; rate
+    // cells (.../pc) keep $n2's fixed 2 decimals so they read as rates, not
+    // counts.
+    $nSmart = fn ($v) => ($v !== null && $v !== '') ? preg_replace('/\.00$/', '', number_format((float) $v, 2, '.', ',')) : '—';
+@endphp
+<div style="page-break-before: always;"></div>
+<div class="section-title" style="margin-top: 0; margin-bottom: 6px;">6. Granular Breakdown</div>
+
+<div style="font-size: 5.6pt; font-weight: bold; color: #0F172A; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 3px;">Fabric — Reconciliation &amp; Consumption</div>
+@if ($fabricLines->isEmpty())
+    <div class="muted" style="font-size: 5.6pt; margin-bottom: 8px;">No fabric reconciliation data recorded for this order.</div>
+@else
+    @foreach ($fabricLines as $f)
+        @php
+            $unitRawB = \App\Services\SubconProductionService::displayUnit((string) $f->label);
+            $unitB = $unitRawB ? ' '.$unitRawB : '';
+            $unitPerPcB = $unitRawB ? ' '.$unitRawB.'/pc' : '';
+            $netUsable = ($f->fabric_sent !== null) ? ((float) $f->fabric_sent - (float) ($f->return_kain ?? 0)) : null;
+            $diffCons = ($f->actual_consumption !== null && $f->consumption_plan !== null)
+                ? ((float) $f->actual_consumption - (float) $f->consumption_plan) : null;
+            $budgetCap = $f->consumption_plan !== null ? (float) $f->consumption_plan * 1.03 : null;
+            $hasConsData = $f->fabric_sent !== null && $f->consumption_plan !== null && $totalCuttingQtyForBreakdown > 0;
+            $issueDiff = ($f->issue_consumption !== null && $netUsable !== null) ? $f->issue_consumption - $netUsable : null;
+            $issueDiffNotable = $issueDiff !== null && abs($issueDiff) > 0.5;
+            $sentIsFromIssue = $f->fabric_sent !== null && (float) $f->fabric_sent === 0.0 && $f->issue_proposal !== null && $f->issue_proposal > 0;
+            $sentDiff = ($f->issue_proposal !== null && $f->fabric_sent !== null) ? $f->issue_proposal - (float) $f->fabric_sent : null;
+            $sentDiffNotable = $sentDiff !== null && abs($sentDiff) > 0.5;
+            // Total waste/retur qty (Step 4) — the four columns, one sum.
+            $returTotal = (float) ($f->short_roll ?? 0) + (float) ($f->sisa_kain ?? 0)
+                + (float) ($f->kepala_kain ?? 0) + (float) ($f->return_kain ?? 0);
+            // Overconsumption expressed as actual fabric QUANTITY, not just a
+            // rate/percentage — two versions: vs. the plan (informational —
+            // can be negative, meaning under-consumption) and vs. the budget
+            // cap (the BILLABLE excess, i.e. exactly the qty the Deduction
+            // formula charges for — always ≥ 0, since under the 3% tolerance
+            // nothing is charged).
+            $overQtyVsPlan = ($diffCons !== null) ? $diffCons * $totalCuttingQtyForBreakdown : null;
+            $overQtyBillable = ($f->actual_consumption !== null && $budgetCap !== null)
+                ? max(0, (float) $f->actual_consumption - $budgetCap) * $totalCuttingQtyForBreakdown
+                : null;
+        @endphp
+        <table style="width: 100%; border: 0.6px solid #E2E8F0; border-radius: 6px; background-color: #FFFFFF; border-collapse: separate; border-spacing: 0; margin-bottom: 6px; page-break-inside: avoid;">
+            <tr>
+                <td style="border: none; border-bottom: 0.6px solid #F1F5F9; padding: 4px 6px; font-size: 5.8pt; font-weight: bold; color: #0F172A;">
+                    {{ $shortenFabric($f->label) }}
+                    @if (! empty($f->item_number))<span class="muted" style="font-size: 4.8pt; font-weight: 600; margin-left: 5px;">Item {{ $f->item_number }}</span>@endif
+                    @if (! empty($f->inventory_group))<span class="muted" style="font-size: 4.8pt; text-transform: uppercase; font-weight: 600; margin-left: 5px;">{{ $f->inventory_group }}</span>@endif
+                </td>
+            </tr>
+            <tr>
+                <td style="border: none; padding: 4px 7px 5px;">
+
+                    {{-- GIVEN — the raw inputs, stated once before any derivation touches them. --}}
+                    <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px;">Given</div>
+                    <div style="font-size: 5.2pt; line-height: 1.65; margin-bottom: 5px; padding-left: 4px;">
+                        Order Qty (PO) = {{ $f->ordered_qty !== null ? $nSmart($f->ordered_qty).$unitB : '—' }}<br>
+                        Goods Receive = {{ isset($f->goods_receive) && $f->goods_receive !== null ? $nSmart($f->goods_receive).$unitB : '—' }}@if (! empty($f->goods_receive_date))<span class="muted" style="font-size: 4.6pt;"> (as of {{ \Carbon\Carbon::parse($f->goods_receive_date)->format('d M Y') }})</span>@endif<br>
+                        Fabric Sent (to vendor) = {{ $f->fabric_sent !== null ? $nSmart($f->fabric_sent).$unitB : '—' }}
+                        @if ($sentIsFromIssue)
+                            <span style="color: #D97706; font-style: italic;"> (not yet entered — Material Issue suggests {{ $nSmart($f->issue_proposal).$unitB }})</span>
+                        @elseif ($f->issue_proposal !== null)
+                            <span class="muted" style="font-style: italic;"> (Material Issue: {{ $nSmart($f->issue_proposal).$unitB }}{{ $sentDiffNotable ? ', Δ '.($sentDiff > 0 ? '+' : '').$nSmart($sentDiff) : '' }})</span>
+                        @endif
+                        <br>
+                        Waste — Short Roll = {{ $nSmart($f->short_roll ?? 0) }}{{ $unitB }}, Sisa Kain = {{ $nSmart($f->sisa_kain ?? 0) }}{{ $unitB }}, Kepala Kain = {{ $nSmart($f->kepala_kain ?? 0) }}{{ $unitB }}, Retur Kain = {{ $nSmart($f->return_kain ?? 0) }}{{ $unitB }}
+                        <span class="muted" style="font-size: 4.6pt;">(total waste {{ $nSmart($returTotal) }}{{ $unitB }}; only Retur Kain feeds Step 1 below)</span><br>
+                        Actual Cutting Qty = {{ $n($totalCuttingQtyForBreakdown) }} pcs <span class="muted" style="font-size: 4.6pt;">(Cutt Plan: {{ $f->cutt_plan !== null ? $n($f->cutt_plan).' pcs' : '—' }})</span><br>
+                        Consumption Plan (admin-entered at cutting approval — unlike Accessory's Cons. Plan, NOT sourced from BOM Final/D365) = {{ $f->consumption_plan !== null ? $fmtCons($f->consumption_plan).$unitPerPcB : '—' }}<br>
+                        Fabric Price = {{ $f->fabric_price !== null ? $rp($f->fabric_price).'/'.trim($unitB) : '—' }}
+                    </div>
+
+                    {{-- STEP 1 — Net for Consumption. --}}
+                    <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;">Step 1 — Net for Consumption</div>
+                    <div style="font-size: 5.2pt; line-height: 1.6; margin-bottom: 4px; padding-left: 6px;">
+                        <span class="muted" style="font-style: italic;">Net = Fabric Sent &minus; Retur Kain</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $nSmart($f->fabric_sent) }} &minus; {{ $nSmart($f->return_kain ?? 0) }}<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= <span class="bold">{{ $netUsable !== null ? $nSmart($netUsable).$unitB : '—' }}</span>
+                    </div>
+
+                    {{-- STEP 2 — Actual Consumption. --}}
+                    <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;">Step 2 — Actual Consumption</div>
+                    <div style="font-size: 5.2pt; line-height: 1.6; margin-bottom: 4px; padding-left: 6px;">
+                        <span class="muted" style="font-style: italic;">Actual Cons. = Net &divide; Cutting Qty</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $nSmart($netUsable) }} &divide; {{ $nSmart($totalCuttingQtyForBreakdown) }}<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= <span class="bold">{{ $f->actual_consumption !== null ? $fmtCons($f->actual_consumption).$unitPerPcB : '—' }}</span>
+                        <div class="muted" style="font-size: 4.6pt; margin-top: 1px;">Cross-check — Material Issue (real posted, D365): {{ $f->issue_consumption !== null ? $nSmart($f->issue_consumption).$unitB : '—' }}
+                            @if ($issueDiffNotable)<span style="color: #DC2626;"> (&Delta; {{ $issueDiff > 0 ? '+' : '' }}{{ $nSmart($issueDiff) }})</span>@endif
+                            @if ($f->issue_consumption !== null && ! $f->issue_all_posted)<span style="font-style: italic;"> (unposted lines included)</span>@endif
+                        </div>
+                    </div>
+
+                    {{-- STEP 3 — Diff & Overconsumption %. --}}
+                    <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;">Step 3 — Diff &amp; Overconsumption</div>
+                    <div style="font-size: 5.2pt; line-height: 1.6; margin-bottom: 4px; padding-left: 6px;">
+                        <span class="muted" style="font-style: italic;">Diff = Actual Cons. &minus; Plan</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $fmtCons($f->actual_consumption) }} &minus; {{ $fmtCons($f->consumption_plan) }}<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= <span class="bold" style="{{ $diffCons !== null && $diffCons > 0 ? 'color: #DC2626;' : '' }}">{{ $diffCons !== null ? ($diffCons > 0 ? '+' : '').$fmtCons($diffCons).$unitPerPcB : '—' }}</span><br>
+                        <span class="muted" style="font-style: italic;">Overconsumption = Diff &divide; Plan</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $fmtCons($diffCons) }} &divide; {{ $fmtCons($f->consumption_plan) }}
+                        = <span class="bold" style="{{ $f->overconsumption !== null && $f->overconsumption > 0.03 ? 'color: #DC2626;' : '' }}">{{ $f->overconsumption !== null ? number_format($f->overconsumption * 100, 2).'%' : '—' }}</span>
+                    </div>
+
+                    {{-- STEP 4 — Budget Cap. --}}
+                    <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;">Step 4 — Budget Cap (3% tolerance)</div>
+                    <div style="font-size: 5.2pt; line-height: 1.6; margin-bottom: 4px; padding-left: 6px;">
+                        <span class="muted" style="font-style: italic;">Budget Cap = Plan &times; 1.03</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $fmtCons($f->consumption_plan) }} &times; 1.03<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= <span class="bold">{{ $budgetCap !== null ? $fmtCons($budgetCap).$unitPerPcB : '—' }}</span>
+                    </div>
+
+                    {{-- STEP 5 — Overconsumption qty, in actual fabric, not just a rate. --}}
+                    <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;">Step 5 — Overconsumption, as Fabric Quantity</div>
+                    <div style="font-size: 5.2pt; line-height: 1.6; margin-bottom: 4px; padding-left: 6px;">
+                        <span class="muted" style="font-style: italic;">Overconsumption Qty = max(0, Actual Cons. &minus; Budget Cap) &times; Cutting Qty</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= max(0, {{ $fmtCons($f->actual_consumption) }} &minus; {{ $fmtCons($budgetCap) }}) &times; {{ $nSmart($totalCuttingQtyForBreakdown) }}<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= <span class="bold" style="{{ ($overQtyBillable ?? 0) > 0 ? 'color: #DC2626;' : '' }}">{{ $overQtyBillable !== null ? $nSmart($overQtyBillable).$unitB : '—' }}</span>
+                        <span class="muted" style="font-size: 4.6pt;"> — this is how much fabric is actually being charged for</span>
+                    </div>
+
+                    {{-- STEP 6 — Deduction, the final result. --}}
+                    <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;">Step 6 — Deduction</div>
+                    <div style="font-size: 5.2pt; line-height: 1.6; padding-left: 6px;">
+                        <span class="muted" style="font-style: italic;">Deduction = Overconsumption Qty &times; Fabric Price</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $overQtyBillable !== null ? $nSmart($overQtyBillable) : '—' }}{{ $unitB }} &times; {{ $rp($f->fabric_price ?? 0) }}<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= <span class="bold" style="font-size: 6pt; {{ ($f->deduction ?? 0) > 0 ? 'color: #DC2626;' : '' }}">{{ $rp($f->deduction ?? 0) }}</span>
+                        <span class="muted" style="font-size: 4.6pt;"> (only charged when overconsumption &gt; 3% — otherwise Step 5 is already 0)</span>
+                    </div>
+
+                </td>
+            </tr>
+        </table>
+    @endforeach
+@endif
+
+<div style="font-size: 5.6pt; font-weight: bold; color: #0F172A; text-transform: uppercase; letter-spacing: 0.02em; margin: 6px 0 1px;">Accessory — Reconciliation &amp; Consumption</div>
+@if (empty($accessoryBreakdown))
+    <div class="muted" style="font-size: 5.6pt;">No accessory data found (PO lines or BOM Final) for this order.</div>
+@else
+    <div class="muted" style="font-size: 4.6pt; font-style: italic; margin-bottom: 3px;">
+        "BOM only" = in BOM Final but no PO line. Cons. Plan / Actual Cons. are both per-pc rates (BOM design vs. real D365 usage). Expected Retur = Mats Sent &minus; Estimated Consumption (Plan &times; Cutting Qty).
+    </div>
+    <table class="tbl">
+        <tr>
+            <th style="width: 21%;">Item</th>
+            <th style="width: 9.5%;" class="center">Goods Receive</th>
+            <th style="width: 9.5%;" class="center">Mats Sent</th>
+            <th style="width: 10.5%;" class="center">Cons. Plan (BOM/pc)</th>
+            <th style="width: 10.5%;" class="center">Actual Cons. (pc)</th>
+            <th style="width: 9%;" class="center">Retur Qty</th>
+            <th style="width: 9.5%;" class="center">Expected Retur</th>
+            <th style="width: 9.5%;" class="center">Price</th>
+            <th style="width: 11%;" class="center">Value (ref)</th>
+        </tr>
+        @foreach ($accessoryBreakdown as $a)
+            <tr>
+                <td>
+                    {{ $a['display_label'] }}
+                    @if (! empty($a['item_number']))<span class="muted" style="font-size: 4.6pt; font-weight: 600; margin-left: 4px;">Item {{ $a['item_number'] }}</span>@endif
+                    @if ($a['from_bom_only'])<span class="bold" style="color: #DC2626; font-size: 4.4pt; text-transform: uppercase; margin-left: 4px;">BOM only</span>@endif
+                </td>
+                <td class="center">{{ $a['goods_receive'] !== null ? $nSmart($a['goods_receive']).' '.$a['unit'] : '—' }}</td>
+                <td class="center">
+                    {{ $a['mats_sent'] !== null ? $nSmart($a['mats_sent']).' '.$a['unit'] : '—' }}
+                    @if ($a['mats_sent_source'] === 'd365')<span class="muted" style="font-style: italic;">(Material Issue)</span>@endif
+                </td>
+                <td class="center">
+                    {{ $a['cons_plan_bom'] !== null ? $n2($a['cons_plan_bom']).'/pc' : '—' }}
+                    @if ($a['cons_plan_bom'] !== null && ! $a['cons_plan_consistent'])<span class="muted" style="font-style: italic;">(avg)</span>@endif
+                    @if ($a['est_consumption'] !== null)
+                        <div class="muted" style="font-size: 4.4pt;">Est. {{ $nSmart($a['est_consumption']) }} {{ $a['unit'] }}</div>
+                    @endif
+                </td>
+                <td class="center">
+                    {{ $a['actual_cons'] !== null ? $n2($a['actual_cons']).'/pc' : '—' }}
+                    @if ($a['consumption'] !== null)
+                        <div class="muted" style="font-size: 4.4pt;">
+                            {{ $nSmart($a['consumption']) }} {{ $a['unit'] }}
+                            @if (! $a['consumption_all_posted'])(unposted)@endif
+                        </div>
+                    @endif
+                </td>
+                <td class="center">{{ $a['qty'] !== null ? $nSmart($a['qty']).' '.$a['unit'] : '—' }}</td>
+                <td class="center bold">{{ $a['expected_retur'] !== null ? $nSmart($a['expected_retur']).' '.$a['unit'] : '—' }}</td>
+                <td class="center">{{ $a['price'] !== null ? $rp($a['price']) : '—' }}</td>
+                <td class="center muted" style="font-style: italic;">{{ $a['value'] !== null ? $rp($a['value']) : '—' }}</td>
+            </tr>
+        @endforeach
+    </table>
+@endif
+
 {{-- Page 2: defect photos --}}
 @if ($embeddableImages->isNotEmpty())
     <div style="page-break-before: always;"></div>
-    <div class="section-title" style="margin-top: 0; margin-bottom: 10px;">6. Defect Photos Attachments</div>
+    <div class="section-title" style="margin-top: 0; margin-bottom: 10px;">7. Defect Photos Attachments</div>
     <table style="width: 100%; border-collapse: collapse; border: none; margin-top: 6px;">
         @foreach ($embeddableImages->chunk(3) as $chunk)
             <tr>
@@ -506,7 +715,7 @@
     @foreach ($attachments as $att)
         <div style="page-break-before: always;"></div>
         <div class="section-title" style="margin-top: 0; margin-bottom: 10px;">
-            7. Material Return Attachment{{ $attachments->count() > 1 ? ' ('.$loop->iteration.' of '.$attachments->count().')' : '' }}
+            8. Attachment{{ $attachments->count() > 1 ? ' ('.$loop->iteration.' of '.$attachments->count().')' : '' }}
         </div>
         <table style="width: 100%; border-collapse: collapse; border: none;">
             <tr>

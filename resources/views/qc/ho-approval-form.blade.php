@@ -3,6 +3,18 @@
 @php
     $styleName = ($subcon ?? null) && $subcon->title ? $subcon->title : null;
     $validateMode = $validateMode ?? false;
+    // Send is gated on Material Flow having checked the returned material, but
+    // the submit button stays clickable either way — see the button below and
+    // QcApprovalController::hoSendApproval. Blocked submits still save every
+    // entered figure; they just don't reach the Director yet.
+    // Must use the REAL gate ($materialReturnPending, i.e.
+    // MaterialReturnService::isReturnCheckPending() — same check
+    // hoApprove()/hoSendApproval() enforce server-side), not just the latest
+    // task's own isChecked() — a task can be checked while newer
+    // reconciliation lines/attachments still sit undispatched, which used to
+    // show this exact banner/button as clear ("Validate & Send Approval")
+    // while the actual submit was still silently blocked server-side.
+    $materialFlowPending = $validateMode && ($materialReturnPending ?? false);
 @endphp
 
 @section('title', 'Final Approval'.($styleName ? ' - '.$styleName : ''))
@@ -76,29 +88,8 @@
                         @endif
                     </dl>
 
-                    {{-- Material Flow — material the subcon vendor returns to us (not our
-                         returns to a fabric supplier). Available at both Final Approval and
-                         Report Validation; dispatching here blocks Validate & Send until
-                         value_stream_ops's inventory staff confirm the return arrived. --}}
-                    @if($subcon)
-                        @include('subcon.partials.delivery-note-attachment', [
-                            'order' => $subcon,
-                            'materialReturns' => $materialReturns,
-                            'canSubmit' => true,
-                            'uploadRoute' => route('qc.ho-approve.material-return', ['token' => $token]),
-                        ])
-                    @endif
-
                     @include('subcon.partials.remarks', ['remarks' => $subcon->remarks ?? null])
                     @include('subcon.partials.remarks', ['remarks' => $row->remarks ?? null, 'label' => 'QC Remarks'])
-
-                    @if($subcon)
-                        @include('subcon.partials.material-return', [
-                            'order' => $subcon,
-                            'materialReturnTask' => $materialReturnTask,
-                            'dispatchRoute' => route('qc.ho-approve.material-return.dispatch', ['token' => $token]),
-                        ])
-                    @endif
 
                     {{-- Details / PDF tabs — same pattern as the Director form. The
                          document endpoint renders FRESH on every open, so the PDF
@@ -116,37 +107,57 @@
                         </li>
                     </ul>
 
-                    {{-- One form for both steps: step 1 POSTs Review & Approve
-                         (hoApprove), step 2 POSTs Validate & Send (hoSendApproval).
-                         Both carry the same editable consumption + deduction
-                         inputs — the send step recalculates any revision through
-                         the same engine before notifying the Director. --}}
-                    <form method="POST"
-                          action="{{ $validateMode ? route('qc.ho-send.submit', ['token' => $token]) : route('qc.ho-approve.submit', ['token' => $token]) }}"
-                          onsubmit="return confirm('{{ $validateMode
-                              ? 'Send this approval to the Director for final authorization? Any revised figures will be recalculated and saved first.'
-                              : 'Approve and sign this inspection? The entered consumption will be recalculated and saved, and the RAF production run queued. The Director is notified only after the separate Validate & Send step.' }}');">
-                        @csrf
-                        {{-- Recipient marker from the per-approver email link — attributes the signature. --}}
-                        @if(request('as'))<input type="hidden" name="as" value="{{ request('as') }}">@endif
-                        {{-- Marks that this submit carries the FULL deduction list (replace semantics). --}}
-                        <input type="hidden" name="deductions_present" value="1">
+                    <div class="tab-content" id="approvalTabContent">
+                        <div class="tab-pane fade show active" id="detail-tab-pane" role="tabpanel" aria-labelledby="detail-tab" tabindex="0">
+                            {{-- One form for both steps: step 1 POSTs Review & Approve
+                                 (hoApprove), step 2 POSTs Validate & Send (hoSendApproval).
+                                 Both carry the same editable consumption + deduction
+                                 inputs — the send step recalculates any revision through
+                                 the same engine before notifying the Director. Closes right
+                                 after Deductions: Delivery Note Attachment / Material Flow
+                                 (each their own separate <form>, unrelated routes) sit below,
+                                 outside this one to avoid nesting <form> inside <form> — MD
+                                 Production Remarks and the submit button are ALSO outside it
+                                 (so they can sit visually after Material Flow) but still
+                                 submit with it via form="approval-form". --}}
+                            <form id="approval-form" method="POST"
+                                  action="{{ $validateMode ? route('qc.ho-send.submit', ['token' => $token]) : route('qc.ho-approve.submit', ['token' => $token]) }}"
+                                  onsubmit="return confirm('{{ $materialFlowPending
+                                      ? 'Save your entered figures now? This cannot be sent to the Director yet — Material Flow still needs to check the returned material.'
+                                      : ($validateMode
+                                          ? 'Send this approval to the Director for final authorization? Any revised figures will be recalculated and saved first.'
+                                          : 'Approve and sign this inspection? The entered consumption will be recalculated and saved, and the RAF production run queued. The Director is notified only after the separate Validate & Send step.') }}');">
+                                @csrf
+                                {{-- Recipient marker from the per-approver email link — attributes the signature. --}}
+                                @if(request('as'))<input type="hidden" name="as" value="{{ request('as') }}">@endif
+                                {{-- Marks that this submit carries the FULL deduction list (replace semantics). --}}
+                                <input type="hidden" name="deductions_present" value="1">
 
-                        <div class="tab-content" id="approvalTabContent">
-                            <div class="tab-pane fade show active" id="detail-tab-pane" role="tabpanel" aria-labelledby="detail-tab" tabindex="0">
                                 @include('subcon.partials.production-detail', [
                                     'productionGroups' => $productionGroups ?? [],
                                     'cuttingReports' => $cuttingReports ?? collect(),
+                                    'fabricLines' => $fabricLines ?? [],
+                                    'qcSizeOrderQty' => $qcSizeOrderQty ?? [],
                                     'mode' => 'view',
                                 ])
 
-                                {{-- Consumption inputs (calculation+approval), same engine at both steps --}}
+                                {{-- Consumption inputs (calculation+approval), same engine at both steps.
+                                     Also carries the Accessory return-quantity sub-section (editable here,
+                                     posts as part of this same form) so MD Production can see and revise
+                                     the vendor's declared return quantities before approving/sending —
+                                     both as sub-sections of one "Material Reconciliation & Consumption"
+                                     card, not a separate duplicate table. --}}
                                 @if($subcon)
                                     @include('subcon.partials.consumption-input', [
                                         'order' => $subcon,
                                         'fabricLines' => $fabricLines,
                                         'totalCut' => $totalCut,
                                         'editable' => true,
+                                        'showAccessory' => true,
+                                        'accessoryLines' => $materialAccessoryLines ?? [],
+                                        'accessoryRecon' => $materialAccessoryRecon ?? collect(),
+                                        'accessoryGoodsReceive' => $materialAccessoryGoodsReceive ?? [],
+                                        'accessoryIssue' => $materialAccessoryIssue ?? [],
                                     ])
                                 @endif
 
@@ -167,49 +178,86 @@
                                     </div>
                                     <div class="form-text">Any cost deducted from the vendor (e.g. label reprint). Leave empty if none.</div>
                                 </div>
+                            </form>
 
-                                {{-- MD Production's own remarks — distinct from the vendor's
-                                     read-only remarks above and the QC inspector's remarks
-                                     on the inspection report. Shown on the signed report and
-                                     the Report Validation tab. --}}
-                                <div class="mb-3">
-                                    <label for="ho_remarks" class="form-label fw-semibold">MD Production Remarks <span class="text-danger">*</span></label>
-                                    <textarea name="ho_remarks" id="ho_remarks" rows="2" class="form-control form-control-sm" required placeholder="Explain your review — findings, concerns, or justification for this approval.">{{ old('ho_remarks', $row->ho_remarks ?? null) }}</textarea>
-                                </div>
+                            {{-- Material Flow — material the subcon vendor returns to us (not our
+                                 returns to a fabric supplier). Available at both Final Approval and
+                                 Report Validation; dispatching here blocks Validate & Send until
+                                 value_stream_ops's inventory staff confirm the return arrived. --}}
+                            @if($subcon)
+                                @include('subcon.partials.delivery-note-attachment', [
+                                    'order' => $subcon,
+                                    'materialReturns' => $materialReturns,
+                                    'canSubmit' => true,
+                                    'uploadRoute' => route('qc.ho-approve.material-return', ['token' => $token]),
+                                    'viewerRole' => 'admin',
+                                    'deleteRouteName' => 'qc.ho-approve.material-return.delete',
+                                    'deleteRouteParam' => $token,
+                                    'deleteMethod' => 'POST',
+                                ])
 
-                                @if($validateMode && ($materialReturnTask ?? null) && ! $materialReturnTask->isChecked())
-                                    <div class="alert alert-warning small mb-0 mt-3 d-flex align-items-center gap-2">
-                                        <i class="fas fa-hourglass-half"></i>
-                                        <div>Waiting on Material Flow — the returned material must be checked by inventory before this can be sent to the Director.</div>
-                                    </div>
-                                @endif
+                                @include('subcon.partials.material-return', [
+                                    'order' => $subcon,
+                                    'materialReturnTask' => $materialReturnTask,
+                                    'materialReturnPending' => $materialReturnPending,
+                                    'materialReturnAutoApproved' => $materialReturnAutoApproved ?? false,
+                                    'dispatchRoute' => route('qc.ho-approve.material-return.dispatch', ['token' => $token]),
+                                ])
+                            @endif
 
-                                <div class="d-flex justify-content-end gap-2 mt-4">
-                                    @if($validateMode)
-                                        <button type="submit" class="btn btn-primary px-4 fw-semibold shadow-sm"
-                                                {{ ($materialReturnTask ?? null) && ! $materialReturnTask->isChecked() ? 'disabled title="Waiting on Material Flow to check the returned material"' : '' }}>
-                                            <i class="fas fa-paper-plane me-1"></i> Validate &amp; Send Approval
-                                        </button>
-                                    @else
-                                        <a href="{{ route('qc.ho-decline', array_filter(['token' => $token, 'as' => request('as')])) }}"
-                                           class="btn btn-outline-danger px-4 fw-semibold"
-                                           onclick="return confirm('Reject this inspection at the Head Office stage? This records a rejection and cannot be undone.');">
-                                            <i class="fas fa-circle-xmark me-1"></i> Reject
-                                        </a>
-                                        <button type="submit" class="btn btn-success px-4 fw-semibold shadow-sm">
-                                            <i class="fas fa-circle-check me-1"></i> Review &amp; Approve
-                                        </button>
-                                    @endif
-                                </div>
+                            {{-- MD Production's own remarks — distinct from the vendor's
+                                 read-only remarks above and the QC inspector's remarks
+                                 on the inspection report. Shown on the signed report and
+                                 the Report Validation tab. Outside <form id="approval-form">
+                                 (see above) but still submits with it via form="approval-form". --}}
+                            <div class="mb-3 mt-3">
+                                <label for="ho_remarks" class="form-label fw-semibold">MD Production Remarks <span class="text-danger">*</span></label>
+                                <textarea name="ho_remarks" id="ho_remarks" form="approval-form" rows="2" class="form-control form-control-sm" required placeholder="Explain your review — findings, concerns, or justification for this approval.">{{ old('ho_remarks', $row->ho_remarks ?? null) }}</textarea>
                             </div>
 
-                            <div class="tab-pane fade" id="pdf-tab-pane" role="tabpanel" aria-labelledby="pdf-tab" tabindex="0">
-                                <div class="border rounded-3 overflow-hidden bg-light mb-4" style="height: 600px;">
-                                    <iframe src="{{ route('qc.document', ['token' => $token]) }}?t={{ time() }}" style="width: 100%; height: 100%; border: none;"></iframe>
+                            @if($materialFlowPending)
+                                <div class="alert alert-warning small mb-0 mt-3 d-flex align-items-center gap-2">
+                                    <i class="fas fa-hourglass-half"></i>
+                                    <div>Waiting on Material Flow — the returned material must be checked by inventory before this can be sent to the Director. You can still press the button below to save your entered figures; it will save without sending.</div>
                                 </div>
+                            @elseif($materialReturnAutoApproved ?? false)
+                                <div class="alert alert-info small mb-0 mt-3 d-flex align-items-center gap-2">
+                                    <i class="fas fa-circle-info"></i>
+                                    <div>Material Flow check is <strong>auto-approved</strong> (admin override, Workflow settings) — inventory has NOT actually verified the returned material for this order. Sending will proceed and this will be noted in the decision log.</div>
+                                </div>
+                            @endif
+
+                            <div class="d-flex justify-content-end gap-2 mt-4">
+                                @if($validateMode)
+                                    {{-- Deliberately never `disabled`: a submit always saves the
+                                         entered figures first (see hoSendApproval), even when the
+                                         Material Flow gate below blocks the actual send to the
+                                         Director — disabling this button used to be the only signal
+                                         of that block, with no way to save while waiting. --}}
+                                    <button type="submit" form="approval-form" class="btn btn-primary px-4 fw-semibold shadow-sm"
+                                            title="{{ $materialFlowPending ? 'Waiting on Material Flow to check the returned material — this will save your entries but not send yet' : '' }}">
+                                        <i class="fas fa-{{ $materialFlowPending ? 'floppy-disk' : 'paper-plane' }} me-1"></i>
+                                        {{ $materialFlowPending ? 'Save' : 'Validate & Send Approval' }}
+                                    </button>
+                                @else
+                                    <a href="{{ route('qc.ho-decline', array_filter(['token' => $token, 'as' => request('as')])) }}"
+                                       class="btn btn-outline-danger px-4 fw-semibold"
+                                       onclick="return confirm('Reject this inspection at the Head Office stage? This records a rejection and cannot be undone.');">
+                                        <i class="fas fa-circle-xmark me-1"></i> Reject
+                                    </a>
+                                    <button type="submit" form="approval-form" class="btn btn-success px-4 fw-semibold shadow-sm">
+                                        <i class="fas fa-circle-check me-1"></i> Review &amp; Approve
+                                    </button>
+                                @endif
                             </div>
                         </div>
-                    </form>
+
+                        <div class="tab-pane fade" id="pdf-tab-pane" role="tabpanel" aria-labelledby="pdf-tab" tabindex="0">
+                            <div class="border rounded-3 overflow-hidden bg-light mb-4" style="height: 600px;">
+                                <iframe src="{{ route('qc.document', ['token' => $token]) }}?t={{ time() }}" style="width: 100%; height: 100%; border: none;"></iframe>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <p class="text-center text-muted small mt-3 mb-0">This link is unique to this inspection.</p>

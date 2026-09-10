@@ -212,6 +212,20 @@
                             </div>
                         </div>
 
+                        <!-- Material Flow auto-approve override — bypasses the "inventory must
+                             check returned material" gate for EVERY order while on. See
+                             MaterialReturnService::autoApproveActive()/isAutoApproved(). -->
+                        <div class="mb-4 border-top pt-4">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" name="subcon_material_flow_auto_approve" id="subcon_material_flow_auto_approve" value="1" {{ old('subcon_material_flow_auto_approve', $materialFlowAutoApprove) ? 'checked' : '' }}>
+                                <label class="form-check-label form-label-premium" for="subcon_material_flow_auto_approve">Auto-approve Material Flow check (all orders)</label>
+                            </div>
+                            <div class="form-text text-muted mt-2">
+                                <i class="fas fa-triangle-exclamation me-1 text-warning"></i>
+                                While on, Report Validation is <strong>never</strong> blocked waiting on inventory's Material Flow check — for every order, regardless of whether it was actually dispatched or checked. This does not fake a real check: the badge shows "Auto-Approved (not checked)" instead of "Checked", and every send that only went through because of this is noted in the decision log. Turn off to restore the real inventory-check gate.
+                            </div>
+                        </div>
+
                         <div class="d-flex justify-content-end border-top pt-3">
                             <button type="submit" class="btn btn-premium">
                                 <i class="fas fa-save me-2"></i> Save Workflow Settings

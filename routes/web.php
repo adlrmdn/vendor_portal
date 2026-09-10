@@ -184,9 +184,11 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
     Route::post('/orders/{id}/cutting-plan', [SubconCuttingPlanController::class, 'save'])->name('orders.cutting-plan.save');
     Route::post('/orders/{id}/status', [SubconAdminController::class, 'updateOrderStatus'])->name('orders.update-status');
     Route::post('/orders/{id}/capacity', [SubconAdminController::class, 'updateCapacity'])->name('orders.update-capacity');
+    Route::post('/orders/{id}/material-recon', [SubconAdminController::class, 'saveMaterialReconciliation'])->name('orders.material-recon.save');
     Route::post('/orders/{id}/approve', [SubconApprovalController::class, 'approveInApp'])->name('orders.approve');
     Route::post('/orders/{id}/decline', [SubconApprovalController::class, 'declineInApp'])->name('orders.decline');
     Route::post('/orders/{id}/material-return', [SubconAdminController::class, 'uploadMaterialReturn'])->name('orders.material-return');
+    Route::delete('/orders/{id}/material-return/{attachment}', [SubconAdminController::class, 'deleteMaterialReturn'])->name('orders.material-return.delete');
     Route::post('/orders/{id}/material-return/dispatch', [SubconAdminController::class, 'dispatchMaterialReturnTask'])->name('orders.material-return.dispatch');
     Route::get('/orders/{id}/print-labels', [SubconAdminController::class, 'printPackagingLabels'])->name('orders.print-labels');
     Route::get('/workflow', [SubconAdminController::class, 'workflow'])->name('workflow');
@@ -222,6 +224,7 @@ Route::post('/qc/ho-send/{token}', [App\Http\Controllers\QcApprovalController::c
 // button-click behind the rendered page — same safety shape as every other
 // mutation here (see the GET/POST split note on qc.ho-decline below).
 Route::post('/qc/ho-approve/{token}/material-return', [App\Http\Controllers\QcApprovalController::class, 'uploadMaterialReturnSigned'])->name('qc.ho-approve.material-return');
+Route::post('/qc/ho-approve/{token}/material-return/{attachment}/delete', [App\Http\Controllers\QcApprovalController::class, 'deleteMaterialReturnSigned'])->name('qc.ho-approve.material-return.delete');
 Route::post('/qc/ho-approve/{token}/material-return/dispatch', [App\Http\Controllers\QcApprovalController::class, 'dispatchMaterialReturnTaskSigned'])->name('qc.ho-approve.material-return.dispatch');
 // HO rejection — writes `ho_approval_signature` with a "Rejected: …" prefix (console contract).
 // GET only renders a confirmation page; the actual write is a POST. This is deliberate:
@@ -259,6 +262,7 @@ Route::middleware(['auth'])->prefix('subcon/vendor')->name('subcon.vendor.')->gr
     Route::get('/orders/{id}/template', [SubconVendorController::class, 'downloadTemplate'])->name('orders.download-template');
     Route::post('/orders/{id}/upload-report', [SubconVendorController::class, 'uploadReport'])->name('orders.upload-report');
     Route::post('/orders/{id}/material-return', [SubconVendorController::class, 'uploadMaterialReturn'])->name('orders.material-return');
+    Route::delete('/orders/{id}/material-return/{attachment}', [SubconVendorController::class, 'deleteMaterialReturn'])->name('orders.material-return.delete');
     Route::get('/orders/{id}/print-labels', [SubconVendorController::class, 'printPackagingLabels'])->name('orders.print-labels');
     Route::get('/profile', [SubconVendorController::class, 'profile'])->name('profile');
     Route::put('/profile', [SubconVendorController::class, 'updateProfile'])->name('profile.update');

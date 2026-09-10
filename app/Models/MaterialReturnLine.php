@@ -31,12 +31,14 @@ class MaterialReturnLine extends Model
     protected $fillable = [
         'order_id', 'order_number', 'vendor_name', 'task_id',
         'item_type', 'label', 'item_number', 'unit',
-        'qty_declared', 'qty_actual',
+        'qty_declared', 'qty_sent', 'unit_price', 'qty_actual',
         'uploaded_by_role', 'uploaded_by_name',
     ];
 
     protected $casts = [
         'qty_declared' => 'float',
+        'qty_sent' => 'float',
+        'unit_price' => 'float',
         'qty_actual' => 'float',
     ];
 

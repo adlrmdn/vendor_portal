@@ -31,6 +31,29 @@ class MaterialReturnService
     private const DISK = 'material_prod_return';
 
     /**
+     * Operational override (added 2026-09-08, explicit direction): "toggle
+     * material flow check auto approved for now for all regardless, keep
+     * note" — bypasses the gate below for EVERY order while active, without
+     * touching real MaterialReturnTask/Line data or VSM's own queue at all.
+     * Managed on the subcon admin Workflow settings page
+     * (SubconAdminController::workflow()/updateWorkflow()).
+     *
+     * "Keep note": every consumer of the gate must be able to tell a real
+     * check from this override — see isAutoApproved() (used to swap the
+     * badge text in material-return.blade.php/ho-approval-form.blade.php)
+     * and QcApprovalController::hoApprove(), which appends a note to the
+     * SubconApprovalLog row when a send only went through because of this
+     * override. Never silently reuse the plain "Checked by Material Flow"
+     * copy for this state.
+     */
+    private const SETTING_AUTO_APPROVE = 'subcon_material_flow_auto_approve';
+
+    public function autoApproveActive(): bool
+    {
+        return (bool) \App\Models\Setting::getValue(self::SETTING_AUTO_APPROVE, false);
+    }
+
+    /**
      * Attaching does NOT auto-dispatch to Material Flow — "Send to Material
      * Flow" (dispatchTask()) stays a deliberate, separate press by MD
      * Production. The gate is still airtight without that: isReturnCheckPending()
@@ -55,6 +78,48 @@ class MaterialReturnService
             'note' => $note,
             'uploaded_at' => now(),
         ]);
+    }
+
+    /**
+     * Removes one delivery-note attachment — scoped to the caller's OWN
+     * side: `$role` must match the row's `uploaded_by_role`, so a vendor can
+     * only remove vendor-uploaded notes and admin/HO can only remove
+     * admin-uploaded ones. Neither side can unilaterally delete the other's
+     * evidence. Refuses once the attachment is linked to an ALREADY-CHECKED
+     * Material Flow task — that file is now part of a completed inventory
+     * review; removing it after the fact would corrupt that record. A row
+     * linked to a still-pending (dispatched but not yet checked) task can
+     * still be removed, same as an unlinked one.
+     *
+     * @return string|null  null on success, an error message to show the user otherwise
+     */
+    public function deleteAttachment(SubconOrder $order, string $attachmentId, string $role): ?string
+    {
+        $att = MaterialReturnAttachment::where('id', $attachmentId)
+            ->where('order_id', $order->id)
+            ->where('uploaded_by_role', $role)
+            ->first();
+
+        if (! $att) {
+            return 'Delivery note not found, or it was not uploaded by your side.';
+        }
+
+        if ($att->task_id) {
+            $task = MaterialReturnTask::find($att->task_id);
+            if ($task && $task->isChecked()) {
+                return 'This delivery note was already reviewed by Material Flow and can no longer be removed.';
+            }
+        }
+
+        try {
+            \Illuminate\Support\Facades\Storage::disk($att->s3_disk)->delete($att->s3_path);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        $att->delete();
+
+        return null;
     }
 
     /**
@@ -166,20 +231,43 @@ class MaterialReturnService
             foreach ($accessoriesRecon as $rec) {
                 $label = trim((string) ($rec['label'] ?? ''));
                 $qty = (float) ($rec['qty'] ?? 0);
-                if ($label === '' || $qty <= 0) {
+                $matsSent = isset($rec['mats_sent']) && $rec['mats_sent'] !== '' ? round((float) $rec['mats_sent'], 2) : null;
+                $price = isset($rec['price']) && $rec['price'] !== '' ? round((float) $rec['price'], 2) : null;
+                if ($label === '' || ($qty <= 0 && $matsSent === null)) {
                     continue;
                 }
                 $keptAccLabels[] = $label;
+                $qty = round($qty, 2);
+                $payload = [
+                    'order_number' => $order->order_number,
+                    'vendor_name' => $order->vendor?->name,
+                    'unit' => trim((string) ($rec['unit'] ?? '')) ?: 'PCS',
+                    'qty_declared' => $qty,
+                    'qty_sent' => $matsSent,
+                    'unit_price' => $price,
+                    'uploaded_by_role' => $role,
+                    'uploaded_by_name' => $actorName,
+                ];
+
+                // A row already linked to a Material Flow task (dispatched, checked
+                // or not) whose declared qty is actually being revised must be
+                // unlinked from it — otherwise the figure Material Flow already
+                // reviewed (or is reviewing) silently drifts underneath the check,
+                // the same failure shape the 2026-09-03 incident closed for
+                // undispatched declarations (see isReturnCheckPending()). Unlinking
+                // re-opens that gate: MD Production must dispatch again before
+                // Report Validation can be sent.
+                $existing = MaterialReturnLine::where('order_id', $order->id)
+                    ->where('item_type', MaterialReturnLine::TYPE_ACCESSORY)
+                    ->where('label', $label)
+                    ->first();
+                if ($existing && $existing->task_id !== null && round((float) $existing->qty_declared, 2) !== $qty) {
+                    $payload['task_id'] = null;
+                }
+
                 MaterialReturnLine::updateOrCreate(
                     ['order_id' => $order->id, 'item_type' => MaterialReturnLine::TYPE_ACCESSORY, 'label' => $label],
-                    [
-                        'order_number' => $order->order_number,
-                        'vendor_name' => $order->vendor?->name,
-                        'unit' => trim((string) ($rec['unit'] ?? '')) ?: 'PCS',
-                        'qty_declared' => round($qty, 2),
-                        'uploaded_by_role' => $role,
-                        'uploaded_by_name' => $actorName,
-                    ]
+                    $payload
                 );
             }
             if (! empty($keptAccLabels)) {
@@ -296,6 +384,28 @@ class MaterialReturnService
      */
     public function isReturnCheckPending(SubconOrder $order): bool
     {
+        if ($this->autoApproveActive()) {
+            return false;
+        }
+
+        return $this->realReturnCheckPending($order);
+    }
+
+    /**
+     * True only when this order's Material Flow status reads as clear
+     * SOLELY because of the auto-approve override above — i.e. a real human
+     * check is still genuinely outstanding, just not being enforced right
+     * now. False once real Material Flow activity actually clears it (no
+     * point relabeling a real, honest check as "auto-approved").
+     */
+    public function isAutoApproved(SubconOrder $order): bool
+    {
+        return $this->autoApproveActive() && $this->realReturnCheckPending($order);
+    }
+
+    /** The gate's real logic, ignoring the auto-approve override — see isReturnCheckPending(). */
+    private function realReturnCheckPending(SubconOrder $order): bool
+    {
         try {
             $hasUncheckedTask = MaterialReturnTask::where('order_id', $order->id)
                 ->where('status', '!=', MaterialReturnTask::STATUS_CHECKED)
@@ -311,6 +421,69 @@ class MaterialReturnService
             return MaterialReturnLine::where('order_id', $order->id)->whereNull('task_id')->exists();
         } catch (\Throwable $e) {
             return false;
+        }
+    }
+
+    /**
+     * Batched isReturnCheckPending() for list views — same three conditions,
+     * one query per condition instead of N+1. Returns [order_id => bool
+     * pending] for every order with ANY Material Flow activity (a task,
+     * attachment, or line); an order with none of those is omitted, same
+     * "nothing to show" meaning a null lookup already had.
+     */
+    public function pendingStatusForOrders(array $orderIds): array
+    {
+        $real = $this->realPendingStatusForOrders($orderIds);
+
+        return $this->autoApproveActive() ? array_map(fn () => false, $real) : $real;
+    }
+
+    /**
+     * Batched isAutoApproved() — [order_id => true] for every order in
+     * $orderIds whose pendingStatusForOrders() entry reads false SOLELY
+     * because of the override (a real check is still outstanding). Empty
+     * when the override is off. Callers that need to distinguish a genuine
+     * "Checked" from this state (list/badge rendering) should check this
+     * BEFORE reading pendingStatusForOrders()'s own value as "checked".
+     */
+    public function autoApprovedStatusForOrders(array $orderIds): array
+    {
+        if (! $this->autoApproveActive()) {
+            return [];
+        }
+
+        return array_filter($this->realPendingStatusForOrders($orderIds));
+    }
+
+    /** Same batching as pendingStatusForOrders(), ignoring the auto-approve override. */
+    private function realPendingStatusForOrders(array $orderIds): array
+    {
+        if (empty($orderIds)) {
+            return [];
+        }
+
+        try {
+            $hasTaskOrderIds = MaterialReturnTask::whereIn('order_id', $orderIds)
+                ->pluck('order_id')->unique();
+            $uncheckedTaskOrderIds = MaterialReturnTask::whereIn('order_id', $orderIds)
+                ->where('status', '!=', MaterialReturnTask::STATUS_CHECKED)
+                ->pluck('order_id')->unique();
+            $unlinkedAttOrderIds = MaterialReturnAttachment::whereIn('order_id', $orderIds)
+                ->whereNull('task_id')->pluck('order_id')->unique();
+            $unlinkedLineOrderIds = MaterialReturnLine::whereIn('order_id', $orderIds)
+                ->whereNull('task_id')->pluck('order_id')->unique();
+
+            $pending = $uncheckedTaskOrderIds->merge($unlinkedAttOrderIds)->merge($unlinkedLineOrderIds)->unique();
+            $touched = $hasTaskOrderIds->merge($unlinkedAttOrderIds)->merge($unlinkedLineOrderIds)->unique();
+
+            $result = [];
+            foreach ($touched as $oid) {
+                $result[$oid] = $pending->contains($oid);
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            return [];
         }
     }
 

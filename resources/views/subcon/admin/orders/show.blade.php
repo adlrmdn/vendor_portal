@@ -95,7 +95,7 @@
             </div>
         </div>
 
-        @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports])
+        @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'fabricLines' => $fabricLines, 'qcSizeOrderQty' => $qcSizeOrderQty])
 
         @if($order->workflow_stage === \App\Models\SubconOrder::STAGE_CUTTING_REVIEW)
             {{-- Consumption + approve are one action: this form's inputs are
@@ -108,15 +108,49 @@
                     'fabricLines' => $fabricLines,
                     'totalCut' => $totalCut,
                     'editable' => true,
+                    'showAccessory' => true,
+                    'accessoryLines' => $accessoryLines,
+                    'accessoryRecon' => $accessoryRecon,
+                    'accessoryGoodsReceive' => $accessoryGoodsReceive,
+                    'accessoryIssue' => $accessoryIssue,
+                    // The Approve button below submits THIS form to the cutting
+                    // gate (SubconApprovalController::approveInApp), which only
+                    // reads 'fabrics' — an edited accessories_recon here would be
+                    // silently dropped, not saved. Keep accessory read-only during
+                    // this one gate; it's freely editable via the standalone
+                    // "Save Reconciliation" form once past it (see the @else below).
+                    'accessoryEditable' => false,
                 ])
             </form>
         @else
-            @include('subcon.partials.consumption-input', [
-                'order' => $order,
-                'fabricLines' => $fabricLines,
-                'totalCut' => $totalCut,
-                'editable' => false,
-            ])
+            {{-- Outside the cutting-review gate, Fabric + Accessory reconciliation
+                 is freely editable and saveable on its own — independent of any
+                 approval action. Before this, correcting a figure (or filling in
+                 reconciliation for an order with no VSM/PLM link at all, where
+                 "Add fabric"/"Add accessory" free-typed rows are the only option)
+                 required re-triggering an approval gate. Saves only
+                 SubconFabricReconciliation / MaterialReturnLine — never touches
+                 workflow_stage. See SubconAdminController::saveMaterialReconciliation(). --}}
+            <form method="POST" action="{{ route('subcon.admin.orders.material-recon.save', $order->id) }}">
+                @csrf
+                @include('subcon.partials.consumption-input', [
+                    'order' => $order,
+                    'fabricLines' => $fabricLines,
+                    'totalCut' => $totalCut,
+                    'editable' => true,
+                    'showAccessory' => true,
+                    'accessoryLines' => $accessoryLines,
+                    'accessoryRecon' => $accessoryRecon,
+                    'accessoryGoodsReceive' => $accessoryGoodsReceive,
+                    'accessoryIssue' => $accessoryIssue,
+                    'accessoryEditable' => true,
+                ])
+                <div class="text-end mt-2 mb-3">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-save me-1"></i> Save Reconciliation
+                    </button>
+                </div>
+            </form>
         @endif
     </div>
 
@@ -207,11 +241,86 @@
             </div>
         </div>
 
+        @if($qcPipeline)
+            <div class="card mb-3 border-0 shadow-sm" style="border-radius:12px; border:1px solid rgba(0,0,0,0.08) !important;">
+                <div class="card-body p-3">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
+                            <i class="fas fa-clipboard-check me-1"></i> Report Approval
+                        </div>
+                        <span class="badge bg-{{ $qcPipeline['badge'] }}">{{ $qcPipeline['label'] }}</span>
+                    </div>
+                    {{-- The QC-console project/session this order maps to — so it's
+                         traceable from the order itself instead of only existing as an
+                         internal join. production_group is already in the page header;
+                         project_id is the QMS-side identity, one level more specific. --}}
+                    @if($qcPipeline['project_id'])
+                        <div class="small text-muted mb-2">Project: <span class="font-monospace">{{ $qcPipeline['project_id'] }}</span></div>
+                    @endif
+
+                    {{-- Explicit sent/not-sent per stage — "Awaiting X" above collapses
+                         which signature is actually missing, and Final Approval vs.
+                         Report Validation are two distinct signatures admins need to
+                         tell apart. This is the whereabouts: no more hunting across the
+                         Approvals / Report Validation / Director tabs to find where a
+                         given order's report actually sits. --}}
+                    <ul class="list-unstyled small mb-2">
+                        @foreach($qcPipeline['steps'] as $step)
+                            <li class="d-flex justify-content-between align-items-start py-1 {{ ! $loop->last ? 'border-bottom' : '' }}">
+                                <span>
+                                    @if($step['sent'])
+                                        <i class="fas fa-check-circle text-success me-1"></i>
+                                    @else
+                                        <i class="far fa-circle text-muted me-1"></i>
+                                    @endif
+                                    {{ $step['label'] }}
+                                </span>
+                                <span class="text-end text-muted">
+                                    @if($step['sig'] && $step['sig']['name'])
+                                        {{ $step['sig']['name'] }}
+                                        @if($step['sig']['date'])<div style="font-size:.7rem;">{{ $step['sig']['date'] }}</div>@endif
+                                    @else
+                                        {{ $step['note'] }}
+                                    @endif
+                                </span>
+                            </li>
+                        @endforeach
+                    </ul>
+
+                    <div class="d-flex gap-2">
+                        @if($qcPipeline['token'])
+                            <a href="{{ route('qc.document', ['token' => $qcPipeline['token']]) }}" class="btn btn-sm btn-outline-primary flex-fill" target="_blank" rel="noopener">
+                                <i class="fas fa-file-pdf me-1"></i> Report
+                            </a>
+                        @elseif($qcPipeline['project_id'] && $qcPipeline['session_id'])
+                            {{-- No approval_token yet (still being inspected in the
+                                 console) — preview the draft as it currently stands. --}}
+                            <a href="{{ route('qc.print-draft', ['projectId' => $qcPipeline['project_id'], 'sessionId' => $qcPipeline['session_id']]) }}" class="btn btn-sm btn-outline-primary flex-fill" target="_blank" rel="noopener">
+                                <i class="fas fa-file-pdf me-1"></i> Preview Draft
+                            </a>
+                        @endif
+                        @if($qcPipeline['token'] && in_array($qcPipeline['stage'], ['awaiting_final', 'awaiting_validation'], true))
+                            <a href="{{ route('qc.ho-approve', ['token' => $qcPipeline['token']]) }}" class="btn btn-sm btn-success flex-fill" target="_blank" rel="noopener">
+                                <i class="fas fa-paper-plane me-1"></i> {{ $qcPipeline['stage'] === 'awaiting_final' ? 'Final Approval' : 'Validate & Send' }}
+                            </a>
+                        @elseif($qcPipeline['token'] && $qcPipeline['stage'] === 'awaiting_director')
+                            <a href="{{ route('qc.director-approve', ['token' => $qcPipeline['token']]) }}" class="btn btn-sm btn-success flex-fill" target="_blank" rel="noopener">
+                                <i class="fas fa-gavel me-1"></i> Director Approval
+                            </a>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        @endif
+
         @include('subcon.partials.delivery-note-attachment', [
             'order' => $order,
             'materialReturns' => $materialReturns,
             'canSubmit' => $order->materialReturnAdminWindowOpen(),
             'uploadRoute' => route('subcon.admin.orders.material-return', $order->id),
+            'viewerRole' => 'admin',
+            'deleteRouteName' => 'subcon.admin.orders.material-return.delete',
+            'deleteRouteParam' => $order->id,
         ])
 
         @include('subcon.partials.remarks', ['remarks' => $order->remarks ?? null])
@@ -219,6 +328,8 @@
         @include('subcon.partials.material-return', [
             'order' => $order,
             'materialReturnTask' => $materialReturnTask,
+            'materialReturnPending' => $materialReturnPending,
+            'materialReturnAutoApproved' => $materialReturnAutoApproved,
             'dispatchRoute' => route('subcon.admin.orders.material-return.dispatch', $order->id),
         ])
 

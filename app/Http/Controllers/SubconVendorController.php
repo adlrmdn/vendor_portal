@@ -136,9 +136,39 @@ class SubconVendorController extends Controller
         $materialReturns = $materialReturnService->attachmentsFor($order);
         $materialReturnLines = $materialReturnService->linesFor($order);
         $materialReturnTask = $materialReturnService->activeTaskFor($order);
+        // See QcApprovalController::hoApprovalForm()'s identical comment —
+        // must reflect the real gate, not just the latest task's status.
+        $materialReturnPending = $materialReturnService->isReturnCheckPending($order);
+        $materialReturnAutoApproved = $materialReturnService->isAutoApproved($order);
         $accessoryRecon = $materialReturnLines->where('item_type', 'accessory')->keyBy('label');
 
-        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask'));
+        // Richer fallback for production-detail.blade.php's per-size table when
+        // the VSM/PLM chain is broken — same fetch as
+        // QcApprovalController::hoApprovalForm(); see that method's comment.
+        $qcSizeOrderQty = [];
+        if (empty($productionGroups) && ! empty($order->production_group)) {
+            try {
+                if (\Illuminate\Support\Facades\Schema::connection('qms')->hasTable('packaging_projects')
+                    && \Illuminate\Support\Facades\Schema::connection('qms')->hasTable('packaging_project_reports')) {
+                    $projectId = \Illuminate\Support\Facades\DB::connection('qms')->table('packaging_projects')
+                        ->where('production_group', $order->production_group)
+                        ->orderByDesc('created_at')
+                        ->value('project_id');
+                    if ($projectId) {
+                        $qcSizeOrderQty = \Illuminate\Support\Facades\DB::connection('qms')->table('packaging_project_reports')
+                            ->where('project_id', $projectId)
+                            ->whereNull('session_id')
+                            ->pluck('qty_order', 'size_val')
+                            ->map(fn ($v) => (int) $v)
+                            ->all();
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — the partial just falls further back.
+            }
+        }
+
+        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcSizeOrderQty'));
     }
 
     /**
@@ -163,6 +193,27 @@ class SubconVendorController extends Controller
         $materialReturns->upload($order, $data['file'], $data['note'] ?? null, \App\Models\MaterialReturnAttachment::ROLE_VENDOR, Auth::user()->name);
 
         return back()->with('success', 'Material-return delivery note attached.');
+    }
+
+    /**
+     * Removes a vendor-uploaded delivery note. Same window as
+     * uploadMaterialReturn() above; scoped to the vendor's own uploads — see
+     * MaterialReturnService::deleteAttachment()'s docblock.
+     */
+    public function deleteMaterialReturn(string $id, string $attachment, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $vendorId = Auth::user()->vendor_id;
+        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+
+        if (! $order->materialReturnVendorWindowOpen()) {
+            return back()->with('error', 'This order has already been sent to the Director — a material-return note can no longer be removed.');
+        }
+
+        $error = $materialReturns->deleteAttachment($order, $attachment, \App\Models\MaterialReturnAttachment::ROLE_VENDOR);
+
+        return $error
+            ? back()->with('error', $error)
+            : back()->with('success', 'Delivery note removed.');
     }
 
     /**

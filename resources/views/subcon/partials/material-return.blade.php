@@ -7,25 +7,40 @@
     partial is just the dispatch action + status, shown once per order page.
 
     Params:
-      $order              SubconOrder
-      $materialReturnTask ?MaterialReturnTask
-      $dispatchRoute      ?string — POST route for "Send to Material Flow" (admin/HO only, null hides everything)
+      $order                 SubconOrder
+      $materialReturnTask    ?MaterialReturnTask
+      $materialReturnPending ?bool — the REAL gate (MaterialReturnService::isReturnCheckPending()),
+                              not just $materialReturnTask's own status. A task can be checked while
+                              newer reconciliation lines/attachments still sit undispatched — the badge
+                              must reflect that, or it says "Checked" while Report Validation is still
+                              blocked. Falls back to the task's own status if the caller didn't pass it.
+      $materialReturnAutoApproved ?bool — MaterialReturnService::isAutoApproved(): true when
+                              $materialReturnPending reads false ONLY because of the admin auto-approve
+                              override, not a real check. Must render distinctly from a genuine check —
+                              never the plain "Checked by Material Flow" copy/color for this state.
+      $dispatchRoute         ?string — POST route for "Send to Material Flow" (admin/HO only, null hides everything)
 --}}
 @php
     $materialReturnTask = $materialReturnTask ?? null;
     $dispatchRoute = $dispatchRoute ?? null;
+    $materialReturnPending = $materialReturnPending ?? ($materialReturnTask ? ! $materialReturnTask->isChecked() : false);
+    $materialReturnAutoApproved = $materialReturnAutoApproved ?? false;
 @endphp
 
-@if($dispatchRoute || $materialReturnTask)
+@if($dispatchRoute || $materialReturnTask || $materialReturnPending || $materialReturnAutoApproved)
     <div class="card mb-3 border-0 shadow-sm" style="border-radius:12px; border:1px solid rgba(0,0,0,0.08) !important;">
         <div class="card-body p-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
             <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
                 <i class="fas fa-truck-ramp-box me-1"></i> Material Flow
             </div>
             <div class="d-flex align-items-center gap-2">
-                @if($materialReturnTask)
-                    <span class="badge {{ $materialReturnTask->isChecked() ? 'bg-success' : 'bg-warning text-dark' }}">
-                        {{ $materialReturnTask->isChecked() ? 'Checked by Material Flow' : 'Awaiting Material Flow' }}
+                @if($materialReturnAutoApproved)
+                    <span class="badge bg-info-subtle text-info border border-info" title="Admin override — inventory has not actually checked this order.">
+                        Auto-Approved (not checked)
+                    </span>
+                @elseif($materialReturnTask || $materialReturnPending)
+                    <span class="badge {{ $materialReturnPending ? 'bg-warning text-dark' : 'bg-success' }}">
+                        {{ $materialReturnPending ? 'Awaiting Material Flow' : 'Checked by Material Flow' }}
                     </span>
                 @endif
                 @if($dispatchRoute)

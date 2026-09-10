@@ -111,6 +111,7 @@
                                         'productionGroups' => $productionGroups ?? [],
                                         'cuttingReports' => $cuttingReports ?? collect(),
                                         'fabricLines' => $fabricLines ?? [],
+                                        'qcSizeOrderQty' => $qcSizeOrderQty ?? [],
                                         'mode' => 'view',
                                     ])
                                 </div>

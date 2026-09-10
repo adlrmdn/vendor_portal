@@ -1196,4 +1196,125 @@ class D365JobTransactionService
 
         return $out;
     }
+
+    /**
+     * Real per-pc consumption rate per raw material, direct from D365's custom
+     * `TOC_FinalRMPrices` entity — the actual BOM Final costing/consumption
+     * record (`TOC_Consumption`), NOT `vsm.bom_lines.RequiredQty` (a scaled
+     * total for whatever order last triggered the BOM calc — see
+     * SubconProductionService::bomMaterialsForOrder()'s docblock). This is a
+     * genuine per-unit design rate (e.g. "1 hangtag per garment", "0.09 YD
+     * interlining per garment") that does NOT need dividing by an order's
+     * cutting qty, and — being a per-unit spec rather than a scaled total —
+     * is far less sensitive to which order's run last recalculated the
+     * underlying BOM Final snapshot (see materialIssueForOrder()'s docblock
+     * for the related total-vs-rate distinction on the Material Issue side).
+     *
+     * A raw material can appear on multiple rows for the same PLM when it's
+     * genuinely size-specific (e.g. a belt SKU used only for sizes S/M, each
+     * its own row carrying its own `TOC_Size`). `consumption` is a simple
+     * average across rows — fine for *display* when they agree, and
+     * `consistent` is false when they don't so the caller can flag it as a
+     * size-blended approximation. `rows` carries each row's own size + rate
+     * so the caller can scale each one by that SIZE's real, independently
+     * tracked cutting qty (from the QC yield matrix, not from D365 at all)
+     * — deliberately NOT pre-multiplied here by `TOC_QtyOrder`/`OrderQty`.
+     * Both of those are D365's own PLANNING figures — the same basis
+     * `ProposalBOMQuantity` (Mats Sent's fallback, see
+     * SubconProductionService::materialIssueForOrder()) is already computed
+     * from — so multiplying by either one here would make any "Mats Sent vs.
+     * this rate scaled up" comparison tautological (plan vs. a second
+     * derivation of the same plan, canceling to ~0 regardless of what
+     * actually happened; confirmed live on real orders). Scaling by the
+     * REAL cutting qty instead — production's actual, independently-tracked
+     * output, which is usually lower than the planned order qty — is what
+     * makes that comparison capable of showing genuine signal.
+     *
+     * Deliberately does NOT surface `TOC_Price` — Price stays sourced from
+     * the existing local/VSM pricing path (resolveFabricPricing() for fabric,
+     * accessoryLinesForPo()'s weighted average for accessories); this call is
+     * for Consumption only.
+     *
+     * Best-effort: returns [] on any failure, cached ~1h like the other D365
+     * lookups here.
+     *
+     * @param  array<int, string>  $plmIds
+     * @return array<string, array{consumption: float, unit: ?string, consistent: bool, rows: array<int, array{size: ?string, consumption: float}>}> keyed by ItemId
+     */
+    public function fetchFinalRMConsumption(array $plmIds): array
+    {
+        $plmIds = array_values(array_filter(array_unique($plmIds)));
+        if (empty($plmIds)) {
+            return [];
+        }
+
+        $cacheKey = 'd365_final_rm_consumption_'.md5(implode(',', $plmIds));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $token = $this->getD365Token();
+        if (! $token) {
+            return [];
+        }
+
+        $rowsByItem = [];
+        try {
+            foreach (array_chunk($plmIds, 20) as $chunk) {
+                $filters = array_map(fn ($id) => 'TOC_PLM_Id eq '.$this->odataLit($id), $chunk);
+                $filterStr = '('.implode(' or ', $filters).')';
+                $url = $this->getResource()."/data/TOC_FinalRMPrices?\$filter={$filterStr}&cross-company=true";
+
+                $response = Http::withToken($token)
+                    ->withHeaders(['OData-MaxVersion' => '4.0', 'OData-Version' => '4.0', 'Accept' => 'application/json'])
+                    ->timeout(30)
+                    ->get($url);
+
+                if (! $response->successful()) {
+                    Log::warning('D365 final RM consumption fetch failed. Status: '.$response->status());
+
+                    continue;
+                }
+
+                foreach ($response->json()['value'] ?? [] as $line) {
+                    $item = $line['TOC_ItemIDLine'] ?? null;
+                    if ($item === null || $item === '') {
+                        continue;
+                    }
+                    // TOC_Size: which size this row's rate applies to (blank
+                    // for a non-size-specific material). Deliberately NOT
+                    // capturing TOC_QtyOrder/OrderQty here — both are D365
+                    // planning figures, not real production output; see this
+                    // method's docblock for why scaling by them made "Mats
+                    // Sent vs. plan" comparisons tautological.
+                    $rowsByItem[$item][] = [
+                        'consumption' => (float) ($line['TOC_Consumption'] ?? 0),
+                        'size' => trim((string) ($line['TOC_Size'] ?? '')) ?: null,
+                        'unit' => $line['UOM'] ?? null,
+                    ];
+                }
+            }
+
+            $out = [];
+            foreach ($rowsByItem as $item => $rows) {
+                $values = array_column($rows, 'consumption');
+                $min = min($values);
+                $max = max($values);
+                $out[$item] = [
+                    'consumption' => array_sum($values) / count($values),
+                    'unit' => $rows[0]['unit'] ?? null,
+                    'consistent' => ($max - $min) < 0.0001,
+                    'rows' => array_map(fn ($r) => ['size' => $r['size'], 'consumption' => $r['consumption']], $rows),
+                ];
+            }
+
+            Cache::put($cacheKey, $out, now()->addHour());
+        } catch (\Throwable $e) {
+            Log::error('Exception fetching D365 final RM consumption: '.$e->getMessage());
+
+            return [];
+        }
+
+        return $out;
+    }
 }

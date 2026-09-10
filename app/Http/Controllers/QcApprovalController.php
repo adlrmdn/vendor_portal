@@ -333,6 +333,30 @@ class QcApprovalController extends Controller
             $cuttingReports = \App\Models\SubconCuttingReport::where('order_id', $subcon->id)->get()->keyBy('prod_id');
         }
 
+        // Richer fallback for production-detail.blade.php's per-size table when
+        // the VSM/PLM chain is broken (forPo() above came back empty) but this
+        // order has already been through QC inspection: the console's own
+        // report-line snapshot (session_id IS NULL base line) already carries
+        // Order Qty per size — the exact same source the signed inspection
+        // report itself reads it from (QcReportPdfService::context()) — so
+        // "not tied to PLM" doesn't have to mean the per-size table is empty.
+        // Best-effort: an unreachable `qms` connection just leaves it [].
+        $qcSizeOrderQty = [];
+        if (empty($productionGroups)) {
+            try {
+                if (Schema::connection('qms')->hasTable('packaging_project_reports')) {
+                    $qcSizeOrderQty = DB::connection('qms')->table('packaging_project_reports')
+                        ->where('project_id', (string) $row->project_id)
+                        ->whereNull('session_id')
+                        ->pluck('qty_order', 'size_val')
+                        ->map(fn ($v) => (int) $v)
+                        ->all();
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — the partial just falls further back.
+            }
+        }
+
         // Step-2 extras: live RAF run status (best-effort, remote RPA DB).
         $rafStatus = $validateMode ? $this->rafJobStatus((string) $row->project_id) : null;
 
@@ -359,8 +383,41 @@ class QcApprovalController extends Controller
         $materialReturnService = app(\App\Services\MaterialReturnService::class);
         $materialReturns = $subcon ? $materialReturnService->attachmentsFor($subcon) : collect();
         $materialReturnTask = $subcon ? $materialReturnService->activeTaskFor($subcon) : null;
+        // Drives the "Checked by Material Flow" badge — must agree with the
+        // ACTUAL send-gate (hoApprove()'s isReturnCheckPending() check), not
+        // just the latest task's own status, otherwise the badge can say
+        // "Checked" while new undispatched lines still block the send. See
+        // MaterialReturnService::isReturnCheckPending()'s docblock.
+        $materialReturnPending = $subcon ? $materialReturnService->isReturnCheckPending($subcon) : false;
+        // True only when the badge above reads clear SOLELY because of the
+        // admin auto-approve override, not a real check — the badge must say
+        // so distinctly (see MaterialReturnService::isAutoApproved()).
+        $materialReturnAutoApproved = $subcon ? $materialReturnService->isAutoApproved($subcon) : false;
 
-        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask'));
+        // Material Reconciliation — Accessory group only, nested as a sub-section of
+        // consumption-input.blade.php's "Material Reconciliation & Consumption" card
+        // below (via its $showAccessory flag → subcon.partials.material-recon-accessory):
+        // fabric waste/consumption is already shown, editable, in that same card's
+        // Fabric sub-section, so this stays the Accessory counterpart rather than a
+        // separate duplicate card. Editable here too: MD Production may revise it
+        // through Report Validation, same as it can revise consumption — persisted in
+        // hoApprove()/hoSendApproval() via MaterialReturnService::persistReconciliation().
+        $materialAccessoryLines = $subcon ? $production->accessoryLinesForPo($subcon->order_number) : [];
+        $materialAccessoryRecon = $subcon
+            ? $materialReturnService->linesFor($subcon)->where('item_type', 'accessory')->keyBy('label')
+            : collect();
+        // Goods Receive (D365 packing-slip receipts) for accessories — the same
+        // resolveGoodsReceipts() lookup fabric already gets on this form, scoped
+        // to each accessory's own source PO(s) via accessoryLinesForPo()'s
+        // po_numbers/item_numbers (never the CMT subcon PO itself).
+        $materialAccessoryGoodsReceive = $subcon ? $production->resolveGoodsReceipts($materialAccessoryLines) : [];
+        // D365 Material Issue posting (vsm.material_issue_lines), keyed by
+        // ItemNumber — same source the PDF report already uses as its Mats
+        // Sent fallback (proposal) when no admin qty_sent is saved. Threaded
+        // through as a live-form prefill/placeholder for the same field.
+        $materialAccessoryIssue = $subcon ? $production->materialIssueForOrder((string) $subcon->production_group) : [];
+
+        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'materialAccessoryLines', 'materialAccessoryRecon', 'materialAccessoryGoodsReceive', 'materialAccessoryIssue'));
     }
 
     /**
@@ -389,6 +446,32 @@ class QcApprovalController extends Controller
         $materialReturns->upload($subcon, $data['file'], $data['note'] ?? null, \App\Models\MaterialReturnAttachment::ROLE_ADMIN, self::HO_SIGNER);
 
         return back()->with('success', 'Material-return delivery note attached.');
+    }
+
+    /**
+     * Removes an admin-uploaded delivery note, from this same token-gated
+     * form. Same window as uploadMaterialReturnSigned() above; scoped to
+     * admin's own uploads — see MaterialReturnService::deleteAttachment()'s
+     * docblock. Mirrors SubconAdminController::deleteMaterialReturn() for
+     * the in-app entry point.
+     */
+    public function deleteMaterialReturnSigned(string $token, string $attachment, \App\Services\MaterialReturnService $materialReturns)
+    {
+        $row = $this->findByToken($token);
+        if (! $row) {
+            return view('qc.approval-result', ['state' => 'invalid', 'message' => 'This approval link is invalid or has expired.']);
+        }
+
+        [$subcon] = $this->subconContext($row);
+        if (! $subcon || ! $subcon->materialReturnAdminWindowOpen()) {
+            return back()->with('error', 'A material-return note can only be removed between Final Approval and Report Validation.');
+        }
+
+        $error = $materialReturns->deleteAttachment($subcon, $attachment, \App\Models\MaterialReturnAttachment::ROLE_ADMIN);
+
+        return $error
+            ? back()->with('error', $error)
+            : back()->with('success', 'Delivery note removed.');
     }
 
     /**
@@ -468,6 +551,14 @@ class QcApprovalController extends Controller
             'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
             'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
+            // Material Reconciliation — Accessory group, same shape as the vendor's
+            // saveMaterialReconciliation() (subcon.partials.material-recon-accessory).
+            'accessories_recon' => 'nullable|array',
+            'accessories_recon.*.label' => 'required_with:accessories_recon|string|max:500',
+            'accessories_recon.*.qty' => 'nullable|numeric|min:0',
+            'accessories_recon.*.mats_sent' => 'nullable|numeric|min:0',
+            'accessories_recon.*.price' => 'nullable|numeric|min:0',
+            'accessories_recon.*.unit' => 'nullable|string|max:20',
             // MD Production's own remarks — distinct from the vendor's/QC's.
             'ho_remarks' => 'required|string|max:2000',
         ]);
@@ -483,6 +574,16 @@ class QcApprovalController extends Controller
             DB::transaction(function () use ($consumption, $subcon, $data) {
                 $consumption->persist($subcon, $data['fabrics']);
             });
+        }
+        if ($subcon) {
+            app(\App\Services\MaterialReturnService::class)->persistReconciliation(
+                $subcon,
+                [],
+                $data['accessories_recon'] ?? [],
+                \App\Models\MaterialReturnAttachment::ROLE_ADMIN,
+                $this->actorLabel($request, self::HO_SIGNER),
+                lockReturKain: false
+            );
         }
 
         // Fabric lines: publish the just-recomputed snapshot to QMS via the shared
@@ -687,18 +788,6 @@ class QcApprovalController extends Controller
             // refuses inactive projects.
         }
 
-        // Material Flow gate: if MD Production dispatched a returned-material
-        // check (SubconAdminController::dispatchMaterialReturnTask), value_stream_ops's
-        // inventory staff must confirm it before this can go to the Director.
-        // A no-op for orders that never had a task dispatched.
-        [$subconForReturnCheck] = $this->subconContext($row);
-        if ($subconForReturnCheck && app(\App\Services\MaterialReturnService::class)->isReturnCheckPending($subconForReturnCheck)) {
-            return view('qc.approval-result', [
-                'state' => 'blocked',
-                'message' => "Report Validation can't be sent to the Director until Material Flow has checked the returned material.",
-            ]);
-        }
-
         $data = $request->validate([
             'deductions' => 'nullable|array',
             'deductions.*.description' => 'nullable|string|max:255',
@@ -714,13 +803,93 @@ class QcApprovalController extends Controller
             'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
             'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
+            // Material Reconciliation — Accessory group, same shape as the vendor's
+            // saveMaterialReconciliation() (subcon.partials.material-recon-accessory).
+            'accessories_recon' => 'nullable|array',
+            'accessories_recon.*.label' => 'required_with:accessories_recon|string|max:500',
+            'accessories_recon.*.qty' => 'nullable|numeric|min:0',
+            'accessories_recon.*.mats_sent' => 'nullable|numeric|min:0',
+            'accessories_recon.*.price' => 'nullable|numeric|min:0',
+            'accessories_recon.*.unit' => 'nullable|string|max:20',
             // MD Production's own remarks — distinct from the vendor's/QC's.
             'ho_remarks' => 'required|string|max:2000',
         ]);
 
         [$subcon, , $productionGroup] = $this->subconContext($row);
-
         $actor = $this->actorLabel($request, self::HO_SIGNER);
+
+        // Persist whatever MD Production entered BEFORE the Material Flow gate
+        // below (and before the send-claim) — a submit must never discard
+        // typed figures just because sending is blocked. Previously this save
+        // only ran after the gate passed, so a pending Material Flow check
+        // silently threw away every revision MD Production made while
+        // waiting, and the only way to notice the block was a permanently
+        // disabled submit button with no save path — see ho-approval-form.blade.php.
+        if ($subcon && ! empty($data['fabrics'])) {
+            DB::transaction(function () use ($consumption, $subcon, $data) {
+                $consumption->persist($subcon, $data['fabrics']);
+            });
+        }
+        if ($subcon) {
+            app(\App\Services\MaterialReturnService::class)->persistReconciliation(
+                $subcon,
+                [],
+                $data['accessories_recon'] ?? [],
+                \App\Models\MaterialReturnAttachment::ROLE_ADMIN,
+                $actor,
+                lockReturKain: false
+            );
+        }
+        if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_remarks')) {
+            DB::connection('qms')->table(self::TABLE)
+                ->where('approval_token', $token)
+                ->update(['ho_remarks' => $data['ho_remarks'] ?? null]);
+        }
+
+        // Don't ask the Director about projects that need no action any more
+        // (completed under the legacy flow, or archived post-completion in
+        // the QC console). A plain 'removed' status is just a device-side
+        // archive/hide and does NOT mean the workflow is done — see
+        // SubconOrder::QMS_INACTIVE_PROJECT_STATUSES — so it is not guarded
+        // here; the project should still be sendable to the Director.
+        try {
+            $status = (string) DB::connection('qms')->table('packaging_projects')
+                ->where('project_id', (string) ($row->project_id ?? ''))
+                ->value('status');
+            if (in_array($status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true)) {
+                return view('qc.approval-result', [
+                    'state' => $status === 'completed' ? 'already' : 'invalid',
+                    'message' => $status === 'completed'
+                        ? 'This project is already completed — nothing to send to the Director.'
+                        : 'This project has been removed in the QC console — nothing to send to the Director.',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Status unreadable — fall through; the Director-side guard still
+            // refuses inactive projects.
+        }
+
+        // Material Flow gate: if MD Production dispatched a returned-material
+        // check (SubconAdminController::dispatchMaterialReturnTask), value_stream_ops's
+        // inventory staff must confirm it before this can go to the Director.
+        // A no-op for orders that never had a task dispatched. Blocked here
+        // stays ON this same form (redirect back, not a dead-end result page)
+        // — the form already shows this exact gate inline (the "Waiting on
+        // Material Flow" banner). The submit button is deliberately clickable
+        // even while blocked (no `disabled` attribute) so this check runs
+        // AFTER the persist above, not instead of it — see ho-approval-form.blade.php.
+        $materialReturnService = app(\App\Services\MaterialReturnService::class);
+        // Captured BEFORE the gate check below — isAutoApproved() only
+        // reads true while a real check is genuinely outstanding, so this
+        // must be read while that's still the case, not after. See
+        // MaterialReturnService::isAutoApproved()'s docblock and the
+        // SubconApprovalLog note appended below ("keep note").
+        $materialReturnAutoApproved = $subcon && $materialReturnService->isAutoApproved($subcon);
+        if ($subcon && $materialReturnService->isReturnCheckPending($subcon)) {
+            return redirect()->route('qc.ho-approve', ['token' => $token])
+                ->with('error', "Your changes were saved. Report Validation can't be sent to the Director yet — Material Flow still needs to check the returned material.");
+        }
+
         $signature = 'Digitally Signed: '.$actor
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
 
@@ -767,25 +936,14 @@ class QcApprovalController extends Controller
             ]);
         }
 
-        // Won the send — safe to mutate now. Last edit point before the
-        // Director: persist any revised consumption with the same engine as
-        // the cutting/approve gates (recompute + overwrite the snapshot),
-        // then re-publish the fabric lines to QMS so the Director's document
-        // and the deduction RPA total carry the final numbers.
-        if ($subcon && ! empty($data['fabrics'])) {
-            DB::transaction(function () use ($consumption, $subcon, $data) {
-                $consumption->persist($subcon, $data['fabrics']);
-            });
-        }
+        // Won the send — the revised consumption/reconciliation/remarks were
+        // already persisted above (before the Material Flow gate), so all
+        // that's left is re-publishing the fabric lines to QMS so the
+        // Director's document and the deduction RPA total carry the final
+        // numbers.
         if ($subcon) {
             $publisher->publish($subcon, (string) $row->project_id);
             app(\App\Services\SubconRemarksPublisher::class)->publish($subcon);
-        }
-
-        if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_remarks')) {
-            DB::connection('qms')->table(self::TABLE)
-                ->where('approval_token', $token)
-                ->update(['ho_remarks' => $data['ho_remarks'] ?? null]);
         }
 
         // Deduction rows: the validate form re-submits the FULL list (marked
@@ -821,7 +979,10 @@ class QcApprovalController extends Controller
             'decision' => 'approved',
             'actor' => $actor,
             'source' => $request->user() ? 'portal' : 'email',
-            'note' => 'Numbers validated — approval sent to the Director for authorization.',
+            'note' => 'Numbers validated — approval sent to the Director for authorization.'
+                .($materialReturnAutoApproved
+                    ? ' [Material Flow check was auto-approved via the admin override — not verified by inventory.]'
+                    : ''),
         ]);
 
         // Re-render the document at SEND time so the Director's attachment
@@ -1029,9 +1190,28 @@ class QcApprovalController extends Controller
             $cuttingReports = \App\Models\SubconCuttingReport::where('order_id', $subcon->id)->get()->keyBy('prod_id');
         }
 
+        // Richer fallback for production-detail.blade.php's per-size table when
+        // the VSM/PLM chain is broken — see the identical fetch/comment in
+        // hoApprovalForm() above.
+        $qcSizeOrderQty = [];
+        if (empty($productionGroups)) {
+            try {
+                if (Schema::connection('qms')->hasTable('packaging_project_reports')) {
+                    $qcSizeOrderQty = DB::connection('qms')->table('packaging_project_reports')
+                        ->where('project_id', (string) $row->project_id)
+                        ->whereNull('session_id')
+                        ->pluck('qty_order', 'size_val')
+                        ->map(fn ($v) => (int) $v)
+                        ->all();
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — the partial just falls further back.
+            }
+        }
+
         return view('qc.director-approval-form', compact(
             'token', 'row', 'subcon', 'productionGroup', 'report',
-            'totalCut', 'fabricLines', 'productionGroups', 'cuttingReports'
+            'totalCut', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty'
         ));
     }
 

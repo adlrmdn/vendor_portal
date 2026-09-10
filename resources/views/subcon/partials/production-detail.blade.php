@@ -306,12 +306,116 @@
         </div>
     </div>
 @empty
-    <div class="subcon-order-card p-5 text-center text-muted">
-        <i class="fas fa-info-circle fa-2x mb-3 text-secondary"></i>
-        <p class="mb-0">
-            No linked production detail. This order isn't yet tied to a PLM activity in the production system.
-        </p>
-    </div>
+    @php
+        $qcSizeOrderQty = $qcSizeOrderQty ?? [];
+        $hasFallbackData = ! empty($qcSizeOrderQty) || $cuttingReports->isNotEmpty();
+    @endphp
+    @if($hasFallbackData && ! $editCutting && ! $editGramasi)
+        {{-- No VSM production_group_lines lineage for this order (PLM chain
+             missing/broken — can happen even for a real, fully-inspected order:
+             VSM's own copy can go missing/archived independently of D365).
+             Two independent local/QMS sources still carry the real per-size
+             figures without VSM at all:
+               - $qcSizeOrderQty: the QC console's own report-line snapshot
+                 (qms.packaging_project_reports, session_id IS NULL) — Order
+                 Qty per size, captured once at inspection time. Same source
+                 the signed inspection report's own per-size table reads Order
+                 Qty from (QcReportPdfService::context()).
+               - $cuttingReports: local subcon_cutting_reports, synced hourly
+                 straight from D365 job transactions (independent of VSM) —
+                 Cut Qty/Gramasi per size.
+             Cut Plan is computed the same fabric-bottleneck way as the main
+             VSM-backed table above ($cuttPlanTotal), prorated by each size's
+             share of total Order Qty. View-only: the cutting/gramasi ENTRY
+             forms still need VSM's ProdId list and are unaffected by this. --}}
+        @php
+            $reportsBySize = $cuttingReports->groupBy('size');
+            $fallbackSizes = collect(array_keys($qcSizeOrderQty))
+                ->merge($reportsBySize->keys())
+                ->unique()
+                ->filter(fn ($s) => $s !== null && $s !== '');
+            // Numeric sizes first (ascending), then the common S–6XL order,
+            // then alpha — good enough for a display-only fallback table.
+            $sizeRank = ['XXS' => 1, 'XS' => 2, 'S' => 3, 'M' => 4, 'L' => 5, 'XL' => 6, 'XXL' => 7, '2XL' => 7, '3XL' => 8, '4XL' => 9, '5XL' => 10, '6XL' => 11];
+            $fallbackSizes = $fallbackSizes->sortBy(function ($s) use ($sizeRank) {
+                if (is_numeric($s)) {
+                    return [0, (float) $s];
+                }
+
+                return [1, $sizeRank[strtoupper($s)] ?? 99, $s];
+            })->values();
+            $totalOrderQtyFallback = collect($qcSizeOrderQty)->sum();
+            $totalCutFromLocal = 0;
+            foreach ($fallbackSizes as $s) {
+                $totalCutFromLocal += (int) ($reportsBySize->get($s, collect())->sum('cutting_qty'));
+            }
+        @endphp
+        <div class="subcon-order-card mb-4">
+            <div class="p-0 bg-white">
+                <div class="alert alert-warning border-0 rounded-0 mb-0 small py-2 px-3">
+                    <i class="fas fa-triangle-exclamation me-1"></i>
+                    Not linked to a PLM/production-group record in VSM
+                    @if(empty($qcSizeOrderQty))
+                        — Order Qty, Status and Cut Plan are unavailable. Cut Qty/Gramasi below are the vendor's submitted cutting-report figures.
+                    @else
+                        — Status is unavailable. Order Qty is the QC console's own inspection-time snapshot; Cut Qty/Gramasi are the vendor's submitted cutting-report figures.
+                    @endif
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0 modern-table">
+                        <thead>
+                            <tr>
+                                <th class="ps-4" style="width: 90px;">Size</th>
+                                <th style="width: 150px;">PRD ID</th>
+                                <th class="text-end" style="width: 120px;">Order Qty</th>
+                                <th class="text-end" style="width: 110px;">Cut Plan</th>
+                                <th class="text-end" style="width: 120px;">Cut Qty</th>
+                                <th class="text-end pe-4" style="width: 130px;">Gramasi (g)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($fallbackSizes as $s)
+                                @php
+                                    $sizeReports = $reportsBySize->get($s, collect());
+                                    $orderQty = $qcSizeOrderQty[$s] ?? null;
+                                    $cutQty = $sizeReports->isNotEmpty() ? (int) $sizeReports->sum('cutting_qty') : null;
+                                    $gramasi = $sizeReports->first()?->gramasi;
+                                    $prdIds = $sizeReports->pluck('prod_id')->filter()->implode(', ');
+                                    $cutPlanQty = ($cuttPlanTotal !== null && $orderQty !== null && $totalOrderQtyFallback > 0)
+                                        ? (int) round($orderQty / $totalOrderQtyFallback * $cuttPlanTotal) : null;
+                                @endphp
+                                <tr>
+                                    <td class="ps-4"><span class="size-pill">{{ $s }}</span></td>
+                                    <td><code class="text-secondary small font-monospace">{{ $prdIds ?: '—' }}</code></td>
+                                    <td class="text-end fw-semibold text-dark">{{ $orderQty !== null ? number_format($orderQty).' pcs' : '—' }}</td>
+                                    <td class="text-end {{ $cutPlanQty !== null ? 'fw-semibold text-dark' : 'text-muted' }}">{{ $cutPlanQty !== null ? number_format($cutPlanQty).' pcs' : '—' }}</td>
+                                    <td class="text-end fw-semibold text-primary">{{ $cutQty !== null ? number_format($cutQty).' pcs' : '—' }}</td>
+                                    <td class="text-end fw-semibold text-success pe-4">{{ $gramasi !== null ? number_format($gramasi, 2).' g' : '—' }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                        <tfoot>
+                            <tr class="table-light fw-bold border-top border-secondary border-opacity-20">
+                                <td class="ps-4 text-secondary">TOTAL</td>
+                                <td></td>
+                                <td class="text-end text-dark">{{ $totalOrderQtyFallback > 0 ? number_format($totalOrderQtyFallback).' pcs' : '—' }}</td>
+                                <td class="text-end {{ $cuttPlanTotal !== null ? 'text-dark' : 'text-muted' }}">{{ $cuttPlanTotal !== null ? number_format($cuttPlanTotal).' pcs' : '—' }}</td>
+                                <td class="text-end text-primary">{{ number_format($totalCutFromLocal) }} <span class="text-muted small fw-normal">pcs</span></td>
+                                <td class="pe-4"></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        </div>
+    @else
+        <div class="subcon-order-card p-5 text-center text-muted">
+            <i class="fas fa-info-circle fa-2x mb-3 text-secondary"></i>
+            <p class="mb-0">
+                No linked production detail. This order isn't yet tied to a PLM activity in the production system.
+            </p>
+        </div>
+    @endif
 @endforelse
 
 <script>

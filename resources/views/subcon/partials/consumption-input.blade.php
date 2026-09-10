@@ -9,15 +9,37 @@
     approving the cutting gate is one atomic action. See the admin order view and
     the no-login subcon.cutting-approval-form.
     Params:
-      $order        SubconOrder
-      $fabricLines  array from SubconProductionService::fabricLinesWithData()
-      $totalCut     int (basis for actual consumption)
-      $editable     bool
+      $order            SubconOrder
+      $fabricLines      array from SubconProductionService::fabricLinesWithData()
+      $totalCut         int (basis for actual consumption)
+      $editable         bool
+      $showAccessory    bool — false (default). true: also render the Accessory
+                        return-quantity sub-section (subcon.partials.material-recon-accessory)
+                        below the Fabric table, as a second sub-section of this
+                        same "Material Reconciliation & Consumption" card — used
+                        on the Final Approval / Report Validation form, which has
+                        no other place to show/edit it.
+      $accessoryLines   array from SubconProductionService::accessoryLinesForPo() — required when $showAccessory
+      $accessoryRecon   Collection of MaterialReturnLine (item_type=accessory) keyed by label — required when $showAccessory
+      $accessoryGoodsReceive  array from SubconProductionService::resolveGoodsReceipts($accessoryLines), keyed by label — required when $showAccessory
+      $accessoryIssue   array from SubconProductionService::materialIssueForOrder(), keyed by ItemNumber (not label) — required when $showAccessory
+      $accessoryEditable  ?bool — editability of the Accessory sub-section specifically,
+                        independent of $editable (the Fabric table's own flag). Defaults to
+                        $editable. Needed because the regular admin order page shows Fabric
+                        as editable during the cutting-review gate (saved by that gate's own
+                        approve action) but has no save path for accessories at all — only
+                        QcApprovalController::hoApprove()/hoSendApproval() persist
+                        accessories_recon, so this page must always pass false explicitly
+                        there rather than silently discarding edited accessory rows.
 --}}
 @php
     $editable = $editable ?? false;
     $fabricLines = $fabricLines ?? [];
     $totalCut = (int) ($totalCut ?? 0);
+    $showAccessory = $showAccessory ?? false;
+    $accessoryGoodsReceive = $accessoryGoodsReceive ?? [];
+    $accessoryIssue = $accessoryIssue ?? [];
+    $accessoryEditable = $accessoryEditable ?? $editable;
     $totalDeduction = 0.0;
     foreach ($fabricLines as $fl) {
         $totalDeduction += (float) ($fl['deduction'] ?? 0);
@@ -61,12 +83,20 @@
         <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
             <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
                 <i class="fas fa-ruler-horizontal me-1"></i> Material Reconciliation &amp; Consumption
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
+            <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
+                <i class="fas fa-scroll me-1"></i> Fabric
                 <span class="text-muted fw-normal text-lowercase">(per fabric)</span>
             </div>
-            <span class="text-muted small">Total Qty Cut: <strong>{{ $fmt2($totalCut) }}</strong> pcs</span>
             @if($editable)
                 <button type="button" class="btn btn-outline-secondary btn-sm" id="add-cons-fabric"><i class="fas fa-plus me-1"></i> Add fabric</button>
             @endif
+        </div>
+        <div class="text-muted small mb-2">
+            Total Qty Cut (basis for Actual Cons. / Cutt Plan below): <strong>{{ $fmt2($totalCut) }}</strong> pcs
         </div>
 
         @if(empty($fabricLines) && ! $editable)
@@ -164,11 +194,17 @@
                                         <input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()"
                                                class="form-control form-control-sm text-end cons-sent" style="width:110px;background:#fffaf0;border-color:#f0c000;font-weight:600;"
                                                name="fabrics[{{ $i }}][fabric_sent]"
-                                               value="{{ old('fabrics.'.$i.'.fabric_sent', $fl['fabric_sent']) }}" placeholder="0">
+                                               value="{{ old('fabrics.'.$i.'.fabric_sent', $fl['fabric_sent'] ?? $fl['fabric_sent_issue'] ?? '') }}" placeholder="0">
                                         {!! $unitTag($unit) !!}
+                                        @if($fl['fabric_sent'] === null && ($fl['fabric_sent_issue'] ?? null) !== null)
+                                            <div class="text-muted" style="font-size:.72rem;line-height:1.3;">Material Issue: {{ $fmt2($fl['fabric_sent_issue']) }}</div>
+                                        @endif
                                     @else
-                                        <span class="fw-semibold">{{ $fmt2($fl['fabric_sent']) }}</span>
+                                        <span class="fw-semibold">{{ $fmt2($fl['fabric_sent'] ?? $fl['fabric_sent_issue'] ?? null) }}</span>
                                         {!! $unitTag($unit) !!}
+                                        @if($fl['fabric_sent'] === null && ($fl['fabric_sent_issue'] ?? null) !== null)
+                                            <div class="text-muted" style="font-size:.65rem;font-style:italic;">(Material Issue)</div>
+                                        @endif
                                     @endif
                                 </td>
                                 <td class="text-end">
@@ -339,6 +375,17 @@
                 })();
                 </script>
             @endif
+        @endif
+
+        @if($showAccessory)
+            <hr class="my-3">
+            @include('subcon.partials.material-recon-accessory', [
+                'accessoryLines' => $accessoryLines ?? [],
+                'accessoryRecon' => $accessoryRecon ?? collect(),
+                'accessoryGoodsReceive' => $accessoryGoodsReceive,
+                'accessoryIssue' => $accessoryIssue,
+                'editable' => $accessoryEditable,
+            ])
         @endif
     </div>
 </div>

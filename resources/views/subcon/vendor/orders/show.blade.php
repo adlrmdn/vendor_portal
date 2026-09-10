@@ -205,6 +205,8 @@
         @include('subcon.partials.material-return', [
             'order' => $order,
             'materialReturnTask' => $materialReturnTask,
+            'materialReturnPending' => $materialReturnPending,
+            'materialReturnAutoApproved' => $materialReturnAutoApproved,
             'dispatchRoute' => null,
         ])
 
@@ -254,6 +256,9 @@
                     'materialReturns' => $materialReturns,
                     'canSubmit' => $order->materialReturnVendorWindowOpen(),
                     'uploadRoute' => route('subcon.vendor.orders.material-return', $order->id),
+                    'viewerRole' => 'vendor',
+                    'deleteRouteName' => 'subcon.vendor.orders.material-return.delete',
+                    'deleteRouteParam' => $order->id,
                 ])
 
                 @include('subcon.partials.vendor-remarks-form', ['order' => $order])
@@ -316,6 +321,9 @@
                     'materialReturns' => $materialReturns,
                     'canSubmit' => $order->materialReturnVendorWindowOpen(),
                     'uploadRoute' => route('subcon.vendor.orders.material-return', $order->id),
+                    'viewerRole' => 'vendor',
+                    'deleteRouteName' => 'subcon.vendor.orders.material-return.delete',
+                    'deleteRouteParam' => $order->id,
                 ])
 
                 @include('subcon.partials.vendor-remarks-form', ['order' => $order])
@@ -346,7 +354,7 @@
 
             {{-- STAGE 3+: read-only view (review / labels / completed) --}}
             @else
-                @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'mode' => 'view'])
+                @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'fabricLines' => $fabricLines, 'qcSizeOrderQty' => $qcSizeOrderQty, 'mode' => 'view'])
 
                 @include('subcon.partials.fabric-reconciliation', [
                     'fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon,
@@ -372,6 +380,9 @@
                     'materialReturns' => $materialReturns,
                     'canSubmit' => $order->materialReturnVendorWindowOpen(),
                     'uploadRoute' => route('subcon.vendor.orders.material-return', $order->id),
+                    'viewerRole' => 'vendor',
+                    'deleteRouteName' => 'subcon.vendor.orders.material-return.delete',
+                    'deleteRouteParam' => $order->id,
                 ])
 
                 @include('subcon.partials.vendor-remarks-form', ['order' => $order])
@@ -403,7 +414,7 @@
             @endif
 
         @else
-            @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'mode' => 'view'])
+            @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'fabricLines' => $fabricLines, 'qcSizeOrderQty' => $qcSizeOrderQty, 'mode' => 'view'])
         @endif
 
     </div>
