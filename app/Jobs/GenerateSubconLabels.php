@@ -251,6 +251,18 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
      * matching — which the same PLMId-reuse problem makes unsafe to
      * automate — known-good DSTs confirmed by hand against D365 TOC_DT are
      * listed here and applied first, still re-verified as Confirmed.
+     *
+     * PLM-id fallback via local production_group: `po_lines` normally carries
+     * the PO's own "Item Jasa CMT" line (with its PLMId), but that row can be
+     * missing from the VSM mirror entirely — either sync lag, or (seen on
+     * MPG/PO/2609/00189) the production group is tagged `ProductionType:
+     * "In-house"` in VSM, so the automated PONumber backfill on
+     * `production_groups` never expects a CMT subcon PO to attach to it and
+     * skips it. `SubconOrder.production_group` is already known locally
+     * (set at PO sync time), so when po_lines comes up empty, look up its
+     * PLMId directly off `production_groups.ProductionGroup` — that column
+     * is populated independently of PONumber/ProductionType — before giving
+     * up on the PLM chain.
      */
     private const DISTRIBUTION_ID_OVERRIDES = [
         'MPG/PO/2607/01528' => 'MTI/DST/2605/00028',
@@ -311,6 +323,18 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
                 ->whereNotNull('PLMId')
                 ->where('PLMId', '!=', '')
                 ->value('PLMId');
+
+            if (! $plmId && ! empty($order->production_group)) {
+                $plmId = DB::connection('vsm')->table('production_groups')
+                    ->where('ProductionGroup', $order->production_group)
+                    ->whereNotNull('PLMId')
+                    ->where('PLMId', '!=', '')
+                    ->value('PLMId');
+
+                if ($plmId) {
+                    Log::info("PLM id for {$order->order_number} resolved via local production_group {$order->production_group} (po_lines had no row).");
+                }
+            }
 
             if (! $plmId) {
                 return $unconfirmed;
