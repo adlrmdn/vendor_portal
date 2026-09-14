@@ -264,26 +264,22 @@ class QcApprovalController extends Controller
             ]);
         }
 
-        // Don't render an approve form for a project that's already finished — see
-        // the matching guard in hoApprove() for why (a stray approval here would
-        // re-queue job_trans_raf and fail as a false negative against a closed job).
+        // Don't render an approve form for a project QC itself already fully
+        // completed — nothing left to approve. This intentionally does NOT check
+        // VSM's "finished in production" status: that case must still let HO see
+        // and submit the approve form normally (the QC paperwork/signature isn't
+        // done yet); hoApprove() just skips the RAF trigger for it. See the
+        // matching comment in hoApprove().
         try {
-            $project = DB::connection('qms')->table('packaging_projects')
+            $status = (string) DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', (string) ($row->project_id ?? ''))
-                ->first(['status', 'production_group']);
-            $status = (string) ($project->status ?? '');
+                ->value('status');
             if (in_array($status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true)) {
                 return view('qc.approval-result', [
                     'state' => $status === 'completed' ? 'already' : 'invalid',
                     'message' => $status === 'completed'
                         ? 'This project is already completed — nothing left to approve.'
                         : 'This project has been removed in the QC console — nothing left to approve.',
-                ]);
-            }
-            if ($this->isFinishedInProductionVsm($project->production_group ?? null)) {
-                return view('qc.approval-result', [
-                    'state' => 'invalid',
-                    'message' => 'This style is already reported as finished in production (VSM/D365) — approving here would fail the RAF automation against a closed job, so it has been blocked.',
                 ]);
             }
         } catch (\Throwable $e) {
@@ -564,19 +560,21 @@ class QcApprovalController extends Controller
         }
 
         // Don't let a stale/duplicate approval re-queue job_trans_raf for a project
-        // that's already finished — either QC-side (completed, or removed
-        // post-completion in the console; same status set as hoSendApproval and
-        // directorStageGuard, see SubconOrder::QMS_INACTIVE_PROJECT_STATUSES), or
-        // VSM/D365-side (the style already reported finished in production, per
-        // isFinishedInProductionVsm() — that job is closed in D365 regardless of
-        // where QC's own approval chain is, so RAF would fail against it). Either
-        // way the RPA would fail and show up as a false failure. A plain 'removed'
-        // status is just a device-side archive/hide, not "finished", so it is not
-        // guarded here.
+        // QC itself already fully completed (or archived post-completion in the
+        // console) — nothing is left to approve at all. Same status set as
+        // hoSendApproval and directorStageGuard, see
+        // SubconOrder::QMS_INACTIVE_PROJECT_STATUSES. A plain 'removed' status is
+        // just a device-side archive/hide, not "finished", so it is not guarded
+        // here. This does NOT cover the VSM/D365 "already finished in production"
+        // case — that one must NOT block the approval/signature/PDF workflow
+        // (HO still needs to sign off the paperwork), it only skips the RAF
+        // trigger itself below; see $productionGroup / isFinishedInProductionVsm().
+        $productionGroup = null;
         try {
             $project = DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', (string) ($row->project_id ?? ''))
                 ->first(['status', 'production_group']);
+            $productionGroup = $project->production_group ?? null;
             $status = (string) ($project->status ?? '');
             if (in_array($status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true)) {
                 return view('qc.approval-result', [
@@ -584,12 +582,6 @@ class QcApprovalController extends Controller
                     'message' => $status === 'completed'
                         ? 'This project is already completed — nothing left to approve.'
                         : 'This project has been removed in the QC console — nothing left to approve.',
-                ]);
-            }
-            if ($this->isFinishedInProductionVsm($project->production_group ?? null)) {
-                return view('qc.approval-result', [
-                    'state' => 'invalid',
-                    'message' => 'This style is already reported as finished in production (VSM/D365) — approving here would fail the RAF automation against a closed job, so it has been blocked.',
                 ]);
             }
         } catch (\Throwable $e) {
@@ -752,7 +744,20 @@ class QcApprovalController extends Controller
         // presses "Validate & Send Approval" (hoSendApproval) to open stage 3.
         // All best-effort: the approval above has already committed.
         $this->refreshVerifiedDoc($row);
-        app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
+
+        // Skip RAF specifically (not the approval/signature/PDF above) when VSM
+        // already reports this style finished in production — that D365 job is
+        // closed, so queuing RAF against it would just fail as a false failure.
+        // The QC paperwork still needs to go through normally either way.
+        if ($this->isFinishedInProductionVsm($productionGroup)) {
+            Log::info('QC HO approval: skipping job_trans_raf — style already reported finished in production (VSM)', [
+                'token' => $token,
+                'project_id' => $row->project_id,
+                'production_group' => $productionGroup,
+            ]);
+        } else {
+            app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
+        }
 
         // Email the Validate & Send link to the MD Production list so step 2
         // is reachable from the inbox too (not just the redirect below and the
