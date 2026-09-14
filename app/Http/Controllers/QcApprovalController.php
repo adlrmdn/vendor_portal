@@ -264,6 +264,32 @@ class QcApprovalController extends Controller
             ]);
         }
 
+        // Don't render an approve form for a project that's already finished — see
+        // the matching guard in hoApprove() for why (a stray approval here would
+        // re-queue job_trans_raf and fail as a false negative against a closed job).
+        try {
+            $project = DB::connection('qms')->table('packaging_projects')
+                ->where('project_id', (string) ($row->project_id ?? ''))
+                ->first(['status', 'production_group']);
+            $status = (string) ($project->status ?? '');
+            if (in_array($status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true)) {
+                return view('qc.approval-result', [
+                    'state' => $status === 'completed' ? 'already' : 'invalid',
+                    'message' => $status === 'completed'
+                        ? 'This project is already completed — nothing left to approve.'
+                        : 'This project has been removed in the QC console — nothing left to approve.',
+                ]);
+            }
+            if ($this->isFinishedInProductionVsm($project->production_group ?? null)) {
+                return view('qc.approval-result', [
+                    'state' => 'invalid',
+                    'message' => 'This style is already reported as finished in production (VSM/D365) — approving here would fail the RAF automation against a closed job, so it has been blocked.',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Status unreadable — fall through; hoApprove()'s own guard still applies on submit.
+        }
+
         $hoSig = trim((string) ($row->ho_approval_signature ?? ''));
         $validateMode = false;
         if ($hoSig !== '') {
@@ -535,6 +561,40 @@ class QcApprovalController extends Controller
                     : 'This inspection has already received Head Office approval.',
                 'signature' => $row->ho_approval_signature,
             ]);
+        }
+
+        // Don't let a stale/duplicate approval re-queue job_trans_raf for a project
+        // that's already finished — either QC-side (completed, or removed
+        // post-completion in the console; same status set as hoSendApproval and
+        // directorStageGuard, see SubconOrder::QMS_INACTIVE_PROJECT_STATUSES), or
+        // VSM/D365-side (the style already reported finished in production, per
+        // isFinishedInProductionVsm() — that job is closed in D365 regardless of
+        // where QC's own approval chain is, so RAF would fail against it). Either
+        // way the RPA would fail and show up as a false failure. A plain 'removed'
+        // status is just a device-side archive/hide, not "finished", so it is not
+        // guarded here.
+        try {
+            $project = DB::connection('qms')->table('packaging_projects')
+                ->where('project_id', (string) ($row->project_id ?? ''))
+                ->first(['status', 'production_group']);
+            $status = (string) ($project->status ?? '');
+            if (in_array($status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true)) {
+                return view('qc.approval-result', [
+                    'state' => $status === 'completed' ? 'already' : 'invalid',
+                    'message' => $status === 'completed'
+                        ? 'This project is already completed — nothing left to approve.'
+                        : 'This project has been removed in the QC console — nothing left to approve.',
+                ]);
+            }
+            if ($this->isFinishedInProductionVsm($project->production_group ?? null)) {
+                return view('qc.approval-result', [
+                    'state' => 'invalid',
+                    'message' => 'This style is already reported as finished in production (VSM/D365) — approving here would fail the RAF automation against a closed job, so it has been blocked.',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Status unreadable — fall through; approving is still safe, it just
+            // won't be blocked by this particular guard.
         }
 
         $data = $request->validate([
@@ -2067,6 +2127,32 @@ class QcApprovalController extends Controller
         }
 
         return DB::connection('qms')->table(self::TABLE)->where('approval_token', $token)->first();
+    }
+
+    /**
+     * True when VSM has shadowed this production group as finished on the
+     * factory floor — ActualStatus = 'Finished in Production' in
+     * plm_activity_shadowing, set once all of the group's D365
+     * ProdTableBiEntities are ReportedFinished/Completed. This is distinct
+     * from packaging_projects.status: a group can be VSM-finished before QC
+     * has approved anything at all, or well after. Queuing job_trans_raf
+     * against a VSM-finished group fails in D365 (the job is already
+     * closed there) and shows up as a false RPA failure, not a real one.
+     */
+    private function isFinishedInProductionVsm(?string $productionGroup): bool
+    {
+        if (! $productionGroup) {
+            return false;
+        }
+
+        try {
+            return DB::connection('vsm')->table('plm_activity_shadowing')
+                ->where('ProductionGroup', $productionGroup)
+                ->where('ActualStatus', 'Finished in Production')
+                ->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**
