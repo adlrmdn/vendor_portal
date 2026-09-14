@@ -18,17 +18,9 @@ use Illuminate\Support\Facades\Notification;
 
 class SubconVendorController extends Controller
 {
-    public function __construct()
-    {
-        $this->middleware('auth');
-        $this->middleware(function ($request, $next) {
-            if (Auth::user()->role !== 'subcon_vendor') {
-                abort(403, 'Unauthorized access.');
-            }
-
-            return $next($request);
-        });
-    }
+    // Access is enforced by the 'auth' + 'role:subcon_vendor' middleware on
+    // the /subcon/vendor route group (routes/web.php) — every action in this
+    // controller is reached only through that group.
 
     public function dashboard()
     {

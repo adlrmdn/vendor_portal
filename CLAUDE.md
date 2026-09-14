@@ -19,7 +19,7 @@ php artisan test                               # Run all tests
 php artisan test --filter TestClassName        # Run a single test class
 php artisan test --filter testMethodName       # Run a single test method
 ```
-Tests use SQLite in-memory (`:memory:`), sync queue, and array drivers — no external services needed.
+Tests use a dedicated SQLite file (`database/database_test.sqlite`, per `phpunit.xml`), sync queue, and array drivers — no external services needed.
 
 ### Code Style
 ```bash
@@ -59,21 +59,27 @@ php artisan d365:sync-subcon-orders --dry-run --vendor=V0246  # Report only, sin
 - **Database**: PostgreSQL (production), SQLite (dev/Docker default)
 - **External DB**: Read-only `people_function` connection (PostgreSQL) for employee/approver lookups
 - **PDF**: `barryvdh/laravel-dompdf`
-- **QR Codes**: `SimpleSoftwareIO/QrCode` — stored as PNGs in `storage/app/public/qrcodes/`
+- **QR Codes**: `SimpleSoftwareIO/QrCode` — generated as inline SVG on each view (`rollQrCode()`); not persisted to disk (the `qr_code_path` column was dropped in migration `2026_08_13_000001_drop_qr_code_path_from_rolls_table`)
 - **Excel/PDF import**: `maatwebsite/excel` + `smalot/pdfparser`
 
 ### Role-Based Access
-The app spans **two business domains** — *fabric* (the original vendor portal) and *subcon* (subcontractor CMT work orders). Roles live directly on `User.role` (no Spatie layer despite the package being installed):
+The app spans **three role-based business domains** — *fabric* (the original vendor portal), *subcon* (subcontractor CMT work orders), and *finance* (cross-domain exception reporting) — plus a fourth, **unauthenticated, token-gated** QC/HO/Director approval workflow that isn't part of the role system at all (see "QC / HO / Director Approval Workflow" below). Roles live directly on `User.role` (no Spatie layer despite the package being installed):
 - `admin` / `fabric_admin` → fabric admin
 - `fabric_vendor` → fabric vendor
 - `subcon_admin` → subcon admin
 - `subcon_vendor` → subcon vendor
+- `finance_admin` → finance admin
 
-`Vendor.type` (enum `fabric|subcon`) classifies vendors per domain. `User` exposes helpers (`isFabricAdmin()`, `isSubconVendor()`, `hasFabricAccess()`, `hasSubconAccess()`, etc.). The `CheckRole` middleware (alias: `role`) enforces access. `/`, `/home` route each role to its dashboard via `match`. Routes are split into **four** prefix groups in `routes/web.php`:
+`Vendor.type` (enum `fabric|subcon`) classifies vendors per domain. `User` exposes helpers (`isFabricAdmin()`, `isSubconVendor()`, `isFabricSide()`, `isSubconSide()`, `hasFinanceAccess()`, etc.) — there is no `hasFabricAccess()`/`hasSubconAccess()`.
+
+Access is enforced by the `role:<roles>` middleware (alias for `CheckRole`, registered via `$middleware->alias()` in `bootstrap/app.php` — **not** `app/Http/Kernel.php`, which doesn't exist; this app boots entirely through `bootstrap/app.php`'s `Application::configure()`, the Laravel 11+ style, so a `Kernel.php` middleware alias array would silently never be registered), applied at the route-group level in `routes/web.php` alongside `auth`, e.g. `Route::middleware(['auth', 'role:admin,fabric_admin'])->prefix('admin')->...`. Each domain's controllers rely entirely on their group for access — they carry no auth/role check of their own. The two email-approval controllers (`ApprovalController`, `SubconApprovalController`) are the exception: most of their routes are public signed-URL links with no `auth`/`role` middleware at all (the signature *is* the authorization), so their in-app-only actions (`approveInApp`/`declineInApp`) additionally self-check the admin role via a private `authorizeAdmin()` helper as defense-in-depth, even though those specific actions also sit inside an already role-gated route group.
+
+`/`, `/home` route each role to its dashboard via `match`. Routes are split into **five** auth-scoped prefix groups in `routes/web.php`:
 - `/admin/*` → `AdminController`, `/vendor/*` → `VendorController` (fabric)
-- `/subcon/admin/*` → `SubconAdminController`, `/subcon/vendor/*` → `SubconVendorController`
+- `/subcon/admin/*` → `SubconAdminController` (+ `SubconCuttingPlanController`), `/subcon/vendor/*` → `SubconVendorController`
+- `/finance/admin/*` → `FinanceAdminController`
 
-Within a domain, the admin/vendor controllers mirror each other's actions. Admin views give cross-vendor visibility; vendor routes are implicitly scoped to the authenticated user's `vendor_id`.
+Within a domain, the admin/vendor controllers mirror each other's actions — this is literal, hand-maintained duplication, not a shared trait/base class/service (there is no `Traits`/`Concerns` directory anywhere in `app/`). `saveItemRolls` (see "Roll Processing Engine" below) is the largest instance: ~175 near-identical lines in both `AdminController` and `VendorController`. A behavior change to shared roll/packing-slip/upload logic has to be applied by hand in both places. Admin views give cross-vendor visibility; vendor routes are implicitly scoped to the authenticated user's `vendor_id`.
 
 ### Data Model
 ```
@@ -92,11 +98,11 @@ Vendor (type: fabric|subcon)
 All primary keys are UUIDs (`$incrementing = false`). UUIDs are assigned in each model's `creating` boot hook.
 
 ### Roll Processing Engine
-`VendorController@saveItemRolls` is the most complex method in the app. Key invariants:
+`VendorController@saveItemRolls` (duplicated in `AdminController@saveItemRolls` — see "Role-Based Access" above) is the most complex method in the app. Key invariants:
 - **Roll number format**: `{PO_NUMBER}-{ITEM_NUMBER}-{sequence:03d}`
 - **Unit-to-column mapping**: `YD` → `length_yd`, `M` → `length_m`, `KG` → `weight`
-- **Re-sequencing**: on save, first deletes marked rolls + their QR files, then re-indexes remaining rolls to maintain a continuous `sequence`
-- **Transactions**: all mutations are wrapped in `DB::beginTransaction()`
+- **Re-sequencing**: happens only inside `saveItemRolls` — on save, rows flagged `delete=1` are removed first, then the remaining rows are re-indexed to a continuous `sequence` (and `roll_number`, which embeds it) in one transaction. There is a separate standalone `deleteRoll` endpoint (`POST /{admin,vendor}/rolls/{roll}/delete`) that deletes a single roll without re-sequencing its siblings, but it is not called from any current view/JS asset — the UI's per-row delete only flags `delete=1` locally and re-sequences on the next `saveItemRolls` submit. If something is ever wired to that standalone endpoint again, re-sequencing must be added to it or a save-time gap will result.
+- **Transactions**: all mutations are wrapped in `DB::beginTransaction()`/`DB::rollBack()` (catching `\Throwable`, not just `\Exception`, so a `TypeError` mid-save can't skip the rollback and leave an open transaction)
 
 ### Tolerance & Partial Shipment Flow
 1. Vendor submits a tolerance amendment or partial shipment request → stored in `ToleranceAmendmentRequest`
@@ -124,7 +130,7 @@ Both follow the same shape: fetch headers (filtered by pool/vendor + Confirmed +
 ### Subcon Module
 `SubconProductionService::forPo($poNumber)` resolves a subcon CMT PO to its garment production detail in `vsm`: the PO line only carries a generic "Item Jasa CMT" service item, so the real garment is reached via `po_lines.PLMId → plm_activity.ProductionGroup → production_group_lines` (per-size). Returns `[]` (best-effort) if VSM is unreachable or the PO has no PLM link.
 
-**Staged approval workflow** (`SubconOrder.workflow_stage`): the vendor portal is gated through `cutting → cutting_review → gramasi → gramasi_review → waiting_distribution → labels → completed`. Stage 1 the vendor submits the **cutting report** (qty/size) for approval (`submitCuttingReport`); on approval the "original mechanism" starts (D365 cutting-qty sync). A cutting submission can be flagged **partial** (`SubconOrder.cutting_partial`, toggle on the vendor form, default off): the flag is carried on the approval email/forms, and approving a partial report returns the order to `cutting` (instead of `gramasi`) so the vendor can submit the remaining quantities. The flag is set on every submit, so a final (non-partial) submit clears it. Stage 2 the vendor enters **gramasi (kg) + a single `blister_capacity`** (one value across all sizes, stored on the order) and submits (`submitGramasi`); gramasi syncs to D365 on save. On gramasi approval, label printing unlocks and the vendor can `completeOrder`. Approvals run through `SubconApprovalController`, reachable **both** in-app (subcon admin Approve/Reject panel) and via **signed-URL links in the approval email** (`subcon.approve`/`subcon.decline`, `{order}/{gate}` where gate ∈ `cutting|gramasi`). `printPackagingLabels` and the stage forms are all gated by `SubconOrder` helpers (`canEditCutting/canEditGramasi/canPrintLabels/canComplete`). The shared `subcon/partials/production-detail` partial takes a `$mode` of `cutting|gramasi|view` to control which column is editable.
+**Staged approval workflow** (`SubconOrder.workflow_stage`): the vendor portal is gated through `cutting → cutting_review → gramasi → gramasi_review → waiting_distribution → labels → completed`. Stage 1 the vendor submits the **cutting report** (qty/size) for approval (`submitCuttingReport`); on approval the "original mechanism" starts (D365 cutting-qty sync). A cutting submission can be flagged **partial** (`SubconOrder.cutting_partial`, toggle on the vendor form, default off): the flag is carried on the approval email/forms, and approving a partial report returns the order to `cutting` (instead of `gramasi`) so the vendor can submit the remaining quantities. The flag is set on every submit, so a final (non-partial) submit clears it. Stage 2 the vendor enters **gramasi (kg) + a single `blister_capacity`** (one value across all sizes, stored on the order) and submits (`submitGramasi`); gramasi syncs to D365 on save. On gramasi approval, label printing unlocks and the vendor can `completeOrder`. Approvals run through `SubconApprovalController`, reachable **both** in-app (subcon admin Approve/Reject panel) and via **signed-URL links in the approval email** (`subcon.approve`/`subcon.decline`, `{order}/{gate}` where gate ∈ `cutting|gramasi`). Both gates' GET link only renders a confirm/form page — cutting opens the consumption form (POSTs to `subcon.approve.cutting.submit`), gramasi opens a plain confirm page (POSTs to `subcon.approve.submit`) — neither mutates on GET, for the same link-scanner-prefetch reason as the QC/HO/Director links below. `printPackagingLabels` and the stage forms are all gated by `SubconOrder` helpers (`canEditCutting/canEditGramasi/canPrintLabels/canComplete`). The shared `subcon/partials/production-detail` partial takes a `$mode` of `cutting|gramasi|view` to control which column is editable.
 
 **Cutting gate = "calculate + approve" (merged).** The cutting approval is *not* a bare approve: the approver enters per-fabric **consumption** (Fabric Sent + Cons. Plan) and the portal derives, per the agreed spreadsheet schema:
 - `cutt_plan = ROUNDDOWN((fabric_sent − retur_kain) / consumption_plan, 0)` — same retur_kain-only subtraction as actual_consumption
@@ -139,13 +145,29 @@ The **four waste columns (Short Roll / Sisa Kain / Kepala Kain / Retur Kain) are
 - **No-login signed email link** — the cutting email's Approve link opens `subcon/cutting-approval-form` (`approveSigned` renders it for gate `cutting`); the form POSTs to the signed `subcon.approve.cutting.submit` (`approveCuttingSubmit`). This preserves the old HO-style no-login consumption+approve UX, relocated to the cutting gate.
 - **In-app admin panel** — the order-view Approve button submits the consumption inputs (`approveInApp`, gate `cutting`). The **Approvals tab** deep-links cutting to the order page instead of one-click approving (Reject stays one-click; gramasi keeps one-click Approve).
 
-The shared calc/persist lives in `SubconConsumptionService::persist()`; `applyCuttingApproval()` in `SubconApprovalController` wraps it + the stage transition. The **final/HO stage is approve-only** — `QcApprovalController@hoApprove` *reads* the snapshot (`SubconProductionService::fabricLinesWithData()`) and pushes it to the QMS-owned `packaging_project_fabric_lines` (never re-enters or recomputes it). The `consumption-input` partial is inputs-only (no `<form>`); callers wrap it in the approving form.
+The shared calc/persist lives in `SubconConsumptionService::persist()`; `applyCuttingApproval()` in `SubconApprovalController` wraps it + the stage transition. The **HO stage is NOT approve-only** — it mirrors cutting's "calculate + approve" shape: `QcApprovalController@hoApprove` (and `hoSendApproval`, see below) *recompute and overwrite* the same consumption snapshot via the same `SubconConsumptionService::persist()`, from whatever figures MD Production enters/revises on the HO form, before publishing to the QMS-owned `packaging_project_fabric_lines`. See "QC / HO / Director Approval Workflow" below for the full chain. The `consumption-input` partial is inputs-only (no `<form>`); callers wrap it in the approving form.
 
 **Emails** (`SubconApprovalRequestMailable` → approver, `SubconStageStatusMailable` → vendor): SMTP, `from: rpa@megaperintis.co.id`, sent synchronously (try/catch — never blocks the submit/approval). Recipients resolve via `Setting` `subcon_approver_email` / `subcon_notification_email`, both **defaulting to `adil.ramadhan@megaperintis.co.id` for testing**. NOTE: the SMTP account is a Gmail (`rpa.megaperintis@gmail.com`); the `rpa@megaperintis.co.id` From only survives if it is a verified "Send mail as" alias on that account.
 
 **Cutting report → D365 job-transaction sync** (`D365JobTransactionService`): only *changed* rows are synced. `D365JobTransactionService` `startJobs()` for the production group then `syncReportToD365()` PATCHes `JobTransactionLinesDetails` over OData. D365 failures are caught and surfaced as a soft warning — the local save always succeeds. (`SubconOrder.job_trans_status` is the older sync state machine, superseded for gating by `workflow_stage`.)
 
-**Packaging labels** (`printPackagingLabels` in both subcon controllers): requires `SubconOrder.distribution_id`. Fetches D365 DTLines (`fetchDTLines`) + warehouses (`fetchWarehouses`), groups by `PackingCode`/`StoreID`, multiplies qty × per-size `gramasi` (from local cutting reports, default 157.5) for box weights, then streams a DomPDF (`subcon/pdf/packaging-labels`). Note: D365 DTLine rows are sparse — access keys with `??`, never `?:`, and sanitise `order_number` (contains `/`) before using it as a download filename.
+**Packaging labels** (`printPackagingLabels` in both subcon controllers): requires `SubconOrder.distribution_id`. Fetches D365 DTLines (`fetchDTLines`) + warehouses (`fetchWarehouses`), groups by `PackingCode`/`StoreID`, multiplies qty × per-size `gramasi` (from local `subcon_cutting_reports`; a size with no saved gramasi falls back to the last-known size's gramasi, or `0.0` if none exist yet — there is no hardcoded default weight) for box weights, then streams a DomPDF (`subcon/pdf/packaging-labels`). Note: D365 DTLine rows are sparse — access keys with `??`, never `?:`, and sanitise `order_number` (contains `/`) before using it as a download filename.
+
+### QC / HO / Director Approval Workflow (QC Console integration)
+A separate, **unauthenticated**, token-gated workflow layered on top of `SubconOrder` — it starts only after a work order reaches `STAGE_WAITING_DISTRIBUTION`/`labels` in the staged approval workflow above. It's driven by an external Tauri desktop app (the "QC Console", a separate repo) that inspectors use on the factory floor; factory reps, MD Production, and the Director have no portal login, so every stage is reached via a link in an emailed notification. All of it lives in `QcApprovalController` (2,200+ lines — the largest controller in the app) and reads/writes the **`qms`** connection (a database owned by the QC Console, not this app), primarily the `packaging_project_sessions` table.
+
+**Auth model**: the console generates its own emails, so Laravel can't HMAC-sign these URLs (no `signed:relative` middleware). Instead, a random UUID `approval_token` stored on the session row *is* the bearer credential — `findByToken()` resolves it. Column ownership is split by contract with the console: e.g. `factory_representative` (the inspector's manual name entry) is console-owned and never written here; `approval_signature`/`ho_approval_signature`/`director_approval_signature` are portal-owned.
+
+**Stages** (each identified by which signature column is being written):
+1. **QC / Factory Representative** — `approve`/`reject` (routes `/qc/approve/{token}`, `/qc/reject/{token}`). Writes `approval_signature`/`approval_status` on the session row. On approval, chains to stage 2 by emailing the HO link (`sendHoApprovalRequest`).
+2a. **HO "Review & Approve"** (MD Production) — `hoApprovalForm`/`hoApprove`. The approver enters/revises per-fabric consumption (same inputs and `SubconConsumptionService::persist()` engine as the cutting gate — **this recomputes and overwrites** the fabric reconciliation snapshot, it is not read-only) plus deductions and material-return reconciliation, republishes fabric lines to QMS (`SubconFabricLinePublisher`), writes `ho_approval_signature`, and queues the `job_trans_raf` RPA job (skipped, but the approval/signature/PDF still proceed, if VSM already shows the style finished in production). Does **not** yet notify the Director.
+2b. **HO "Validate & Send"** — `hoSendApproval`. A second, explicit step (split from 2a in commit `0c67f9a`) where MD Production can revise the same figures one last time before the Director sees them; gated on the Material Flow return-check being resolved (`MaterialReturnService::isReturnCheckPending`) — if blocked, the revision is still saved, only the send is deferred. Claims idempotency via `ho_validation_signature`, republishes fabric lines again, then emails the Director.
+3. **Director** — `directorApprovalForm`/`directorApprove`/`directorDecline`. Read-only review (no recomputation) of both prior signatures; approval writes `director_approval_signature`, queues the Invoice/Deduction RPA jobs, and completes the project. Rejection returns to stage 2a (MD Production), not to QC.
+
+**Prefetch-safe GET/POST split**: email links in this controller land in corporate mailboxes whose security scanners (Microsoft Safe Links, antivirus, mail gateways) prefetch every URL via GET. A GET that mutates lets the scanner silently approve/reject before a human opens the email. Every mutating action in this controller is therefore reached only via POST, behind a GET that renders a confirm page and writes nothing (`approve`/`approveSubmit`, `reject`/`rejectSubmit`, `hoDeclineForm`/`hoDecline`, `directorDeclineForm`/`directorDecline`). The same pattern is used for the fabric tolerance email links (`ApprovalController`) and the subcon cutting/gramasi email links (`SubconApprovalController::approveSigned`/`declineSigned`) — a mutating GET on any of these is a regression, not a stylistic choice.
+
+### Finance Admin
+`FinanceAdminController` (`/finance/admin/*`, role `admin|finance_admin`) is cross-domain exception reporting, not a workflow of its own — it reads fabric and subcon data but never mutates a `PurchaseOrder`/`SubconOrder`. Two reports: **Pending Payment** — subcon CMT POs the `vsm` connection already shows `Received` but that have never had an `invoice` row queued in `rpa_queues` at all (a gap report, not a status filter — matched by substring against every historical `invoice` payload's `PO` field, since that field has carried more than one PO comma-joined); **Fabric Delivery** — fabric PO lines that shipped outside their original delivery tolerance (`FabricDeliveryToleranceService`). Also lists RPA-queued invoices/debit notes and lets an admin toggle their finance-checked status (`FinanceRpaCheck`).
 
 ### Settings
 `Setting::getValue($key, $default)` is the single lookup point for runtime configuration (e.g. `default_underdelivery`, `default_overdelivery`, `Approval`, `admin_notification_email`). Managed via the Admin settings UI.
@@ -155,5 +177,8 @@ The shared calc/persist lives in `SubconConsumptionService::persist()`; `applyCu
 - `resources/views/layouts/vendor.blade.php` — vendor shell
 - `resources/views/admin/` and `resources/views/vendor/` — fabric role-scoped pages
 - `resources/views/subcon/{admin,vendor}/` — subcon role-scoped pages; `resources/views/subcon/pdf/` — DomPDF templates (packaging labels); `resources/views/subcon/partials/production-detail.blade.php` — shared VSM production detail
+- `resources/views/finance/` — finance admin pages; `resources/views/finance/pdf/` — DomPDF templates
+- `resources/views/qc/` — QC/HO/Director approval workflow pages (no-login, token-gated — see "QC / HO / Director Approval Workflow")
+- `resources/views/approvals/` — shared confirm/result pages for the fabric tolerance and subcon cutting/gramasi email-approval links
 - `resources/views/vendor/pdf/packing-slip.blade.php` — DomPDF template for packing slips
 - `resources/views/custom-pagination.blade.php` — overrides default Bootstrap pagination to fix SVG icon rendering

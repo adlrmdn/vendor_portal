@@ -26,17 +26,10 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class SubconAdminController extends Controller
 {
-    public function __construct(private RpaQueueReadService $rpaQueueReader, private QcReportPdfService $reportPdf)
-    {
-        $this->middleware('auth');
-        $this->middleware(function ($request, $next) {
-            if (! in_array(Auth::user()->role, ['admin', 'subcon_admin'])) {
-                abort(403, 'Unauthorized access.');
-            }
-
-            return $next($request);
-        });
-    }
+    // Access is enforced by the 'auth' + 'role:admin,subcon_admin' middleware
+    // on the /subcon/admin route group (routes/web.php) — every action in
+    // this controller is reached only through that group.
+    public function __construct(private RpaQueueReadService $rpaQueueReader, private QcReportPdfService $reportPdf) {}
 
     public function dashboard()
     {

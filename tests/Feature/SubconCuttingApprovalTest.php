@@ -78,6 +78,53 @@ class SubconCuttingApprovalTest extends TestCase
         $response->assertSee('Cutting Report Approval');
     }
 
+    /**
+     * Regression test: a plain GET on the gramasi approve link must NOT
+     * mutate — it must render a confirm page, exactly like decline already
+     * does. Link-prescanning bots (Outlook Safe Links, mail gateways) fetch
+     * every URL in an email via GET; a mutating GET here would let a scanner
+     * silently approve the gate before a human ever opened the email.
+     */
+    public function test_signed_gramasi_approve_link_renders_confirm_page_without_mutating()
+    {
+        $vendor = $this->makeVendor();
+        $order = $this->makeOrder($vendor, SubconOrder::STAGE_GRAMASI_REVIEW);
+
+        $url = URL::signedRoute('subcon.approve', ['order' => $order->id, 'gate' => 'gramasi'], absolute: false);
+
+        // No actingAs — this must work without a login.
+        $response = $this->get($url);
+
+        $response->assertStatus(200);
+        $response->assertViewIs('subcon.approve-confirm');
+        $response->assertSee('Approve the gramasi');
+
+        $order->refresh();
+        $this->assertSame(SubconOrder::STAGE_GRAMASI_REVIEW, $order->workflow_stage, 'GET must not have advanced the workflow stage.');
+    }
+
+    public function test_signed_gramasi_approve_submit_advances_the_stage()
+    {
+        Queue::fake();
+        Mail::fake();
+
+        $vendor = $this->makeVendor();
+        $order = $this->makeOrder($vendor, SubconOrder::STAGE_GRAMASI_REVIEW);
+
+        $url = URL::signedRoute('subcon.approve.submit', ['order' => $order->id, 'gate' => 'gramasi'], absolute: false);
+
+        $response = $this->withoutMiddleware(ValidateCsrfToken::class)->post($url);
+
+        $response->assertStatus(200);
+        $response->assertViewIs('approvals.result');
+        $response->assertViewHas('success', true);
+
+        $order->refresh();
+        $this->assertSame(SubconOrder::STAGE_WAITING_DISTRIBUTION, $order->workflow_stage);
+
+        Queue::assertPushed(SyncSubconReportToD365::class);
+    }
+
     public function test_signed_cutting_submit_saves_consumption_and_approves_atomically()
     {
         Queue::fake();

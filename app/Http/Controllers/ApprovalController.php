@@ -150,7 +150,7 @@ class ApprovalController extends Controller
             $msgType = $amendmentRequest->type === 'partial_shipment' ? 'Partial shipment' : 'Tolerance amendment';
 
             return ['ok' => true, 'message' => $msgType.' for Item '.$amendmentRequest->poItem->item_number.' has been approved.'];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::rollBack();
 
             return ['ok' => false, 'message' => 'Error approving request: '.$e->getMessage()];

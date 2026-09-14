@@ -17,20 +17,13 @@ class FinanceAdminController extends Controller
 {
     private const PER_PAGE = 25;
 
+    // Access is enforced by the 'auth' + 'role:admin,finance_admin' middleware
+    // on the /finance/admin route group (routes/web.php) — every action in
+    // this controller is reached only through that group.
     public function __construct(
         private RpaQueueReadService $rpaQueueReader,
         private FabricDeliveryToleranceService $fabricDeliveryTolerance,
-    ) {
-        $this->middleware('auth');
-
-        $this->middleware(function ($request, $next) {
-            if (! in_array(Auth::user()->role, ['admin', 'finance_admin'])) {
-                abort(403, 'Unauthorized access.');
-            }
-
-            return $next($request);
-        });
-    }
+    ) {}
 
     public function dashboard()
     {

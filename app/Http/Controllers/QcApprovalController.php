@@ -43,6 +43,19 @@ class QcApprovalController extends Controller
      */
     private const WA_CHANNEL_TAG = '[Subcon Vendor Portal]';
 
+    /**
+     * Confirmation interstitial for the stage-1 (Factory Representative) approve
+     * link (GET). Renders a page with a button that POSTs to approveSubmit — it
+     * performs NO write itself.
+     *
+     * Why this exists: like the HO/Director decline links, this email lands in
+     * mailboxes whose security scanners (Microsoft Safe Links / antivirus, or a
+     * factory's own mail gateway) prefetch every URL via GET to check for
+     * malware. A mutating GET here would let that prefetch silently approve the
+     * inspection before a human ever saw the email. Moving the write behind a
+     * POST that only a real click submits neutralises the prefetch — same
+     * pattern as hoDecline/directorDecline, now applied to approve/reject too.
+     */
     public function approve(Request $request, string $token)
     {
         // 1. Resolve the row by its unguessable bearer token.
@@ -56,6 +69,41 @@ class QcApprovalController extends Controller
         }
 
         // 2. Already actioned? Idempotent — don't re-sign / don't flip a rejection.
+        if (($row->approval_status ?? null) === 'approved' || ! empty($row->approval_signature)) {
+            return view('qc.approval-result', [
+                'state' => 'already',
+                'message' => 'This inspection has already been approved.',
+                'signature' => $row->approval_signature,
+            ]);
+        }
+        if (($row->approval_status ?? null) === 'rejected') {
+            return view('qc.approval-result', [
+                'state' => 'rejected',
+                'message' => 'This inspection has already been rejected and cannot be approved.',
+            ]);
+        }
+
+        return view('qc.approve-confirm', ['token' => $token, 'row' => $row]);
+    }
+
+    /**
+     * Stage-1 approval write. Reached only via POST (from the confirm page
+     * approve() renders) so email link scanners that prefetch the GET link
+     * can't trigger an approval.
+     */
+    public function approveSubmit(Request $request, string $token)
+    {
+        $row = $this->findByToken($token);
+
+        if (! $row) {
+            return view('qc.approval-result', [
+                'state' => 'invalid',
+                'message' => 'This approval link is invalid or has expired.',
+            ]);
+        }
+
+        // Re-check idempotency: time may have passed since the confirm page
+        // was rendered (another click, or a race).
         if (($row->approval_status ?? null) === 'approved' || ! empty($row->approval_signature)) {
             return view('qc.approval-result', [
                 'state' => 'already',
@@ -132,11 +180,48 @@ class QcApprovalController extends Controller
     }
 
     /**
+     * Confirmation interstitial for the stage-1 reject link (GET). Renders a
+     * page with a button that POSTs to rejectSubmit — it performs NO write
+     * itself. Same prefetch-scanner rationale as approve() above.
+     */
+    public function reject(Request $request, string $token)
+    {
+        $row = $this->findByToken($token);
+
+        if (! $row) {
+            return view('qc.approval-result', [
+                'state' => 'invalid',
+                'message' => 'This approval link is invalid or has expired.',
+            ]);
+        }
+
+        // Already approved & signed — too late to reject.
+        if (($row->approval_status ?? null) === 'approved' || ! empty($row->approval_signature)) {
+            return view('qc.approval-result', [
+                'state' => 'already',
+                'message' => 'This inspection has already been approved and cannot be rejected.',
+                'signature' => $row->approval_signature,
+            ]);
+        }
+
+        // Already rejected — idempotent.
+        if (($row->approval_status ?? null) === 'rejected') {
+            return view('qc.approval-result', [
+                'state' => 'rejected',
+                'message' => 'This inspection has already been rejected.',
+            ]);
+        }
+
+        return view('qc.reject-confirm', ['token' => $token, 'row' => $row]);
+    }
+
+    /**
      * Records a rejection so the QC Console can detect it. Writes only
      * `approval_status = 'rejected'` (+ audit) — never `factory_representative`
      * (the inspector's manual name) nor `approval_signature` (the sign-off stamp).
+     * Reached only via POST (from the confirm page reject() renders).
      */
-    public function reject(Request $request, string $token)
+    public function rejectSubmit(Request $request, string $token)
     {
         $row = $this->findByToken($token);
 

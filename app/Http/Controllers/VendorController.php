@@ -17,17 +17,9 @@ use Smalot\PdfParser\Parser as PdfParser;
 
 class VendorController extends Controller
 {
-    public function __construct()
-    {
-        $this->middleware('auth');
-        $this->middleware(function ($request, $next) {
-            if (Auth::user()->role !== 'fabric_vendor') {
-                abort(403, 'Unauthorized access.');
-            }
-
-            return $next($request);
-        });
-    }
+    // Access is enforced by the 'auth' + 'role:fabric_vendor' middleware on
+    // the /vendor route group (routes/web.php) — every action in this
+    // controller is reached only through that group.
 
     public function dashboard()
     {
@@ -63,7 +55,7 @@ class VendorController extends Controller
                         ->where('batch', 'not like', '%-P%');
                 },
             ])
-            ->with('items:id,po_id,status') // Eager load for button logic
+            ->with('items:id,po_id,status,item_number,batch') // Eager load for button logic + Items column
             ->orderBy('created_at', 'desc')
             ->limit(10)
             ->get();
@@ -395,7 +387,7 @@ class VendorController extends Controller
             return redirect()->route('vendor.item.process', $itemId)
                 ->with('success', $message);
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             \DB::rollBack();
 
             return redirect()->back()->with('error', 'Error: '.$e->getMessage());

@@ -54,7 +54,7 @@ Route::get('/', function () {
 });
 
 // Admin Routes
-Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () {
+Route::middleware(['auth', 'role:admin,fabric_admin'])->prefix('admin')->name('admin.')->group(function () {
     Route::get('/dashboard', [AdminController::class, 'dashboard'])->name('dashboard');
     Route::get('/purchase-orders', [AdminController::class, 'purchaseOrders'])->name('purchase-orders');
     Route::get('/purchase-order/{id}', [AdminController::class, 'viewPurchaseOrder'])->name('purchase-order.view');
@@ -102,7 +102,7 @@ Route::middleware(['auth'])->prefix('admin')->name('admin.')->group(function () 
 });
 
 // Finance Admin Routes
-Route::middleware(['auth'])->prefix('finance/admin')->name('finance.admin.')->group(function () {
+Route::middleware(['auth', 'role:admin,finance_admin'])->prefix('finance/admin')->name('finance.admin.')->group(function () {
     Route::get('/dashboard', [FinanceAdminController::class, 'dashboard'])->name('dashboard');
     Route::get('/pending-payment', [FinanceAdminController::class, 'pendingPayment'])->name('pending-payment');
     Route::get('/pending-payment/export', [FinanceAdminController::class, 'pendingPaymentExport'])->name('pending-payment.export');
@@ -116,7 +116,7 @@ Route::middleware(['auth'])->prefix('finance/admin')->name('finance.admin.')->gr
 });
 
 // Vendor Routes
-Route::middleware(['auth'])->prefix('vendor')->name('vendor.')->group(function () {
+Route::middleware(['auth', 'role:fabric_vendor'])->prefix('vendor')->name('vendor.')->group(function () {
     Route::get('/dashboard', [VendorController::class, 'dashboard'])->name('dashboard');
     Route::get('/purchase-orders', [VendorController::class, 'purchaseOrders'])->name('purchase-orders');
     Route::get('/purchase-order/{id}', [VendorController::class, 'viewPurchaseOrder'])->name('purchase-order.view');
@@ -154,7 +154,7 @@ Route::get('/tolerance/decline/{request}', [App\Http\Controllers\ApprovalControl
 Route::post('/tolerance/decline-submit/{request}', [App\Http\Controllers\ApprovalController::class, 'declineAmendmentSubmit'])->name('tolerance.decline.submit')->middleware('signed:relative');
 
 // Subcon Admin Routes
-Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->group(function () {
+Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->name('subcon.admin.')->group(function () {
     Route::get('/dashboard', [SubconAdminController::class, 'dashboard'])->name('dashboard');
     Route::get('/invoices', [SubconAdminController::class, 'invoices'])->name('invoices');
     Route::get('/invoices/report/{id}', [SubconAdminController::class, 'invoiceReport'])->name('invoices.report');
@@ -202,6 +202,8 @@ Route::middleware(['auth'])->prefix('subcon/admin')->name('subcon.admin.')->grou
 Route::get('/subcon/approve/{order}/{gate}', [SubconApprovalController::class, 'approveSigned'])->name('subcon.approve')->middleware('signed:relative');
 // No-login cutting-approval form submit (consumption + approve). Signed POST.
 Route::post('/subcon/approve-cutting/{order}', [SubconApprovalController::class, 'approveCuttingSubmit'])->name('subcon.approve.cutting.submit')->middleware('signed:relative');
+// No-login gramasi-approval confirm submit. Signed POST.
+Route::post('/subcon/approve-submit/{order}/{gate}', [SubconApprovalController::class, 'approveSubmit'])->name('subcon.approve.submit')->middleware('signed:relative');
 Route::get('/subcon/decline/{order}/{gate}', [SubconApprovalController::class, 'declineSigned'])->name('subcon.decline')->middleware('signed:relative');
 // No-login decline-confirm form submit (reason + decline). Signed POST.
 Route::post('/subcon/decline-submit/{order}/{gate}', [SubconApprovalController::class, 'declineSubmit'])->name('subcon.decline.submit')->middleware('signed:relative');
@@ -209,9 +211,13 @@ Route::get('/subcon/generate-labels/{order}', [SubconApprovalController::class, 
 
 // QC Console packaging-approval link (from the Tauri console's email).
 // Public route: factory reps have no portal login; the random `approval_token`
-// stored on the QMS session row IS the credential. GET so an email click works.
+// stored on the QMS session row IS the credential. GET renders a confirm page
+// (link-scanner prefetch safe — see QcApprovalController::approve/reject);
+// the actual write happens on the POST a real click submits.
 Route::get('/qc/approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'approve'])->name('qc.approve');
+Route::post('/qc/approve/{token}', [App\Http\Controllers\QcApprovalController::class, 'approveSubmit'])->name('qc.approve.submit');
 Route::get('/qc/reject/{token}', [App\Http\Controllers\QcApprovalController::class, 'reject'])->name('qc.reject');
+Route::post('/qc/reject/{token}', [App\Http\Controllers\QcApprovalController::class, 'rejectSubmit'])->name('qc.reject.submit');
 
 // HO (Head Office) approval — second stage, emailed to our approver list after
 // the vendor confirms. Same `approval_token` (the contract keys both stages off
@@ -250,7 +256,7 @@ Route::get('/qc/document/{token}', [App\Http\Controllers\QcApprovalController::c
 Route::get('/qc/print/{projectId}/{sessionId}', [App\Http\Controllers\QcApprovalController::class, 'printDraft'])->name('qc.print-draft');
 
 // Subcon Vendor Routes
-Route::middleware(['auth'])->prefix('subcon/vendor')->name('subcon.vendor.')->group(function () {
+Route::middleware(['auth', 'role:subcon_vendor'])->prefix('subcon/vendor')->name('subcon.vendor.')->group(function () {
     Route::get('/dashboard', [SubconVendorController::class, 'dashboard'])->name('dashboard');
     Route::get('/orders', [SubconVendorController::class, 'orders'])->name('orders');
     Route::get('/orders/{id}', [SubconVendorController::class, 'viewOrder'])->name('orders.view');

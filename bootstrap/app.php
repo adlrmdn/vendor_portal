@@ -21,6 +21,13 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->validateCsrfTokens(except: [
             'rpa/deduction/*/finalize',
         ]);
+        // This app boots via this file (Laravel 11+ style), not app/Http/Kernel.php
+        // — that class is unreferenced dead code, so its middlewareAliases array
+        // (including 'role') was never actually registered. Route groups in
+        // routes/web.php depend on 'role:<roles>' resolving, so it's aliased here.
+        $middleware->alias([
+            'role' => \App\Http\Middleware\CheckRole::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

@@ -143,6 +143,37 @@ class SubconApprovalController extends Controller
             ]);
         }
 
+        // Gramasi (the only other gate doApprove() accepts): a plain one-click
+        // approval, unlike cutting's consumption form. GET must not mutate here
+        // either — the same email-scanner prefetch risk as decline (see
+        // declineSigned) applies to approve, so this renders a confirm page and
+        // the actual write happens on the signed POST (approveSubmit) below.
+        if (! in_array($gate, ['gramasi'], true)) {
+            return view('approvals.result', [
+                'success' => false,
+                'message' => 'Unknown approval stage.',
+            ]);
+        }
+
+        if ($model->workflow_stage !== SubconOrder::STAGE_GRAMASI_REVIEW) {
+            return view('approvals.result', [
+                'success' => false,
+                'message' => 'This request is no longer awaiting approval (current stage: '.$model->stageLabel().').',
+            ]);
+        }
+
+        return view('subcon.approve-confirm', [
+            'order' => $model,
+            'gate' => $gate,
+            'submitUrl' => url(URL::signedRoute('subcon.approve.submit', ['order' => $model->id, 'gate' => $gate], absolute: false)),
+        ]);
+    }
+
+    /** No-login submit of the approve-confirm form (gramasi gate) — records the approval. */
+    public function approveSubmit(Request $request, string $order, string $gate)
+    {
+        $model = SubconOrder::with('vendor')->findOrFail($order);
+
         $result = $this->doApprove($model, $gate, 'Email approval', 'email');
 
         return view('approvals.result', ['success' => $result['ok'], 'message' => $result['message']]);

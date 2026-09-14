@@ -7,7 +7,6 @@ use App\Models\PurchaseOrder;
 use App\Models\User;
 use App\Models\Vendor;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth; // Add this import
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
@@ -15,18 +14,9 @@ use Smalot\PdfParser\Parser as PdfParser;
 
 class AdminController extends Controller
 {
-    public function __construct()
-    {
-        $this->middleware('auth');
-
-        $this->middleware(function ($request, $next) {
-            if (! in_array(Auth::user()->role, ['admin', 'fabric_admin'])) {
-                abort(403, 'Unauthorized access.');
-            }
-
-            return $next($request);
-        });
-    }
+    // Access is enforced by the 'auth' + 'role:admin,fabric_admin' middleware
+    // on the /admin route group (routes/web.php) — every action in this
+    // controller is reached only through that group.
 
     public function dashboard()
     {
@@ -52,7 +42,7 @@ class AdminController extends Controller
                         ->where('batch', 'not like', '%-P%');
                 },
             ])
-            ->with('items:id,po_id,status')
+            ->with('items:id,po_id,status,item_number,batch')
             ->orderBy('created_at', 'desc')
             ->limit(10)
             ->get();
@@ -121,7 +111,10 @@ class AdminController extends Controller
             });
         }
 
-        if ($status) {
+        if ($status === 'active') {
+            // Matches the dashboard's "Active POs" stat (pending + processing).
+            $query->whereIn('status', ['pending', 'processing']);
+        } elseif ($status) {
             $query->where('status', $status);
         }
 
@@ -179,11 +172,11 @@ class AdminController extends Controller
             $query->where(function ($q) use ($search) {
                 $term = '%'.strtolower($search).'%';
                 $q->whereRaw('LOWER(name) LIKE ?', [$term])
-                  ->orWhereRaw('LOWER(vendor_code) LIKE ?', [$term])
-                  ->orWhereRaw('LOWER("group") LIKE ?', [$term])
-                  ->orWhereHas('users', function ($userQuery) use ($term) {
-                      $userQuery->whereRaw('LOWER(email) LIKE ?', [$term]);
-                  });
+                    ->orWhereRaw('LOWER(vendor_code) LIKE ?', [$term])
+                    ->orWhereRaw('LOWER("group") LIKE ?', [$term])
+                    ->orWhereHas('users', function ($userQuery) use ($term) {
+                        $userQuery->whereRaw('LOWER(email) LIKE ?', [$term]);
+                    });
             });
         }
 
@@ -655,7 +648,7 @@ class AdminController extends Controller
 
             return redirect()->route('admin.item.process', $itemId)->with('success', 'Saved successfully.');
 
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::rollBack();
 
             return redirect()->back()->with('error', 'Error: '.$e->getMessage());

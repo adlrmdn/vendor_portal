@@ -6,22 +6,13 @@ use App\Models\SubconCuttingPlanBlock;
 use App\Models\SubconOrder;
 use App\Services\SubconCuttingPlanService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 class SubconCuttingPlanController extends Controller
 {
-    public function __construct()
-    {
-        $this->middleware('auth');
-        $this->middleware(function ($request, $next) {
-            if (! in_array(Auth::user()->role, ['admin', 'subcon_admin'])) {
-                abort(403, 'Unauthorized access.');
-            }
-
-            return $next($request);
-        });
-    }
+    // Access is enforced by the 'auth' + 'role:admin,subcon_admin' middleware
+    // on the /subcon/admin route group (routes/web.php) — both actions in
+    // this controller are reached only through that group.
 
     public function show(string $id, SubconCuttingPlanService $service)
     {

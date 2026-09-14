@@ -867,7 +867,18 @@ class QcDirectorApprovalTest extends TestCase
         // (validating the blade) and lands in the transport buffer.
         $this->seedFreshUnapprovedSession();
 
+        // GET only renders a confirm page (link-scanner prefetch safe) — no
+        // write happens until the confirm form's POST below.
         $this->get(route('qc.reject', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('Reject this inspection?');
+
+        $unmutated = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)->first();
+        $this->assertNull($unmutated->approval_status, 'GET must not have written approval_status.');
+        $this->assertNull($unmutated->approval_signature, 'GET must not have written approval_signature.');
+
+        $this->post(route('qc.reject.submit', ['token' => $this->token]))
             ->assertOk()
             ->assertSee('Rejection recorded');
 
@@ -1134,7 +1145,18 @@ class QcDirectorApprovalTest extends TestCase
 
         $this->seedFreshUnapprovedSession();
 
-        $this->get(route('qc.approve', ['token' => $this->token]))->assertOk();
+        // GET only renders a confirm page (link-scanner prefetch safe) — no
+        // write happens until the confirm form's POST below.
+        $this->get(route('qc.approve', ['token' => $this->token]))
+            ->assertOk()
+            ->assertSee('Approve this inspection?');
+
+        $unmutated = DB::connection('qms')->table('packaging_project_sessions')
+            ->where('session_id', $this->sessionId)->first();
+        $this->assertNull($unmutated->approval_status, 'GET must not have written approval_status.');
+        $this->assertNull($unmutated->approval_signature, 'GET must not have written approval_signature.');
+
+        $this->post(route('qc.approve.submit', ['token' => $this->token]))->assertOk();
 
         Queue::assertPushed(SendQcNotificationEmail::class, function ($job) {
             return ($job->payload['view'] ?? null) === 'emails.qc-stage-update'
