@@ -8,6 +8,7 @@ use App\Models\PurchaseOrder;
 use App\Models\Roll;
 use App\Models\Setting;
 use App\Models\ToleranceAmendmentRequest;
+use App\Models\Vendor;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -20,6 +21,100 @@ class VendorController extends Controller
     // Access is enforced by the 'auth' + 'role:fabric_vendor' middleware on
     // the /vendor route group (routes/web.php) — every action in this
     // controller is reached only through that group.
+
+    /** Memoized result of accessibleVendorIds(), scoped to the current request. */
+    private ?array $accessibleVendorIdsCache = null;
+
+    /**
+     * Vendor IDs the current vendor login may act on: their own vendor, plus
+     * any other vendor whose PO carries the exact same PC (Preliminary
+     * Contract) reference as one of this vendor's own POs. This is the
+     * "vendor A operates orders under vendor X/Y too" real-world relationship
+     * — some vendor codes are booked separately in D365 but are actually
+     * run by the same operating company, and the PC reference is the only
+     * field that ties them together. Match is case-insensitive/trimmed and
+     * exact (never a partial/LIKE match) so a short or common reference
+     * can't accidentally pull in an unrelated vendor's orders.
+     */
+    private function accessibleVendorIds(): array
+    {
+        if ($this->accessibleVendorIdsCache !== null) {
+            return $this->accessibleVendorIdsCache;
+        }
+
+        $vendorId = Auth::user()->vendor_id;
+
+        $ownReferences = PurchaseOrder::where('vendor_id', $vendorId)
+            ->whereNotNull('reference')
+            ->where('reference', '!=', '')
+            ->pluck('reference')
+            ->map(fn ($r) => mb_strtolower(trim($r)))
+            ->unique()
+            ->values();
+
+        $ids = [$vendorId];
+
+        if ($ownReferences->isNotEmpty()) {
+            $linkedVendorIds = PurchaseOrder::whereRaw(
+                'LOWER(TRIM(reference)) IN ('.implode(',', array_fill(0, $ownReferences->count(), '?')).')',
+                $ownReferences->all()
+            )->pluck('vendor_id');
+
+            $ids = array_merge($ids, $linkedVendorIds->all());
+        }
+
+        // PC bypass: vendor groups this login unlocked by searching an exact
+        // reference it doesn't itself carry — see unlockByPcReference(). Covers
+        // an operator vendor that manages other vendors' orders under a PC but
+        // holds no PO of its own tagged with it, so the own-PO linkage above
+        // would never surface it.
+        $ids = array_merge($ids, session('pc_bypass_vendor_ids', []));
+
+        return $this->accessibleVendorIdsCache = array_values(array_unique($ids));
+    }
+
+    /**
+     * Bypass around accessibleVendorIds()'s "must be on one of your own POs"
+     * requirement: if $search is an EXACT (case-insensitive/trimmed) match for
+     * a PC reference anywhere in the system, every vendor carrying that
+     * reference is unlocked into the session for the rest of this login —
+     * full access, same as the vendor's own POs (view, process, pricing).
+     * Deliberately open to any fabric vendor login, on an exact match only
+     * (never a partial/LIKE match, since references are short and sequential
+     * — e.g. "MPG/PC/PDV/26/VII/308" — and a partial match would make them
+     * easy to enumerate).
+     *
+     * @return array<int, array{name: ?string, vendor_code: ?string}>|null newly-unlocked vendors, or null if nothing new
+     */
+    private function unlockByPcReference(?string $search): ?array
+    {
+        $needle = mb_strtolower(trim((string) $search));
+        if ($needle === '') {
+            return null;
+        }
+
+        $matchingVendorIds = PurchaseOrder::whereRaw('LOWER(TRIM(reference)) = ?', [$needle])
+            ->pluck('vendor_id')
+            ->unique()
+            ->values()
+            ->all();
+
+        if (empty($matchingVendorIds)) {
+            return null;
+        }
+
+        $alreadyKnown = array_merge([Auth::user()->vendor_id], session('pc_bypass_vendor_ids', []));
+        $newlyUnlocked = array_values(array_diff($matchingVendorIds, $alreadyKnown));
+
+        session(['pc_bypass_vendor_ids' => array_values(array_unique(array_merge(session('pc_bypass_vendor_ids', []), $matchingVendorIds)))]);
+        $this->accessibleVendorIdsCache = null; // recompute with the freshly unlocked ids
+
+        if (empty($newlyUnlocked)) {
+            return null;
+        }
+
+        return Vendor::whereIn('id', $newlyUnlocked)->get(['name', 'vendor_code'])->toArray();
+    }
 
     public function dashboard()
     {
@@ -71,7 +166,16 @@ class VendorController extends Controller
         $itemNumber = $request->input('item_number');
         $styleFilter = $request->input('style');
 
-        $query = PurchaseOrder::where('vendor_id', $vendorId)
+        // An exact PC match unlocks its vendor(s) into the session — see
+        // unlockByPcReference(). Must run before accessibleVendorIds() is
+        // first read below so the newly-unlocked vendors are included.
+        $pcUnlocked = $search ? $this->unlockByPcReference($search) : null;
+
+        // Includes POs from any vendor linked via a shared PC reference —
+        // see accessibleVendorIds(). Ordinary (unlinked) vendors just get
+        // their own vendor_id back, so this is a no-op for them.
+        $query = PurchaseOrder::whereIn('vendor_id', $this->accessibleVendorIds())
+            ->with('vendor:id,name,vendor_code')
             ->withCount([
                 'items', // Total batches
                 // "Items" = real product lines. Exclude partial-shipment shadows
@@ -136,22 +240,23 @@ class VendorController extends Controller
             ->paginate($perPage)
             ->appends($request->all());
 
-        return view('vendor.purchase-orders', compact('purchaseOrders', 'search', 'status', 'itemNumber', 'styleFilter', 'perPage'));
+        return view('vendor.purchase-orders', compact('purchaseOrders', 'search', 'status', 'itemNumber', 'styleFilter', 'perPage', 'vendorId', 'pcUnlocked'));
     }
 
     public function viewPurchaseOrder($id)
     {
-        $vendorId = Auth::user()->vendor_id;
-
-        $purchaseOrder = PurchaseOrder::where('vendor_id', $vendorId)
+        $purchaseOrder = PurchaseOrder::whereIn('vendor_id', $this->accessibleVendorIds())
             ->with([
+                'vendor:id,name,vendor_code',
                 'items' => function ($query) {
                     $query->with(['rolls']); // Explicitly load rolls
                 },
             ])
             ->findOrFail($id);
 
-        return view('vendor.purchase-order-view', compact('purchaseOrder'));
+        $vendorId = Auth::user()->vendor_id;
+
+        return view('vendor.purchase-order-view', compact('purchaseOrder', 'vendorId'));
     }
 
     // NEW: Show item processing page
@@ -164,8 +269,8 @@ class VendorController extends Controller
             },
         ])->findOrFail($itemId);
 
-        // Verify vendor access
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        // Verify vendor access — includes PC-reference-linked vendors, see accessibleVendorIds()
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -177,8 +282,8 @@ class VendorController extends Controller
     {
         $item = PoItem::with(['purchaseOrder', 'rolls'])->findOrFail($itemId);
 
-        // Verify vendor access
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        // Verify vendor access — includes PC-reference-linked vendors, see accessibleVendorIds()
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -400,7 +505,7 @@ class VendorController extends Controller
         $roll = Roll::with('item.purchaseOrder')->findOrFail($rollId);
 
         // Verify vendor access
-        if ($roll->item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($roll->item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -418,7 +523,7 @@ class VendorController extends Controller
     {
         $roll = Roll::with('item.purchaseOrder')->findOrFail($rollId);
 
-        if ($roll->item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($roll->item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -433,7 +538,7 @@ class VendorController extends Controller
     {
         $item = PoItem::findOrFail($itemId);
 
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -456,7 +561,7 @@ class VendorController extends Controller
     {
         $item = PoItem::findOrFail($itemId);
 
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -494,7 +599,7 @@ class VendorController extends Controller
 
         $item = PoItem::findOrFail($request->po_item_id);
 
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -569,7 +674,7 @@ class VendorController extends Controller
     {
         $item = PoItem::with(['purchaseOrder'])->findOrFail($itemId);
 
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -611,7 +716,7 @@ class VendorController extends Controller
     {
         $item = PoItem::with('purchaseOrder')->findOrFail($itemId);
 
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -636,7 +741,7 @@ class VendorController extends Controller
     {
         $item = PoItem::findOrFail($itemId);
 
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -660,7 +765,7 @@ class VendorController extends Controller
 
         $item = PoItem::findOrFail($request->po_item_id);
 
-        if ($item->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($item->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -711,7 +816,7 @@ class VendorController extends Controller
     {
         $amendmentRequest = ToleranceAmendmentRequest::with('poItem.purchaseOrder')->findOrFail($requestId);
 
-        if ($amendmentRequest->poItem->purchaseOrder->vendor_id != Auth::user()->vendor_id) {
+        if (! in_array($amendmentRequest->poItem->purchaseOrder->vendor_id, $this->accessibleVendorIds())) {
             abort(403);
         }
 
@@ -733,7 +838,7 @@ class VendorController extends Controller
     {
         $vendorId = Auth::user()->vendor_id;
 
-        $purchaseOrder = PurchaseOrder::where('vendor_id', $vendorId)
+        $purchaseOrder = PurchaseOrder::whereIn('vendor_id', $this->accessibleVendorIds())
             ->with(['items.rolls'])
             ->findOrFail($poId);
 
@@ -838,8 +943,8 @@ class VendorController extends Controller
     {
         $vendorId = Auth::user()->vendor_id;
 
-        // Verify PO ownership
-        $purchaseOrder = PurchaseOrder::where('vendor_id', $vendorId)->findOrFail($poId);
+        // Verify PO access — includes PC-reference-linked vendors, see accessibleVendorIds()
+        $purchaseOrder = PurchaseOrder::whereIn('vendor_id', $this->accessibleVendorIds())->findOrFail($poId);
 
         $request->validate([
             'delivery_note' => 'required|string|max:255',

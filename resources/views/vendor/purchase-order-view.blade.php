@@ -7,6 +7,15 @@
         $poItems = $purchaseOrder->items;
     @endphp
     <div class="container-fluid">
+        @if($purchaseOrder->vendor_id !== ($vendorId ?? null))
+            <div class="alert alert-info d-flex align-items-center" role="alert">
+                <i class="fas fa-link me-2"></i>
+                <div>
+                    This PO belongs to <strong>{{ $purchaseOrder->vendor?->name }} ({{ $purchaseOrder->vendor?->vendor_code }})</strong>,
+                    linked to your account via shared PC reference <strong>{{ $purchaseOrder->reference }}</strong>.
+                </div>
+            </div>
+        @endif
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div>
                 <a href="{{ route('vendor.purchase-orders') }}" class="btn btn-sm btn-outline-secondary mb-2">

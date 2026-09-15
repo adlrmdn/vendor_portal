@@ -8,6 +8,19 @@
             <h1 class="h3">My Purchase Orders</h1>
         </div>
 
+        @if(!empty($pcUnlocked))
+            <div class="alert alert-warning d-flex align-items-center" role="alert">
+                <i class="fas fa-unlock me-2"></i>
+                <div>
+                    PC reference match: unlocked
+                    @foreach($pcUnlocked as $v)
+                        <strong>{{ $v['name'] }} ({{ $v['vendor_code'] }})</strong>@if(!$loop->last), @endif
+                    @endforeach
+                    for this session. You now have full access to their orders under this PC.
+                </div>
+            </div>
+        @endif
+
         <!-- Filters -->
         <div class="card mb-4 po-filter-card">
             <div class="card-body">
@@ -104,6 +117,11 @@
                                                     <strong>{{ $order->po_number }}</strong>
                                                     @if($order->reference)
                                                         <br><small class="text-muted text-nowrap">PC: {{ $order->reference }}</small>
+                                                    @endif
+                                                    @if($order->vendor_id !== ($vendorId ?? null))
+                                                        <br><span class="badge bg-info-subtle text-info border border-info-subtle text-nowrap" title="Linked via shared PC reference">
+                                                            <i class="fas fa-link me-1"></i>{{ $order->vendor?->name ?? 'Other vendor' }} ({{ $order->vendor?->vendor_code }})
+                                                        </span>
                                                     @endif
                                                 </td>
                                                 <td>
