@@ -119,10 +119,10 @@
                         <thead>
                             <tr>
                                 <th>PO Number</th>
+                                <th>Items</th>
                                 <th>Order Date</th>
                                 <th>Delivery Date</th>
-                                <th>Items</th>
-                                <th>Pending Items</th>
+                                <th>Item Status</th>
                                 <th>Amount</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -137,6 +137,20 @@
                                             <br><small class="text-muted">PC: {{ $order->reference }}</small>
                                         @endif
                                     </td>
+                                    <td>
+                                        <div class="po-items-cell small">
+                                            @forelse($order->items as $item)
+                                                <div class="po-items-row">
+                                                    <span class="fw-semibold">{{ $item->item_number }}</span>
+                                                    @if($item->batch)
+                                                        <div class="text-muted">{{ $item->batch }}</div>
+                                                    @endif
+                                                </div>
+                                            @empty
+                                                <span class="text-muted">&mdash;</span>
+                                            @endforelse
+                                        </div>
+                                    </td>
                                     <td>{{ $order->order_date->format('M d, Y') }}</td>
                                     <td>
                                         @if($order->delivery_date)
@@ -150,12 +164,12 @@
                                         @endif
                                     </td>
                                     <td>
-                                        {{ $order->unique_items_count }} {{ Str::plural('item', $order->unique_items_count) }}
-                                        @if($order->items_count > $order->unique_items_count)
-                                            <br><small class="text-muted">({{ $order->items_count }} Batches)</small>
-                                        @endif
-                                    </td>
-                                    <td>
+                                        <div class="small text-nowrap mb-1">
+                                            {{ $order->unique_items_count }} {{ Str::plural('item', $order->unique_items_count) }}
+                                            @if($order->items_count > $order->unique_items_count)
+                                                <br><span class="text-muted">({{ $order->items_count }} Batches)</span>
+                                            @endif
+                                        </div>
                                         @if($order->pending_unique_items_count > 0)
                                             <span class="badge bg-warning">{{ $order->pending_unique_items_count }} pending</span>
                                         @else
@@ -245,6 +259,17 @@
 
         .badge-completed {
             background-color: #198754;
+        }
+
+        .po-items-cell {
+            max-height: 130px;
+            overflow-y: auto;
+        }
+
+        .po-items-row:not(:last-child) {
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px dashed #e9ecef;
         }
     </style>
 @endsection
