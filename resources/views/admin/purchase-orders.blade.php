@@ -30,6 +30,8 @@
                             <label for="status" class="form-label">Status</label>
                             <select class="form-select searchable" id="status" name="status">
                                 <option value="">All Status</option>
+                                <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active
+                                </option>
                                 <option value="pending" {{ request('status') == 'pending' ? 'selected' : '' }}>Pending</option>
                                 <option value="processing" {{ request('status') == 'processing' ? 'selected' : '' }}>Processing
                                 </option>

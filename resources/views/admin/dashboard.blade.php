@@ -28,7 +28,7 @@
             </div>
 
             <div class="col-md-3">
-                <a href="{{ route('admin.purchase-orders') }}" class="text-decoration-none">
+                <a href="{{ route('admin.purchase-orders', ['status' => 'active']) }}" class="text-decoration-none">
                     <div class="card stat-card" style="border-left-color: #ffc107;">
                         <div class="card-body">
                             <div class="d-flex justify-content-between align-items-center">
@@ -93,11 +93,12 @@
                     <table class="table table-hover">
                         <thead>
                             <tr>
-                                <th style="width: 30%;">PO Details</th>
-                                <th style="width: 20%;">Dates</th>
-                                <th style="width: 15%;">Item Status</th>
-                                <th style="width: 15%;">Amount</th>
-                                <th style="width: 10%;">Status</th>
+                                <th style="width: 22%;">PO Details</th>
+                                <th style="width: 20%;">Items</th>
+                                <th style="width: 15%;">Dates</th>
+                                <th style="width: 13%;">Item Status</th>
+                                <th style="width: 12%;">Amount</th>
+                                <th style="width: 8%;">Status</th>
                                 <th style="width: 10%;">Actions</th>
                             </tr>
                         </thead>
@@ -112,6 +113,20 @@
                                         <div class="small text-muted text-truncate" style="max-width: 250px;"
                                             title="{{ $order->vendor->vendor_code ?? '' }} - {{ $order->vendor->name ?? '' }}">
                                             {{ $order->vendor->vendor_code ?? '' }} - {{ $order->vendor->name ?? 'N/A' }}
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="po-items-cell small">
+                                            @forelse($order->items as $item)
+                                                <div class="po-items-row">
+                                                    <span class="fw-semibold">{{ $item->item_number }}</span>
+                                                    @if($item->batch)
+                                                        <div class="text-muted">{{ $item->batch }}</div>
+                                                    @endif
+                                                </div>
+                                            @empty
+                                                <span class="text-muted">&mdash;</span>
+                                            @endforelse
                                         </div>
                                     </td>
                                     <td>
@@ -173,7 +188,7 @@
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="6" class="text-center py-4">
+                                    <td colspan="7" class="text-center py-4">
                                         <div class="text-muted">
                                             <i class="fas fa-inbox fa-2x mb-3"></i>
                                             <p>No purchase orders found</p>
@@ -237,6 +252,17 @@
 
         .badge-cancelled {
             background-color: #dc3545;
+        }
+
+        .po-items-cell {
+            max-height: 130px;
+            overflow-y: auto;
+        }
+
+        .po-items-row:not(:last-child) {
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px dashed #e9ecef;
         }
 
         .stat-card {
