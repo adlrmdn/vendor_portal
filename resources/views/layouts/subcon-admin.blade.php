@@ -27,6 +27,13 @@
                         </a>
                     </li>
                     <li>
+                        <a href="{{ route('subcon.admin.daily-production.index') }}"
+                            class="nav-link {{ request()->routeIs('subcon.admin.daily-production*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Daily Production">
+                            <i class="fas fa-industry me-2"></i> <span>Daily Production</span>
+                        </a>
+                    </li>
+                    <li>
                         @php($pendingApprovals = \App\Models\SubconOrder::whereIn('workflow_stage', ['cutting_review', 'gramasi_review'])->count() + \App\Models\SubconOrder::pendingFinalApprovalCount())
                         <a href="{{ route('subcon.admin.approvals') }}"
                             class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.approvals') ? 'active' : '' }}"

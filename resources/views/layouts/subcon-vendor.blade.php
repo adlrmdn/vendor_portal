@@ -27,6 +27,13 @@
                         </a>
                     </li>
                     <li>
+                        <a href="{{ route('subcon.vendor.daily-production.index') }}"
+                            class="nav-link {{ request()->routeIs('subcon.vendor.daily-production*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="Daily Production">
+                            <i class="fas fa-industry me-2"></i> <span>Daily Production</span>
+                        </a>
+                    </li>
+                    <li>
                         <a href="{{ route('subcon.vendor.profile') }}"
                             class="nav-link {{ request()->routeIs('subcon.vendor.profile*') ? 'active' : '' }}"
                             data-bs-toggle="tooltip" data-bs-placement="right" title="Profile Settings">

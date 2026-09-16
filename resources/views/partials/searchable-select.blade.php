@@ -22,8 +22,24 @@
             document.querySelectorAll('select.searchable').forEach(function (el) {
                 if (el.tomselect) return; // guard against double-init
                 new TomSelect(el, {
-                    allowEmptyOption: true,   // keep the "All …" option selectable
+                    // Keeps a blank-value "All …" option selectable — the
+                    // default, since most .searchable selects are filters
+                    // where that's wanted. A select that uses its blank
+                    // option purely as a required-field placeholder (never
+                    // meant to be reselected) opts out with
+                    // data-no-empty-option, so Tom Select recognizes "no
+                    // selection" and shows the real placeholder text
+                    // instead of rendering the blank option as a selected
+                    // (blank-looking) item.
+                    allowEmptyOption: !el.hasAttribute('data-no-empty-option'),
                     maxOptions: null,         // no truncation (e.g. 40+ vendors)
+                    // <select> has no native placeholder property, so read
+                    // the attribute explicitly — lets a page opt into real
+                    // "type to search" placeholder text (that disappears
+                    // on click/focus, not a permanently-visible option
+                    // label) by giving its <select> a plain
+                    // placeholder="..." attribute.
+                    placeholder: el.getAttribute('placeholder') || undefined,
                     plugins: el.hasAttribute('data-no-clear') ? [] : ['clear_button'],
                 });
             });

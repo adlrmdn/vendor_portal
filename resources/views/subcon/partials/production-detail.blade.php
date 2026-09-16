@@ -5,6 +5,11 @@
 --}}
 @php
     $cuttingReports = $cuttingReports ?? collect();
+    // Cumulative Cutting-stage totals from daily production tracking (see
+    // App\Services\SubconDailyProductionService::cuttingPlaceholderTotals),
+    // keyed by prod_id — used only to prefill a size's qty input when no
+    // cutting report row has been saved for it yet ("seeps into" the form).
+    $dailyCuttingTotals = $dailyCuttingTotals ?? [];
     // Editing mode for the size table: 'cutting' (qty editable), 'gramasi'
     // (gramasi editable), or 'view' (read-only). Defaults to read-only.
     $mode = $mode ?? 'view';
@@ -184,6 +189,10 @@
                                     $orderQty = (int) $line->Qty;
                                     $cutQty = $cuttingReports->get($line->ProdId)?->cutting_qty;
                                     $hasCut = $cutQty !== null;
+                                    // Input default only (never affects Balance/display below): when no
+                                    // cutting report row is saved yet, fall back to the cumulative
+                                    // Cutting-stage total logged via daily production tracking.
+                                    $cutQtyPlaceholder = $cutQty ?? ($dailyCuttingTotals[$line->ProdId] ?? null);
                                     // Size's share of the plan, prorated by its share of the order qty:
                                     // orderQty / totalOrderQty * cuttPlanTotal.
                                     $cutPlanQty = ($cuttPlanTotal !== null && $totalQty > 0)
@@ -223,7 +232,7 @@
                                                  producing '60'/'06') and strip accidental leading zeros. --}}
                                             <input type="number" name="reports[{{ $loop->parent->index }}_{{ $loop->index }}][cutting_qty]"
                                                    class="form-control form-control-sm modern-input d-inline-block cutting-qty-input" style="width: 90px;"
-                                                   value="{{ $cutQty ?? '' }}" min="0" step="1"
+                                                   value="{{ $cutQtyPlaceholder ?? '' }}" min="0" step="1"
                                                    data-order-qty="{{ $orderQty }}"
                                                    data-cut-plan="{{ $cutPlanQty ?? '' }}"
                                                    data-balance-target="bal_{{ $loop->parent->index }}_{{ $loop->index }}"

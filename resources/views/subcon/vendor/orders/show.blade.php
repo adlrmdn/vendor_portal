@@ -244,7 +244,7 @@
             @if($mode === 'cutting')
                 <form id="stageForm" method="POST" action="{{ route('subcon.vendor.orders.submit-cutting', $order->id) }}">
                     @csrf
-                    @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'mode' => 'cutting'])
+                    @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'dailyCuttingTotals' => $dailyCuttingTotals, 'mode' => 'cutting'])
 
                     @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon, 'editable' => true])
 

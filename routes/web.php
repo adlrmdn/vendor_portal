@@ -6,6 +6,7 @@ use App\Http\Controllers\RpaFinalizeController;
 use App\Http\Controllers\SubconAdminController;
 use App\Http\Controllers\SubconApprovalController;
 use App\Http\Controllers\SubconCuttingPlanController;
+use App\Http\Controllers\SubconDailyProductionController;
 use App\Http\Controllers\SubconVendorController;
 use App\Http\Controllers\VendorController;
 use Illuminate\Support\Facades\Route;
@@ -194,6 +195,10 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     Route::get('/workflow', [SubconAdminController::class, 'workflow'])->name('workflow');
     Route::post('/workflow', [SubconAdminController::class, 'updateWorkflow'])->name('workflow.update');
     Route::get('/user-guide', [SubconAdminController::class, 'userGuide'])->name('user-guide');
+
+    // Daily production tracking — read-only cross-vendor view.
+    Route::get('/daily-production', [SubconDailyProductionController::class, 'adminIndex'])->name('daily-production.index');
+    Route::get('/daily-production/export', [SubconDailyProductionController::class, 'adminExport'])->name('daily-production.export');
 });
 
 // Subcon Approval Routes (Signed URLs from approval emails)
@@ -274,6 +279,15 @@ Route::middleware(['auth', 'role:subcon_vendor'])->prefix('subcon/vendor')->name
     Route::put('/profile', [SubconVendorController::class, 'updateProfile'])->name('profile.update');
     Route::put('/profile/password', [SubconVendorController::class, 'updatePassword'])->name('profile.password');
     Route::get('/user-guide', [SubconVendorController::class, 'userGuide'])->name('user-guide');
+
+    // Daily production tracking (Cutting/Load-Sewing/Sewing/Load-Finishing/
+    // Finishing&Packing) — separate from the approval-workflow stage above.
+    Route::get('/daily-production', [SubconDailyProductionController::class, 'index'])->name('daily-production.index');
+    Route::get('/daily-production/export', [SubconDailyProductionController::class, 'export'])->name('daily-production.export');
+    Route::post('/daily-production/activate', [SubconDailyProductionController::class, 'activate'])->name('daily-production.activate');
+    Route::post('/daily-production/save-all', [SubconDailyProductionController::class, 'storeAll'])->name('daily-production.store-all');
+    Route::post('/daily-production/{id}/close', [SubconDailyProductionController::class, 'close'])->name('daily-production.close');
+    Route::post('/daily-production/{id}/reopen', [SubconDailyProductionController::class, 'reopen'])->name('daily-production.reopen');
 });
 
 // Notification Routes

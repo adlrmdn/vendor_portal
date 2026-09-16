@@ -94,7 +94,7 @@ class SubconVendorController extends Controller
         return back()->with('success', 'Remarks saved.');
     }
 
-    public function viewOrder(string $id, SubconProductionService $production)
+    public function viewOrder(string $id, SubconProductionService $production, \App\Services\SubconDailyProductionService $dailyProduction)
     {
         $vendorId = Auth::user()->vendor_id;
 
@@ -109,6 +109,11 @@ class SubconVendorController extends Controller
         $cuttingReports = SubconCuttingReport::where('order_id', $order->id)
             ->get()
             ->keyBy('prod_id');
+
+        // Daily-production cutting totals "seep into" the cutting report's qty
+        // inputs as a placeholder default when no report row is saved yet —
+        // see production-detail.blade.php. Best-effort: [] on any vsm hiccup.
+        $dailyCuttingTotals = $dailyProduction->cuttingPlaceholderTotals($order);
 
         // Linked fabrics (from VSM fabric POs) + any saved per-fabric reconciliation,
         // and the accessory counterpart — fetched the same way. Both best-effort:
@@ -160,7 +165,7 @@ class SubconVendorController extends Controller
             }
         }
 
-        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcSizeOrderQty'));
+        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'dailyCuttingTotals', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcSizeOrderQty'));
     }
 
     /**
