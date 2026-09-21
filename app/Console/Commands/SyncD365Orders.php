@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\PoItem;
 use App\Models\PurchaseOrder;
+use App\Models\User;
 use App\Models\Vendor;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
@@ -101,6 +102,22 @@ class SyncD365Orders extends Command
         // 2. DB Validations (Vendors & Existing POs)
         $vendors = Vendor::pluck('id', 'vendor_code')->toArray();
         $existingPos = PurchaseOrder::pluck('id', 'po_number')->toArray();
+
+        // Every header here already passed the Confirmed filter, so any vendor
+        // account not yet in the DB is a real fabric vendor we've just never
+        // registered — auto-provision it (Vendor + fabric_vendor login) instead
+        // of silently dropping its POs forever. Credentials are then viewable
+        // via the admin Vendors tab (view/reset password), same as a manually
+        // added vendor.
+        $unknownCodes = array_values(array_unique(array_filter(
+            array_map(fn ($h) => $h['OrderVendorAccountNumber'] ?? null, $headers),
+            fn ($code) => $code && ! isset($vendors[$code])
+        )));
+
+        if (! empty($unknownCodes)) {
+            $created = $this->autoRegisterVendors($unknownCodes, $company);
+            $vendors = array_merge($vendors, $created);
+        }
 
         $validToInsert = [];
         $poMap = [];
@@ -292,6 +309,123 @@ class SyncD365Orders extends Command
 
             return Command::FAILURE;
         }
+    }
+
+    /**
+     * Create a Vendor + fabric_vendor login for each previously-unseen vendor
+     * code found on a Confirmed PO header, enriched with name/contact info from
+     * D365's VendorsV2 where available. Returns the new codes' [vendor_code =>
+     * vendor_id] so the caller can fold them straight into its existing map.
+     */
+    private function autoRegisterVendors(array $codes, ?string $company): array
+    {
+        $this->info('Found '.count($codes).' unregistered vendor code(s) on confirmed POs: '.implode(', ', $codes));
+
+        $master = [];
+        foreach (array_chunk($codes, 20) as $chunk) {
+            $parts = array_map(fn ($c) => "VendorAccountNumber eq '$c'", $chunk);
+            $filters = ['('.implode(' or ', $parts).')'];
+            if ($company) {
+                $filters[] = "dataAreaId eq '{$company}'";
+            }
+            foreach ($this->fetchRecords('VendorsV2', $filters) as $r) {
+                $code = $r['VendorAccountNumber'] ?? null;
+                if ($code && ! isset($master[$code])) {
+                    $master[$code] = $r;
+                }
+            }
+        }
+
+        $created = [];
+        foreach ($codes as $code) {
+            $r = $master[$code] ?? [];
+            $vendorName = $r['VendorOrganizationName'] ?? $r['VendorSearchName'] ?? $code;
+
+            $vendorId = (string) Str::uuid();
+            $vendor = new Vendor([
+                'name' => $vendorName,
+                'vendor_code' => $code,
+                'type' => 'fabric',
+                'contact_info' => array_filter([
+                    'email' => $r['PrimaryEmailAddress'] ?? null,
+                    'phone' => $r['PrimaryPhoneNumber'] ?? null,
+                    'address' => $r['AddressStreet'] ?? null,
+                ], fn ($v) => $v !== null),
+                'is_active' => true,
+            ]);
+            $vendor->id = $vendorId;
+            $vendor->save();
+
+            $loginEmail = $this->uniqueVendorLoginEmail($vendorName);
+            $user = new User([
+                'name' => $vendorName,
+                'email' => $loginEmail,
+                'password' => bcrypt('password'),
+                'role' => 'fabric_vendor',
+                'vendor_id' => $vendorId,
+            ]);
+            $user->id = (string) Str::uuid();
+            $user->save();
+
+            $this->info("Auto-registered fabric vendor {$code} (\"{$vendorName}\") — login: {$loginEmail}");
+            $created[$code] = $vendorId;
+        }
+
+        return $created;
+    }
+
+    /**
+     * Unique login email derived from the vendor name, matching the convention
+     * already used by AdminController@storeVendor / vendors:register-fabric-accounts.
+     */
+    private function uniqueVendorLoginEmail(string $vendorName): string
+    {
+        $cleanName = $this->abbreviateVendorName($vendorName);
+        $email = "vendor@{$cleanName}.com";
+        $baseEmail = $email;
+        $counter = 1;
+        while (User::where('email', $email)->exists()) {
+            $email = str_replace('@', $counter.'@', $baseEmail);
+            $counter++;
+        }
+
+        return $email;
+    }
+
+    private function abbreviateVendorName(string $name): string
+    {
+        $words = array_filter(explode(' ', strtolower($name)));
+        $prefixes = ['pt', 'cv', 'fa', 'ud', 'pd', 'koperasi'];
+
+        if (count($words) > 1 && in_array(reset($words), $prefixes, true)) {
+            array_shift($words);
+        }
+
+        if (empty($words)) {
+            return 'fabric';
+        }
+
+        $concat = implode('', $words);
+        $cleanConcat = preg_replace('/[^a-z0-9]/', '', $concat);
+
+        if (strlen($cleanConcat) <= 15) {
+            return $cleanConcat;
+        }
+
+        $firstWord = preg_replace('/[^a-z0-9]/', '', $words[0]);
+        $initials = '';
+        for ($i = 1; $i < count($words); $i++) {
+            $char = substr($words[$i], 0, 1);
+            $cleanChar = preg_replace('/[^a-z0-9]/', '', $char);
+            $initials .= $cleanChar;
+        }
+
+        $result = $firstWord.$initials;
+        if (strlen($result) > 15) {
+            $result = substr($result, 0, 15);
+        }
+
+        return $result;
     }
 
     private function getD365Token()

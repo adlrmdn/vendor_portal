@@ -18,6 +18,7 @@ class PoItem extends Model
     protected $table = 'po_items';
 
     protected $fillable = [
+        'id',
         'po_id',
         'item_number',
         'description',
