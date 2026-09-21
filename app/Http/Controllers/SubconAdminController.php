@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exports\SubconCuttingReportExport;
 use App\Jobs\SyncSubconOrdersJob;
+use App\Models\SubconAddProcessReport;
 use App\Models\SubconCuttingReport;
 use App\Models\SubconOrder;
 use App\Models\User;
@@ -567,8 +568,16 @@ class SubconAdminController extends Controller
         return redirect()->route('subcon.admin.vendors')->with('success', 'Subcon vendor and all associated data deleted.');
     }
 
-    public function orders(Request $request)
+    public function orders(Request $request, SubconProductionService $production)
     {
+        // Add Process rows aren't SubconOrder rows at all (in-house production
+        // groups have ADD-* steps with no work order) — this filter switches
+        // the whole list to a different row source instead of narrowing the
+        // normal CMT order query.
+        if ($request->filled('add_process')) {
+            return $this->addProcessOrdersList($request, $production);
+        }
+
         $query = SubconOrder::with('vendor');
 
         if ($request->filled('vendor_id')) {
@@ -601,8 +610,127 @@ class SubconAdminController extends Controller
         // "Completed" rows only — see qcPipelineStatusForOrders()'s docblock
         // for why the plain workflow_stage/status columns go silent here.
         $qcPipelineByOrder = $this->qcPipelineStatusForOrders(collect($orders->items()));
+        $addProcessMode = false;
 
-        return view('subcon.admin.orders.index', compact('orders', 'vendors', 'qcPipelineByOrder'));
+        return view('subcon.admin.orders.index', compact('orders', 'vendors', 'qcPipelineByOrder', 'addProcessMode'));
+    }
+
+    /**
+     * Add Process filter mode for the Work Orders list. Rows are
+     * (ProductionGroup, Operation) pairs sourced directly from
+     * `vsm.job_transaction_headers` — NOT a filter over `subcon_orders` — so
+     * an in-house production group with an ADD-* step but no work order at
+     * all still shows up. Each row is cross-referenced with any matching CMT
+     * SubconOrder (for vendor/order display only) and SubconAddProcessReport
+     * (for reported status); "View" always goes to the independent Add
+     * Process page, never the CMT order page.
+     */
+    private function addProcessOrdersList(Request $request, SubconProductionService $production)
+    {
+        $raw = DB::connection('vsm')->table('job_transaction_headers')
+            ->where('Operation', 'ilike', 'ADD-%')
+            ->whereNotNull('ProductionGroup')
+            ->get(['ProductionGroup', 'Operation']);
+
+        // Case-insensitive de-dup, keeping the first-seen raw casing — same
+        // convention as SubconProductionService::addProcessOperationsForGroup().
+        $seen = [];
+        foreach ($raw as $r) {
+            $pg = trim((string) $r->ProductionGroup);
+            $op = trim((string) $r->Operation);
+            if ($pg === '' || $op === '') {
+                continue;
+            }
+            $key = strtolower($pg).'|'.strtolower($op);
+            $seen[$key] ??= ['production_group' => $pg, 'operation' => $op];
+        }
+        $rows = collect(array_values($seen));
+
+        $reportedKeys = SubconAddProcessReport::where(function ($q) {
+            $q->where('qty', '>', 0)->orWhere('reject_qty', '>', 0);
+        })
+            ->get(['production_group', 'operation'])
+            ->map(fn ($r) => strtolower($r->production_group).'|'.strtolower($r->operation))
+            ->flip();
+
+        // Real commercial Add Process PO(s) — the D365 "AddPro" pool, a
+        // genuinely separate PO/vendor from the CMT one (see
+        // SubconProductionService::addProcessPurchaseOrdersForGroup()'s
+        // docblock). Distinct from "has an ADD-* job transaction step" above:
+        // a step can exist with no PO synced yet, or vice versa.
+        $addProcessPosByGroup = $production->addProcessPurchaseOrdersByGroup();
+
+        $rows = $rows->map(function ($r) use ($reportedKeys, $addProcessPosByGroup) {
+            $r['reported'] = isset($reportedKeys[strtolower($r['production_group']).'|'.strtolower($r['operation'])]);
+            $r['addpro_pos'] = $addProcessPosByGroup[$r['production_group']] ?? [];
+
+            return $r;
+        });
+
+        if ($request->add_process === 'has') {
+            $rows = $rows->where('reported', false);
+        } elseif ($request->add_process === 'reported') {
+            $rows = $rows->where('reported', true);
+        } elseif ($request->add_process === 'po') {
+            $rows = $rows->filter(fn ($r) => ! empty($r['addpro_pos']));
+        }
+
+        if ($request->filled('search')) {
+            $term = strtolower(trim($request->search));
+            $rows = $rows->filter(fn ($r) => str_contains(strtolower($r['production_group']), $term)
+                || str_contains(strtolower($r['operation']), $term));
+        }
+
+        $groups = $rows->pluck('production_group')->unique()->values();
+        $ordersByGroup = SubconOrder::with('vendor')->whereIn('production_group', $groups)->get()->keyBy('production_group');
+
+        if ($request->filled('vendor_id')) {
+            $rows = $rows->filter(fn ($r) => ($ordersByGroup->get($r['production_group'])?->vendor_id) === $request->vendor_id);
+        }
+
+        $rows = $rows->sortBy([['production_group', 'asc'], ['operation', 'asc']])->values();
+
+        $perPage = 20;
+        $page = LengthAwarePaginator::resolveCurrentPage();
+        $pageRows = $rows->forPage($page, $perPage)->values();
+
+        // Style name + Add Process vendor name: resolved only for the current
+        // page's rows (not all matches) since both need a live/vsm round-trip.
+        // Style name comes straight from VSM (PLM ArticleName, falling back to
+        // the PRG line's SearchName) rather than a linked order's title — many
+        // of these rows have no linked SubconOrder at all (in-house, or the
+        // Add Process PO's own vendor is deliberately never registered).
+        $styleNames = $production->styleNamesForGroups($pageRows->pluck('production_group')->unique()->all());
+        $addProVendorCodes = $pageRows->pluck('addpro_pos')->flatten(1)->pluck('vendor_code')->filter()->unique()->values()->all();
+        $addProVendorNames = app(\App\Services\D365JobTransactionService::class)->fetchVendorNames($addProVendorCodes);
+
+        $pageRows = $pageRows->map(function ($r) use ($styleNames, $addProVendorNames) {
+            $r['style_name'] = $styleNames[$r['production_group']] ?? null;
+            if (! empty($r['addpro_pos'])) {
+                $r['addpro_pos'][0]['vendor_name'] = $addProVendorNames[$r['addpro_pos'][0]['vendor_code']] ?? null;
+            }
+
+            return $r;
+        });
+
+        $addProcessRows = new LengthAwarePaginator(
+            $pageRows,
+            $rows->count(),
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        $vendors = Vendor::where('type', 'subcon')->where('is_active', true)->orderBy('name')->get();
+        $addProcessMode = true;
+
+        return view('subcon.admin.orders.index', [
+            'orders' => $addProcessRows,
+            'ordersByGroup' => $ordersByGroup,
+            'vendors' => $vendors,
+            'qcPipelineByOrder' => [],
+            'addProcessMode' => $addProcessMode,
+        ]);
     }
 
     /** Orders currently awaiting a cutting or gramasi approval decision. */
@@ -1299,6 +1427,14 @@ class SubconAdminController extends Controller
         $productionGroups = $production->forPo($order->order_number);
         $summary = $production->summarize($productionGroups);
 
+        // Read-only: a genuinely separate commercial PO/vendor from this CMT
+        // order (D365's "AddPro" pool), when this production group has one —
+        // see SubconProductionService::addProcessPurchaseOrdersForGroup()'s
+        // docblock. Never gates or mutates anything on this page.
+        $addProcessPos = $order->production_group
+            ? $production->addProcessPurchaseOrdersForGroup($order->production_group)
+            : [];
+
         $cuttingReports = SubconCuttingReport::where('order_id', $order->id)
             ->get()
             ->keyBy('prod_id');
@@ -1400,7 +1536,7 @@ class SubconAdminController extends Controller
         // VSM's PLM chain is broken — see qcSizeOrderQtyFor()'s docblock.
         $qcSizeOrderQty = $this->qcSizeOrderQtyFor($order);
 
-        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'totalCut', 'accessoryLines', 'accessoryGoodsReceive', 'accessoryIssue', 'accessoryRecon', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcPipeline', 'qcSizeOrderQty'));
+        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'addProcessPos', 'cuttingReports', 'fabricLines', 'totalCut', 'accessoryLines', 'accessoryGoodsReceive', 'accessoryIssue', 'accessoryRecon', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcPipeline', 'qcSizeOrderQty'));
     }
 
     /**

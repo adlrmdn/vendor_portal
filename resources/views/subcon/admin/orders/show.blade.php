@@ -15,6 +15,11 @@
         <a href="{{ route('subcon.admin.orders.export-cutting', $order->id) }}" class="btn btn-outline-success">
             <i class="fas fa-file-excel me-1"></i> Export Cutting Report
         </a>
+        @if($order->production_group)
+            <a href="{{ route('subcon.admin.add-process.index', ['prg' => $order->production_group]) }}" class="btn btn-outline-primary">
+                <i class="fas fa-industry me-1"></i> Add Process Report
+            </a>
+        @endif
         {{-- Cutting Plan temporarily dormant — routes/controller/service kept intact for re-enable
         <a href="{{ route('subcon.admin.orders.cutting-plan', $order->id) }}" class="btn btn-outline-primary">
             <i class="fas fa-ruler-combined me-1"></i> Cutting Plan
@@ -54,6 +59,26 @@
         <i class="fas fa-triangle-exclamation me-1"></i>
         <strong>Label generation failed:</strong> {{ $order->label_gen_error ?: 'The RPA service could not generate the packing instruction.' }}
         @if($order->label_gen_at)<span class="text-muted">({{ $order->label_gen_at->diffForHumans() }})</span>@endif
+    </div>
+@endif
+
+{{-- Add Process PO: a genuinely SEPARATE commercial PO/vendor from this CMT
+     order (D365's "AddPro" purchase pool) — shown here read-only whenever
+     this production group has one. See SubconProductionService::
+     addProcessPurchaseOrdersForGroup()'s docblock. --}}
+@if(!empty($addProcessPos))
+    <div class="card mb-4">
+        <div class="card-header"><h6 class="mb-0">Add Process Purchase Order</h6></div>
+        <div class="card-body">
+            @foreach($addProcessPos as $po)
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 {{ !$loop->last ? 'mb-3 pb-3 border-bottom' : '' }}">
+                    <div>
+                        <div class="fw-semibold">{{ $po['po_number'] }}</div>
+                        <div class="text-muted small">{{ $po['description'] ?? '—' }} &middot; Vendor {{ $po['vendor_code'] ?? '—' }} &middot; {{ $po['status'] ?? '—' }}</div>
+                    </div>
+                </div>
+            @endforeach
+        </div>
     </div>
 @endif
 

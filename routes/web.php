@@ -3,6 +3,7 @@
 use App\Http\Controllers\AdminController;
 use App\Http\Controllers\FinanceAdminController;
 use App\Http\Controllers\RpaFinalizeController;
+use App\Http\Controllers\SubconAddProcessController;
 use App\Http\Controllers\SubconAdminController;
 use App\Http\Controllers\SubconApprovalController;
 use App\Http\Controllers\SubconCuttingPlanController;
@@ -199,6 +200,12 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     // Daily production tracking — read-only cross-vendor view.
     Route::get('/daily-production', [SubconDailyProductionController::class, 'adminIndex'])->name('daily-production.index');
     Route::get('/daily-production/export', [SubconDailyProductionController::class, 'adminExport'])->name('daily-production.export');
+
+    // Add Process (ADD-Was/ADD-Embro/ADD-Sab/ADD-Pleat/...) — independent of
+    // Work Orders, keyed by ProductionGroup directly so it covers in-house
+    // production groups too (they have no SubconOrder at all).
+    Route::get('/add-process', [SubconAddProcessController::class, 'index'])->name('add-process.index');
+    Route::post('/add-process', [SubconAddProcessController::class, 'submit'])->name('add-process.submit');
 });
 
 // Subcon Approval Routes (Signed URLs from approval emails)

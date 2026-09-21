@@ -221,6 +221,248 @@ class SubconProductionService
     }
 
     /**
+     * Distinct "add process" side-step operations (ADD-Was/ADD-Embro/ADD-Sab/
+     * ADD-Pleat/...) present on a production group's D365 route, read from
+     * `vsm.job_transaction_headers` (synced independently by automaton/vsm —
+     * see vsm-job-transaction-routing memory). Casing is inconsistent in D365
+     * (e.g. `ADD-Was` vs `add-was`), so this dedupes case-insensitively while
+     * keeping the first-seen raw casing — that's the value callers must PATCH/
+     * trigger against later, so it must match a real Operation value in D365.
+     *
+     * Best-effort: returns [] if VSM is unreachable or the group has no ADD-*
+     * step (a normal, common case — most routes don't have one).
+     *
+     * @return array<int, string>
+     */
+    public function addProcessOperationsForGroup(string $productionGroup): array
+    {
+        $productionGroup = trim($productionGroup);
+        if ($productionGroup === '') {
+            return [];
+        }
+
+        try {
+            $raw = DB::connection('vsm')->table('job_transaction_headers')
+                ->where('ProductionGroup', $productionGroup)
+                ->where('Operation', 'ilike', 'ADD-%')
+                ->distinct()
+                ->pluck('Operation');
+
+            $seen = [];
+            foreach ($raw as $op) {
+                $key = strtolower(trim((string) $op));
+                if ($key === '' || isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = trim((string) $op);
+            }
+
+            return array_values($seen);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * Per-size Cut Qty (+ reject) already produced for a production group,
+     * read from the local `vsm.job_transaction_line_details` mirror (synced
+     * from D365, see vsm-job-transaction-routing memory) — this is the real
+     * upstream output an add-process step has available to work with. Reads
+     * whichever cut-type Operation the route actually has: `CMT-Cut` for
+     * subcon, `IN-Cut` for in-house (case-insensitive, casing is inconsistent
+     * in D365).
+     *
+     * CONFIRMED LIVE: a single production group can carry BOTH an in-house
+     * AND a CMT route simultaneously (MPG/PRG/2601/000070 has IN-Cut/IN-Sew/
+     * IN-Fin headers alongside CMT-Cut/ADD-Was/CMT-Pak ones) — picking either
+     * header non-deterministically (e.g. a bare `->value()` with no
+     * preference) can silently grab the wrong one. CMT-Cut is tried first
+     * since that's the actively-paid vendor flow when both exist; IN-Cut is
+     * the fallback, and either is only used if it actually has line-detail
+     * rows (coverage is thin — ~35% of headers have any row at all — so an
+     * empty/stale header must not shadow a populated one).
+     *
+     * @return array<string, array{good: float, reject: float}> keyed by Size
+     */
+    public function cutQuantitiesForGroup(string $productionGroup): array
+    {
+        $productionGroup = trim($productionGroup);
+        if ($productionGroup === '') {
+            return [];
+        }
+
+        try {
+            $headers = DB::connection('vsm')->table('job_transaction_headers')
+                ->where('ProductionGroup', $productionGroup)
+                ->where(function ($q) {
+                    $q->where('Operation', 'ilike', 'CMT-Cut')->orWhere('Operation', 'ilike', 'IN-Cut');
+                })
+                ->get(['JobTransactionId', 'Operation'])
+                ->sortBy(fn ($h) => strcasecmp($h->Operation, 'CMT-Cut') === 0 ? 0 : 1);
+
+            foreach ($headers as $header) {
+                $rows = DB::connection('vsm')->table('job_transaction_line_details')
+                    ->where('JobTransactionId', $header->JobTransactionId)
+                    ->get(['Size', 'TotalGoodQty', 'TotalRejectQty']);
+
+                if ($rows->isNotEmpty()) {
+                    return $rows->keyBy('Size')
+                        ->map(fn ($r) => ['good' => (float) $r->TotalGoodQty, 'reject' => (float) $r->TotalRejectQty])
+                        ->all();
+                }
+            }
+
+            return [];
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * The commercial PO(s) an add-process step is actually billed under — a
+     * DIFFERENT purchase order/vendor than the production group's main CMT
+     * PO, confirmed live: PLM/25/11/00089 has `MPG/PO/2608/01328` (Item Jasa
+     * CMT, vendor V0246) for cutting/sewing AND a separate
+     * `MPG/PO/2608/01329` (Item Jasa Add Process Washing, vendor V0312) for
+     * the add-process work — same PLM/ProductionGroup, two independent POs.
+     * `PurchPoolId = 'AddPro'` is the D365 pool for these service lines
+     * (`Item Jasa Add Process Washing/Embro/Sablon/Pleating`, item numbers
+     * 2312000100001-4), mirroring how CMT POs use `PurchPoolId = 'CMT'` and
+     * item 2312000100000 ("Item Jasa CMT").
+     *
+     * Read-only/informational — the add-process vendor is NOT registered as a
+     * portal Vendor and no SubconOrder is created for this PO; the admin
+     * enters qty/reject directly on the Add Process page regardless of
+     * whether this lookup finds anything.
+     *
+     * @return array<int, array{po_number: string, vendor_code: ?string, description: ?string, status: ?string}>
+     */
+    public function addProcessPurchaseOrdersForGroup(string $productionGroup): array
+    {
+        $productionGroup = trim($productionGroup);
+        if ($productionGroup === '') {
+            return [];
+        }
+
+        try {
+            $plmIds = DB::connection('vsm')->table('plm_activity')
+                ->where('ProductionGroup', $productionGroup)
+                ->pluck('PLMId')
+                ->filter()
+                ->unique()
+                ->all();
+
+            if (empty($plmIds)) {
+                return [];
+            }
+
+            $lines = DB::connection('vsm')->table('po_lines as l')
+                ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
+                ->whereIn('l.PLMId', $plmIds)
+                ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                ->get(['l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus']);
+
+            return $lines->map(fn ($l) => [
+                'po_number' => $l->PurchaseOrderNumber,
+                'vendor_code' => $l->OrderVendorAccountNumber,
+                'description' => $l->LineDescription,
+                'status' => $l->PurchaseOrderStatus,
+            ])->unique('po_number')->values()->all();
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * Bulk counterpart of addProcessPurchaseOrdersForGroup() — every AddPro-pool
+     * PO across all production groups in one query (for a list page; avoids an
+     * N+1 of one vsm round-trip per row). Same read-only/informational contract.
+     *
+     * @return array<string, array<int, array{po_number: string, vendor_code: ?string, description: ?string, status: ?string}>> keyed by ProductionGroup
+     */
+    public function addProcessPurchaseOrdersByGroup(): array
+    {
+        try {
+            $lines = DB::connection('vsm')->table('po_lines as l')
+                ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
+                ->join('plm_activity as a', 'a.PLMId', '=', 'l.PLMId')
+                ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                ->whereNotNull('a.ProductionGroup')
+                ->get(['a.ProductionGroup', 'l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus']);
+
+            $byGroup = [];
+            foreach ($lines as $l) {
+                $byGroup[$l->ProductionGroup][$l->PurchaseOrderNumber] = [
+                    'po_number' => $l->PurchaseOrderNumber,
+                    'vendor_code' => $l->OrderVendorAccountNumber,
+                    'description' => $l->LineDescription,
+                    'status' => $l->PurchaseOrderStatus,
+                ];
+            }
+
+            return array_map(fn ($pos) => array_values($pos), $byGroup);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * Garment style/article name per ProductionGroup, for list pages that have
+     * no linked SubconOrder to read a title from (in-house rows, or an Add
+     * Process PO whose vendor is deliberately unregistered). Prefers
+     * `plm_activity.ArticleName` (the real style name, e.g. "Minimal Ane Shirt
+     * Blue"); falls back to `production_group_lines.SearchName` for groups
+     * with no PLM link at all — same two sources forPo()/forProductionGroup()
+     * already use, just batched across many groups in one call each.
+     *
+     * @param  array<int, string>  $productionGroups
+     * @return array<string, string> keyed by ProductionGroup
+     */
+    public function styleNamesForGroups(array $productionGroups): array
+    {
+        $productionGroups = array_values(array_unique(array_filter($productionGroups)));
+        if (empty($productionGroups)) {
+            return [];
+        }
+
+        try {
+            $names = DB::connection('vsm')->table('plm_activity')
+                ->whereIn('ProductionGroup', $productionGroups)
+                ->whereNotNull('ArticleName')
+                ->where('ArticleName', '!=', '')
+                ->pluck('ArticleName', 'ProductionGroup')
+                ->all();
+
+            $missing = array_diff($productionGroups, array_keys($names));
+            if (! empty($missing)) {
+                $fallback = DB::connection('vsm')->table('production_group_lines')
+                    ->whereIn('ProductionGroup', $missing)
+                    ->whereNotNull('SearchName')
+                    ->where('SearchName', '!=', '')
+                    ->get(['ProductionGroup', 'SearchName'])
+                    ->unique('ProductionGroup')
+                    ->pluck('SearchName', 'ProductionGroup')
+                    ->all();
+                $names += $fallback;
+            }
+
+            return $names;
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
      * VSM purchase-pool prefix that identifies fabric (garment material) POs.
      * Matches ALL fabric pools — Fab-Local / Fab-Import / Fab-Repro and any
      * future Fab-* pool — while excluding Acc-*, CMT, AddPro, etc.

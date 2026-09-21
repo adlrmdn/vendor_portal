@@ -502,6 +502,16 @@ class SubconOrder extends Model
         return $this->hasMany(SubconCuttingReport::class, 'order_id');
     }
 
+    /**
+     * Add Process reports aren't owned by a SubconOrder (in-house production
+     * groups have ADD-* steps with no subcon order at all) — matched by
+     * production_group string instead of a real foreign key.
+     */
+    public function addProcessReports()
+    {
+        return $this->hasMany(SubconAddProcessReport::class, 'production_group', 'production_group');
+    }
+
     public function jobLogs()
     {
         return $this->hasMany(SubconJobLog::class, 'order_id');

@@ -708,6 +708,155 @@ class D365JobTransactionService
     }
 
     /**
+     * Reject-quantity field on `JobTransactionLinesDetails` a given add-process
+     * Operation's reject qty should be PATCHed into. Only a handful of named
+     * reject columns exist in D365 (see raf-service-flow memory's leaf-reject
+     * list); ADD-Pleat and any future/unrecognised ADD-* operation have no
+     * dedicated column, so they fall back to the general RejectProduksi bucket.
+     */
+    private function rejectFieldForOperation(string $operation): string
+    {
+        return match (true) {
+            $this->isOperation($operation, 'ADD-Was') => 'RejectWashing',
+            $this->isOperation($operation, 'ADD-Embro') => 'RejectEmbro',
+            $this->isOperation($operation, 'ADD-Sab') => 'RejectPrinting',
+            default => 'RejectProduksi',
+        };
+    }
+
+    /**
+     * Same shape/contract as syncReportToD365(), generalised to any add-process
+     * Operation (ADD-Was/ADD-Embro/ADD-Sab/ADD-Pleat/...) instead of the
+     * hardcoded CMT-Cut/CMT-Pak pair — see that method's docblock for the
+     * shared reasoning (e.g. the "had updates but resolved zero JobTransactionId
+     * → explicit retryable error" contract).
+     *
+     * @param  string  $productionGroup  The production group code
+     * @param  string  $operation  Raw D365 Operation value, e.g. "ADD-Was"
+     * @param  array  $reports  Array of ['size' => ..., 'qty' => ..., 'reject_qty' => ...]
+     * @return array Status results of the updates
+     */
+    public function syncAddProcessToD365(string $productionGroup, string $operation, array $reports): array
+    {
+        $results = [
+            'odata_updates' => 0,
+            'trigger' => false,
+            'errors' => [],
+        ];
+
+        $qtyUpdates = [];
+        $rejectUpdates = [];
+        foreach ($reports as $item) {
+            $size = $item['size'];
+            if (isset($item['qty']) && is_numeric($item['qty'])) {
+                $qtyUpdates[$size] = (int) $item['qty'];
+            }
+            if (isset($item['reject_qty']) && is_numeric($item['reject_qty'])) {
+                $rejectUpdates[$size] = (int) $item['reject_qty'];
+            }
+        }
+
+        if (empty($qtyUpdates) && empty($rejectUpdates)) {
+            Log::info("No OData updates to perform for PRG {$productionGroup} ({$operation})");
+
+            return $results;
+        }
+
+        $token = $this->getD365Token();
+        if (! $token) {
+            $results['errors'][] = 'Authentication failed.';
+
+            return $results;
+        }
+
+        Log::info("Fetching JobTransactionHeaders for PRG {$productionGroup} ({$operation})");
+        $headersUrl = $this->getResource().'/data/JobTransactionHeaders?$filter=ProductionGroup eq '.$this->odataLit($productionGroup).'&cross-company=true';
+
+        $jobId = null;
+
+        try {
+            $response = Http::withToken($token)->acceptJson()->get($headersUrl);
+            if ($response->successful()) {
+                $headers = $response->json()['value'] ?? [];
+                foreach ($headers as $h) {
+                    if ($this->isOperation($h['Operation'] ?? '', $operation)) {
+                        $jobId = $h['JobTransactionId'];
+                        break;
+                    }
+                }
+            } else {
+                $results['errors'][] = 'Failed to fetch Job Transaction Headers. Status: '.$response->status();
+
+                return $results;
+            }
+        } catch (\Throwable $e) {
+            $results['errors'][] = 'Exception fetching headers: '.$e->getMessage();
+
+            return $results;
+        }
+
+        if (! $jobId) {
+            $results['errors'][] = "{$operation} job header not found in D365 for this production group — quantities were not patched (the D365 job may not be started yet; retry later).";
+
+            return $results;
+        }
+
+        $rejectField = $this->rejectFieldForOperation($operation);
+
+        Log::info("{$operation} job resolved: {$jobId}. Fetching line details.");
+        $linesUrl = $this->getResource().'/data/JobTransactionLinesDetails?$filter=JobTransactionId eq '.$this->odataLit($jobId).'&cross-company=true';
+
+        try {
+            $response = Http::withToken($token)->acceptJson()->get($linesUrl);
+            if ($response->successful()) {
+                $lines = $response->json()['value'] ?? [];
+                foreach ($lines as $line) {
+                    $size = $line['Size'] ?? '';
+                    $changes = [];
+                    if (isset($qtyUpdates[$size])) {
+                        $changes['Jam7'] = $qtyUpdates[$size];
+                    }
+                    if (isset($rejectUpdates[$size])) {
+                        $changes[$rejectField] = $rejectUpdates[$size];
+                    }
+                    if (empty($changes)) {
+                        continue;
+                    }
+
+                    $key = [
+                        'dataAreaId' => $line['dataAreaId'],
+                        'No' => $line['No'],
+                        'JobTransactionId' => $line['JobTransactionId'],
+                        'ItemId' => $line['ItemId'],
+                        'Size' => $size,
+                    ];
+                    Log::info("Patching {$operation} for size {$size}: ".json_encode($changes));
+                    if ($this->patchOData('JobTransactionLinesDetails', $key, $changes)) {
+                        $results['odata_updates']++;
+                    }
+                }
+                if ($results['odata_updates'] === 0) {
+                    $results['errors'][] = "{$operation} job found but no matching size line was patched — check Size values on JobTransactionLinesDetails.";
+                }
+            } else {
+                $results['errors'][] = "Failed to fetch {$operation} lines. Status: ".$response->status();
+            }
+        } catch (\Throwable $e) {
+            $results['errors'][] = "Exception patching {$operation} lines: ".$e->getMessage();
+        }
+
+        if ($results['odata_updates'] > 0) {
+            $trigger = $this->triggerJobs($productionGroup, [['operation' => $operation, 'actions' => ['jam8']]]);
+            $results['trigger'] = $trigger['success'];
+            if (! $trigger['success']) {
+                $results['errors'][] = $trigger['message'];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
      * Resolve the current CMT-Cut / CMT-Pak JobTransactionId for a production
      * group directly from D365 JobTransactionHeaders — never trust a job id
      * cached elsewhere (e.g. packaging_projects.cmt_pak_job_id): D365 can
@@ -1125,6 +1274,75 @@ class D365JobTransactionService
             Cache::put($cacheKey, $out, now()->addHour());
         } catch (\Throwable $e) {
             Log::error('Exception fetching D365 item master: '.$e->getMessage());
+
+            return [];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Vendor display name per vendor account code, direct from D365's
+     * `VendorsV2` entity (the same one `d365:sync-subcon-vendors` reads for
+     * VendorOrganizationName/VendorSearchName) — used for vendors that are
+     * deliberately NOT registered as a local `Vendor` (the Add Process/AddPro
+     * PO's own vendor, see SubconProductionService::
+     * addProcessPurchaseOrdersForGroup()'s docblock), so there's no local
+     * name to fall back on. Scoped to `dataAreaId eq 'mpg'` — vendor account
+     * codes are company-scoped in D365 (same code can be a different vendor
+     * in mpr/mti), see CLAUDE.md's cross-company gotcha. Best-effort, cached
+     * ~1h like the other D365 lookups here.
+     *
+     * @param  array<int, string>  $vendorCodes
+     * @return array<string, string> keyed by vendor account code
+     */
+    public function fetchVendorNames(array $vendorCodes): array
+    {
+        $vendorCodes = array_values(array_unique(array_filter(array_map('strval', $vendorCodes))));
+        if (empty($vendorCodes)) {
+            return [];
+        }
+
+        $cacheKey = 'd365_vendor_names_'.md5(implode(',', $vendorCodes));
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $token = $this->getD365Token();
+        if (! $token) {
+            return [];
+        }
+
+        $out = [];
+        try {
+            foreach (array_chunk($vendorCodes, 20) as $chunk) {
+                $filters = array_map(fn ($c) => 'VendorAccountNumber eq '.$this->odataLit($c), $chunk);
+                $filterStr = '('.implode(' or ', $filters).") and dataAreaId eq 'mpg'";
+                $url = $this->getResource()."/data/VendorsV2?\$filter={$filterStr}&cross-company=true";
+
+                $response = Http::withToken($token)
+                    ->withHeaders(['OData-MaxVersion' => '4.0', 'OData-Version' => '4.0', 'Accept' => 'application/json'])
+                    ->timeout(30)
+                    ->get($url);
+
+                if (! $response->successful()) {
+                    Log::warning('D365 vendor name fetch failed. Status: '.$response->status());
+
+                    continue;
+                }
+
+                foreach ($response->json()['value'] ?? [] as $r) {
+                    $code = $r['VendorAccountNumber'] ?? null;
+                    if ($code === null) {
+                        continue;
+                    }
+                    $out[$code] = $r['VendorOrganizationName'] ?? $r['VendorSearchName'] ?? $code;
+                }
+            }
+
+            Cache::put($cacheKey, $out, now()->addHour());
+        } catch (\Throwable $e) {
+            Log::error('Exception fetching D365 vendor names: '.$e->getMessage());
 
             return [];
         }

@@ -80,7 +80,7 @@
 <form method="GET" class="card premium-card filter-card mb-4">
     <div class="card-body p-4">
         <div class="row g-3">
-            <div class="col-12 col-md-4">
+            <div class="col-12 col-md-3">
                 <label class="form-label small fw-semibold text-muted mb-2">Search Orders</label>
                 <div class="input-group">
                     <span class="input-group-text bg-white border-end-0 text-muted"><i class="fas fa-search"></i></span>
@@ -89,20 +89,29 @@
             </div>
             <div class="col-12 col-md-3">
                 <label class="form-label small fw-semibold text-muted mb-2">Vendor</label>
-                <select name="vendor_id" class="form-select searchable">
+                <select name="vendor_id" class="form-select searchable" data-no-clear>
                     <option value="">All Vendors</option>
                     @foreach($vendors as $v)
                         <option value="{{ $v->id }}" {{ request('vendor_id') == $v->id ? 'selected' : '' }}>{{ $v->name }}</option>
                     @endforeach
                 </select>
             </div>
-            <div class="col-12 col-md-3">
+            <div class="col-12 col-md-2">
                 <label class="form-label small fw-semibold text-muted mb-2">Workflow Stage</label>
-                <select name="workflow_stage" class="form-select searchable">
+                <select name="workflow_stage" class="form-select searchable" data-no-clear>
                     <option value="">All Stages</option>
                     @foreach(\App\Models\SubconOrder::workflowStages() as $value => $label)
                         <option value="{{ $value }}" {{ request('workflow_stage') == $value ? 'selected' : '' }}>{{ $label }}</option>
                     @endforeach
+                </select>
+            </div>
+            <div class="col-12 col-md-2">
+                <label class="form-label small fw-semibold text-muted mb-2">Add Process</label>
+                <select name="add_process" class="form-select searchable" data-no-clear>
+                    <option value="">All Work Orders</option>
+                    <option value="has" {{ request('add_process') === 'has' ? 'selected' : '' }}>Add Process: Qty Not Yet Reported</option>
+                    <option value="reported" {{ request('add_process') === 'reported' ? 'selected' : '' }}>Add Process: Qty Reported</option>
+                    <option value="po" {{ request('add_process') === 'po' ? 'selected' : '' }}>Add Process: Has Separate Purchase Order</option>
                 </select>
             </div>
             <div class="col-12 col-md-2 align-self-end">
@@ -124,13 +133,51 @@
                         <th>Style Name</th>
                         <th>Sizes</th>
                         <th>Due Date</th>
-                        <th>Workflow Stage</th>
-                        <th>Status</th>
+                        <th>{{ ($addProcessMode ?? false) ? 'Operation' : 'Workflow Stage' }}</th>
+                        <th>{{ ($addProcessMode ?? false) ? 'Add Process Status' : 'Status' }}</th>
                         <th></th>
                     </tr>
                 </thead>
                 <tbody>
                     @forelse($orders as $order)
+                    @if($addProcessMode ?? false)
+                        {{-- $order here is a plain ['production_group','operation','reported','addpro_pos']
+                             array from vsm.job_transaction_headers, NOT a SubconOrder — this
+                             row can exist with no work order at all (in-house production). --}}
+                        @php
+                            $linkedOrder = $ordersByGroup->get($order['production_group']);
+                            $addproPo = $order['addpro_pos'][0] ?? null;
+                            $extraPos = max(0, count($order['addpro_pos'] ?? []) - 1);
+                        @endphp
+                        <tr>
+                            <td>
+                                @if($addproPo)
+                                    <span class="code-pill" style="background-color: #fff4e6; border-color: #ffe0b3;">{{ $addproPo['po_number'] }}</span>
+                                    <div class="text-muted small mt-1">Add Process PO{{ $extraPos > 0 ? ' (+'.$extraPos.' more)' : '' }}</div>
+                                @else
+                                    <span class="code-pill">{{ $linkedOrder?->order_number ?? '—' }}</span>
+                                @endif
+                            </td>
+                            <td><span class="code-pill text-primary" style="background-color: #eff6ff; border-color: #dbeafe;">{{ $order['production_group'] }}</span></td>
+                            <td class="fw-semibold">
+                                @if($addproPo)
+                                    {{ $addproPo['vendor_name'] ?? $addproPo['vendor_code'] ?? '—' }}
+                                @else
+                                    {{ $linkedOrder?->vendor?->name ?? '— (in-house / unregistered)' }}
+                                @endif
+                            </td>
+                            <td>{{ $order['style_name'] ?? $linkedOrder?->title ?? '—' }}</td>
+                            <td><span class="text-muted small">—</span></td>
+                            <td><span class="text-muted small">—</span></td>
+                            <td><span class="badge bg-primary-subtle text-primary border">{{ $order['operation'] }}</span></td>
+                            <td><span class="badge-workflow bg-{{ $order['reported'] ? 'success' : 'secondary' }}">{{ $order['reported'] ? 'Reported' : 'Not reported' }}</span></td>
+                            <td class="text-end">
+                                <a href="{{ route('subcon.admin.add-process.index', ['prg' => $order['production_group']]) }}" class="btn btn-sm btn-outline-primary rounded-pill px-3">
+                                    <i class="fas fa-eye me-1"></i> View
+                                </a>
+                            </td>
+                        </tr>
+                    @else
                     <tr>
                         <td><span class="code-pill">{{ $order->order_number }}</span></td>
                         <td>
@@ -176,11 +223,12 @@
                             </a>
                         </td>
                     </tr>
+                    @endif
                     @empty
                     <tr>
                         <td colspan="9" class="text-center text-muted py-5">
                             <i class="fas fa-folder-open fa-2x mb-3 text-muted opacity-50"></i>
-                            <p class="mb-0">No orders found matching the filter criteria.</p>
+                            <p class="mb-0">No {{ ($addProcessMode ?? false) ? 'add-process rows' : 'orders' }} found matching the filter criteria.</p>
                         </td>
                     </tr>
                     @endforelse
