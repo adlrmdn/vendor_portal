@@ -811,14 +811,16 @@ class SubconAdminController extends Controller
     }
 
     /**
-     * Lazy-load endpoint for report-validations.blade.php's Deduction column
-     * (see reportValidations()'s docblock for why it's deferred). Takes the
-     * tokens of the rows actually rendered on the page and returns each one's
-     * deduction cell, pre-rendered server-side (same
-     * subcon.partials.report-validation-deduction partial the initial page
-     * would have used) rather than raw JSON, so the client has no HTML to
-     * reconstruct — same "server renders, JS swaps a fragment" shape as the
-     * Daily Production Tracking board's style-card refresh.
+     * Lazy-load endpoint for the Deduction column on both
+     * report-validations.blade.php and director-approvals.blade.php (see
+     * reportValidations()'s/directorApprovals()'s docblocks for why it's
+     * deferred) — generic over any token from packaging_project_sessions, so
+     * one endpoint serves both tabs. Takes the tokens of the rows actually
+     * rendered on the page and returns each one's deduction cell, pre-rendered
+     * server-side (same subcon.partials.report-validation-deduction partial
+     * the initial page would have used) rather than raw JSON, so the client
+     * has no HTML to reconstruct — same "server renders, JS swaps a fragment"
+     * shape as the Daily Production Tracking board's style-card refresh.
      */
     public function reportValidationDeductions(Request $request)
     {
@@ -1095,16 +1097,21 @@ class SubconAdminController extends Controller
         $search = trim((string) $request->query('q', ''));
         $deductionOnly = $request->boolean('deduction_only');
 
-        $pending = $this->pendingDirectorApprovals();
+        // deduction_total/breakdown deferred by default — same fix and same
+        // reasoning as reportValidations()/pendingValidateSends(): this tab
+        // has fewer rows today, but the per-row cost is identical (~160ms of
+        // qms round trips via deductionBreakdown()) and scales the same way.
+        $pending = $this->pendingDirectorApprovals(withDeductions: $deductionOnly);
         if ($search !== '') {
             $pending = self::filterPendingRows($pending, $search);
         }
         if ($deductionOnly) {
             $pending = array_values(array_filter($pending, fn ($p) => ($p['deduction_total'] ?? 0) > 0));
+            // Rows carrying a deduction float to the top — only meaningful
+            // once deduction_total is actually known; see the matching
+            // comment in reportValidations().
+            usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
         }
-        // Rows carrying a deduction float to the top — see the matching
-        // comment in reportValidations().
-        usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
 
         $recentDecisions = \App\Models\SubconApprovalLog::query()
             ->where('gate', 'director')
@@ -1199,9 +1206,15 @@ class SubconAdminController extends Controller
      * Sessions pending Director authorization, mapped to local orders the same
      * way as pendingFinalApprovals(). Best-effort — never 500s the tab.
      *
+     * $withDeductions — see pendingValidateSends()'s docblock for the full
+     * reasoning (identical shape here): default false defers each row's
+     * deduction_total/breakdown to directorApprovals.blade.php's lazy-load
+     * fetch (reportValidationDeductions() — shared by both tabs, since it's
+     * generic over any token from packaging_project_sessions).
+     *
      * @return array<int, array<string, mixed>>
      */
-    private function pendingDirectorApprovals(): array
+    private function pendingDirectorApprovals(bool $withDeductions = true): array
     {
         try {
             if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
@@ -1298,10 +1311,15 @@ class SubconAdminController extends Controller
             // shared item number when given PLM ids from multiple orders at once.
             $rpaQueue = app(RpaQueueService::class);
 
-            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $rpaQueue, $rafByProject, $materialReturnByOrder) {
+            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $rpaQueue, $rafByProject, $materialReturnByOrder, $withDeductions) {
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
-                $deduction = $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id);
+                // null (not 0) when deferred — see pendingValidateSends()'s
+                // matching comment: the view/JS must tell "not fetched yet"
+                // apart from "fetched, genuinely zero".
+                $deduction = $withDeductions
+                    ? $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id)
+                    : null;
 
                 return [
                     'token' => $s->approval_token,
@@ -1315,7 +1333,7 @@ class SubconAdminController extends Controller
                     'ho_signature' => $s->ho_approval_signature ?? null,
                     'raf_status' => $rafByProject[$s->project_id] ?? null,
                     'material_return_status' => $order ? ($materialReturnByOrder[$order->id] ?? null) : null,
-                    'deduction_total' => $deduction['total'],
+                    'deduction_total' => $deduction['total'] ?? null,
                     'deduction_breakdown' => $deduction,
                 ];
             })->all();
