@@ -58,6 +58,20 @@ class RpaQueueService
      * report matrix from QMS, groups sessions into final_N version labels
      * (cycles 1+2 → final_1, 3 → final_2, 4 → final_3, then one per cycle) and
      * upserts the 'job_trans_raf' job (update payload while still 'pending').
+     *
+     * One deliberate deviation from the console: a version-label group whose
+     * aggregated qty is all-zero (every size, good AND reject) is dropped from
+     * the payload instead of being sent as a to-be-created line. The automaton
+     * (automaton/pw_service/reg_raf) can only write zeros into a line that
+     * D365 already has — a genuinely NEW line with nothing to report never
+     * gets its "Add line" button enabled, so the RPA bot burns all 3 retries
+     * and the job lands 'failed' (rpa_queues id 390, project
+     * PRJ-MPG-PRG-2606-000274-1786780150937, 2026-09-21 — cycles 1+2 both
+     * recorded literally nothing). Each group still consumes a line number
+     * whether or not it's sent, and a sent group carries that number
+     * explicitly as `line_no` (the automaton's Session.line_no override), so
+     * dropping an empty early group can never shift a later, already-filled
+     * D365 line out from under itself.
      */
     public function queueJobTransRaf(string $projectId): bool
     {
@@ -141,7 +155,16 @@ class RpaQueueService
             }
 
             $sessionsPayload = [];
+            $lineNo = 0;
             foreach ($groupDefs as $g) {
+                // Counted against every group def (not just ones we end up sending)
+                // so a group skipped below for being empty doesn't shift later
+                // groups' line numbers — those must stay pinned to their D365
+                // job-transaction line via the explicit line_no below, since
+                // "Add line" always appends after the current max line and the
+                // automaton has no other way to target a specific line.
+                $lineNo++;
+
                 $groupSessions = array_values(array_filter($sessionsList, fn ($s) => in_array($s['cycle'], $g['cycles'], true)));
                 if (empty($groupSessions)) {
                     continue;
@@ -194,13 +217,34 @@ class RpaQueueService
                 }
 
                 $sizesJson = [];
+                $hasQty = false;
                 foreach ($orderedSizes as $sz) {
                     if (isset($sizeMap[$sz])) {
                         $sizesJson[] = array_merge(['size' => $sz], $sizeMap[$sz]);
+                        if ($sizeMap[$sz]['good_qty'] > 0 || $sizeMap[$sz]['reject_qty'] > 0) {
+                            $hasQty = true;
+                        }
                     }
                 }
 
+                // A QC cycle that recorded literally nothing (no good qty, no
+                // reject of any kind, on every size) has nothing to report as
+                // finished — skip it rather than asking the RPA bot to "Add
+                // line" a brand-new, all-zero D365 job-transaction line. D365
+                // rejects that: the Add-line button never becomes enabled for
+                // it, which burns all 3 retry attempts and lands the job as
+                // 'failed' (e.g. rpa_queues id 390, project
+                // PRJ-MPG-PRG-2606-000274-1786780150937, cycles 1+2 both
+                // recorded zero — 2026-09-21). Existing groups already filled
+                // in D365 (e.g. final_2 -> line 2) are unaffected: line_no is
+                // pinned explicitly below so a skipped earlier group can't
+                // shift them.
+                if (! $hasQty) {
+                    continue;
+                }
+
                 $sessionsPayload[] = [
+                    'line_no' => $lineNo,
                     'version_label' => $g['label'],
                     'inspection_date' => $inspectionDate,
                     'sizes' => $sizesJson,
