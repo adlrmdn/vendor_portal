@@ -6,6 +6,9 @@
     $rp = fn ($v) => ($v !== null && $v !== '') ? 'Rp '.number_format(round((float) ($v ?? 0)), 0, '.', ',') : '—';
     $pct = fn ($num, $den) => $den > 0 ? number_format($num / $den * 100, 2, '.', ',').'%' : '0.00%';
     $fmtCons = fn ($v) => ($v !== null && $v !== '') ? number_format((float) $v, 4, '.', ',') : '—';
+    // Also used by Section 4's accessory-claim rows, ahead of where the
+    // accessory-breakdown section (below) redefines the same helper.
+    $nSmart = fn ($v) => ($v !== null && $v !== '') ? preg_replace('/\.00$/', '', number_format((float) $v, 2, '.', ',')) : '—';
     $fmtPercent = fn ($v) => ($v !== null && $v !== '') ? number_format((float) ($v * 100), 2, '.', ',').'%' : '—';
     $fmtDate = function ($v) {
         if (empty($v)) return '—';
@@ -31,12 +34,21 @@
     }
 
     $fabricDeductionLines = $fabricLines->filter(fn ($f) => ($f->deduction ?? 0) > 0)->values();
+    // Accessory retur shortfall claims — the RULED lines/total from
+    // QcReportPdfService::accessoryClaimRuling() (computed once in context()),
+    // NOT a raw sum of every positive accessoryBreakdown claim. Printing the
+    // raw sum here previously showed a nonzero "deduction" on the signed
+    // report for orders where the ruling correctly charged Rp 0 (no debit
+    // note was ever created for them) — this must always match what
+    // RpaQueueService::deductionBreakdown() actually charges.
+    $accessoryClaimLines = $accessoryClaimRuling['lines'] ?? collect();
     $manualTotal = $deductionLines->sum('amount');
     $fabricDeductionTotal = $fabricDeductionLines->sum('deduction');
+    $accessoryClaimTotal = $accessoryClaimRuling['total'] ?? 0.0;
     $penaltyTotal = $deductions['rejectProduksiPenalty'] + $deductions['barangHilangPenalty'];
-    $grandTotal = $penaltyTotal + $manualTotal + $fabricDeductionTotal;
+    $grandTotal = $penaltyTotal + $manualTotal + $fabricDeductionTotal + $accessoryClaimTotal;
     $hasAnyDeduction = $deductions['exceedingRejectQty'] > 0 || $deductions['sumBarangHilang'] > 0
-        || $deductionLines->isNotEmpty() || $fabricDeductionLines->isNotEmpty();
+        || $deductionLines->isNotEmpty() || $fabricDeductionLines->isNotEmpty() || $accessoryClaimLines->isNotEmpty();
 
     $embeddableImages = $defectImages->filter(fn ($i) => str_starts_with((string) ($i->image_path ?? ''), 'data:image'))->values();
     $result = strtoupper((string) ($session->result ?? 'PENDING')) ?: 'PENDING';
@@ -219,8 +231,18 @@
     <tr class="center bold" style="background: #F8FAFC;">
         <td>TOTAL</td>
         <td>{{ $n($totals['orderQty']) }}</td>
-        <td>{{ $totals['cutPlan'] !== null ? $n($totals['cutPlan']) : '—' }}</td>
-        <td>{{ $n($totals['cuttingQty']) }}</td>
+        <td>
+            {{ $totals['cutPlan'] !== null ? $n($totals['cutPlan']) : '—' }}
+            @if ($totals['cutPlan'] !== null)
+                <br><span class="muted" style="font-size: 4.2pt;">({{ $pct($totals['cutPlan'], $totals['orderQty']) }})</span>
+            @endif
+        </td>
+        <td>
+            {{ $n($totals['cuttingQty']) }}
+            @if ($totals['cutPlan'] !== null && $totals['cutPlan'] > 0)
+                <br><span class="muted" style="font-size: 4.2pt;">({{ $pct($totals['cuttingQty'], $totals['cutPlan']) }})</span>
+            @endif
+        </td>
         <td>{{ $n($totals['goodGarments']) }}<br><span class="muted" style="font-size: 4.2pt;">({{ $pct($totals['goodGarments'], $totals['cuttingQty']) }})</span></td>
         <td>{{ $totals['rejectCutting'] }}</td>
         <td>{{ $totals['rejectSewing'] }}</td>
@@ -344,6 +366,15 @@
                 <td class="center">{{ $rp($line->amount) }}</td>
             </tr>
         @endforeach
+        @if ($accessoryClaimLines->isNotEmpty())
+            <tr>
+                <td>Accessory Retur Shortfall</td>
+                <td class="center">—</td>
+                <td>{{ $accessoryClaimLines->count() }} accessory item{{ $accessoryClaimLines->count() > 1 ? 's' : '' }} returned short of Expected Retur — see Section 6 breakdown</td>
+                <td class="center">—</td>
+                <td class="center">{{ $rp($accessoryClaimTotal) }}</td>
+            </tr>
+        @endif
         <tr class="bold" style="background: #F8FAFC;">
             <td colspan="4" class="right" style="padding-right: 10px;">Total Deductions</td>
             <td class="center">{{ $rp($grandTotal) }}</td>
@@ -617,19 +648,21 @@
     <div class="muted" style="font-size: 5.6pt;">No accessory data found (PO lines or BOM Final) for this order.</div>
 @else
     <div class="muted" style="font-size: 4.6pt; font-style: italic; margin-bottom: 3px;">
-        "BOM only" = in BOM Final but no PO line. Cons. Plan / Actual Cons. are both per-pc rates (BOM design vs. real D365 usage). Expected Retur = Mats Sent &minus; Estimated Consumption (Plan &times; Cutting Qty).
+        "BOM only" = in BOM Final but no PO line. Cons. Plan / Actual Cons. are both per-pc rates (BOM design vs. real D365 usage). Expected Retur = Mats Sent &minus; Estimated Consumption (Plan &times; Cutting Qty), floored at 0. Balance = Retur Qty &minus; Expected Retur (negative = shortfall). Value (Cons.) is informational only — Price &times; actual posted consumption, not a retur figure. Claim = Price &times; shortfall, charged only when Balance is negative.
     </div>
     <table class="tbl">
         <tr>
-            <th style="width: 21%;">Item</th>
-            <th style="width: 9.5%;" class="center">Goods Receive</th>
-            <th style="width: 9.5%;" class="center">Mats Sent</th>
-            <th style="width: 10.5%;" class="center">Cons. Plan (BOM/pc)</th>
-            <th style="width: 10.5%;" class="center">Actual Cons. (pc)</th>
-            <th style="width: 9%;" class="center">Retur Qty</th>
-            <th style="width: 9.5%;" class="center">Expected Retur</th>
-            <th style="width: 9.5%;" class="center">Price</th>
-            <th style="width: 11%;" class="center">Value (ref)</th>
+            <th style="width: 17%;">Item</th>
+            <th style="width: 8%;" class="center">Goods Receive</th>
+            <th style="width: 8%;" class="center">Mats Sent</th>
+            <th style="width: 9%;" class="center">Cons. Plan (BOM/pc)</th>
+            <th style="width: 9%;" class="center">Actual Cons. (pc)</th>
+            <th style="width: 7.5%;" class="center">Retur Qty</th>
+            <th style="width: 8%;" class="center">Expected Retur</th>
+            <th style="width: 8%;" class="center">Balance</th>
+            <th style="width: 8%;" class="center">Price</th>
+            <th style="width: 9.5%;" class="center">Value (Cons.)</th>
+            <th style="width: 8%;" class="center">Claim</th>
         </tr>
         @foreach ($accessoryBreakdown as $a)
             <tr>
@@ -661,8 +694,10 @@
                 </td>
                 <td class="center">{{ $a['qty'] !== null ? $nSmart($a['qty']).' '.$a['unit'] : '—' }}</td>
                 <td class="center bold">{{ $a['expected_retur'] !== null ? $nSmart($a['expected_retur']).' '.$a['unit'] : '—' }}</td>
+                <td class="center{{ ($a['balance'] ?? 0) < 0 ? ' bold' : '' }}" style="{{ ($a['balance'] ?? 0) < 0 ? 'color: #DC2626;' : '' }}">{{ $a['balance'] !== null ? $nSmart($a['balance']).' '.$a['unit'] : '—' }}</td>
                 <td class="center">{{ $a['price'] !== null ? $rp($a['price']) : '—' }}</td>
                 <td class="center muted" style="font-style: italic;">{{ $a['value'] !== null ? $rp($a['value']) : '—' }}</td>
+                <td class="center{{ ($a['claim'] ?? 0) > 0 ? ' bold' : '' }}" style="{{ ($a['claim'] ?? 0) > 0 ? 'color: #DC2626;' : '' }}">{{ $a['claim'] !== null ? $rp($a['claim']) : '—' }}</td>
             </tr>
         @endforeach
     </table>

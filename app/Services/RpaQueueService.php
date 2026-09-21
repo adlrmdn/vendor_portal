@@ -567,14 +567,38 @@ class RpaQueueService
      * and barang-hilang charges the console used to write to
      * packaging_projects.deduction_amount before "Complete & Sync" was removed;
      * that field is no longer read anywhere, this recomputes it live instead so
-     * it can't go stale).
+     * it can't go stale) + the accessory retur shortfall claim (per-accessory
+     * `claim` in QcReportPdfService::context()'s accessoryBreakdown, filtered
+     * through the tiered ruling in accessoryClaimRuling() — see that method's
+     * docblock; a full context() call, so this is deliberately the most
+     * expensive summand here).
      */
     public function deductionTotal(string $projectId, ?string $sessionId): float
     {
-        $total = 0.0;
+        return $this->deductionBreakdown($projectId, $sessionId)['total'];
+    }
+
+    /**
+     * Same computation as deductionTotal() above, but broken out by source so
+     * callers that need to explain the figure (not just charge it) — e.g. the
+     * Report Validation / Director list rows, which want to flag a material
+     * recon shortfall distinctly from a fabric overconsumption charge — don't
+     * have to re-run the expensive accessoryBreakdown context() call a second
+     * time just to get the same number split apart.
+     *
+     * @return array{fabric:float,manual:float,rejectProduksiPenalty:float,barangHilangPenalty:float,accessoryClaimTotal:float,accessoryClaimCount:int,total:float}
+     */
+    public function deductionBreakdown(string $projectId, ?string $sessionId): array
+    {
+        $fabric = 0.0;
+        $manual = 0.0;
+        $rejectProduksiPenalty = 0.0;
+        $barangHilangPenalty = 0.0;
+        $accessoryClaimTotal = 0.0;
+        $accessoryClaimCount = 0;
 
         try {
-            $total += (float) DB::connection('qms')->table('packaging_project_fabric_lines')
+            $fabric = (float) DB::connection('qms')->table('packaging_project_fabric_lines')
                 ->where('project_id', $projectId)->sum('deduction');
         } catch (\Throwable $e) {
             Log::warning('RPA deduction total: fabric lines read failed', ['project' => $projectId, 'error' => $e->getMessage()]);
@@ -582,7 +606,7 @@ class RpaQueueService
 
         try {
             if ($sessionId) {
-                $total += (float) DB::connection('qms')->table('packaging_session_deduction_lines')
+                $manual = (float) DB::connection('qms')->table('packaging_session_deduction_lines')
                     ->where('session_id', $sessionId)->sum('amount');
             }
         } catch (\Throwable $e) {
@@ -591,14 +615,38 @@ class RpaQueueService
 
         try {
             if ($sessionId) {
-                $penalty = $this->reportPdf->calculateDeductions($projectId, $sessionId);
-                $total += (float) $penalty['rejectProduksiPenalty'] + (float) $penalty['barangHilangPenalty'];
+                // context() computes rejectProduksiPenalty/barangHilangPenalty via
+                // calculateDeductions() internally and returns it as $ctx['deductions']
+                // — calling calculateDeductions() separately here (as this used to)
+                // re-ran the exact same qms queries + computation a second time for
+                // no reason. One context() call now supplies both figures.
+                // $summaryOnly=true: this only reads accessoryBreakdown's `claim` —
+                // see context()'s docblock for exactly which D365 calls that skips.
+                $ctx = $this->reportPdf->context($projectId, $sessionId, summaryOnly: true);
+                $penalties = $ctx['deductions'] ?? [];
+                $rejectProduksiPenalty = (float) ($penalties['rejectProduksiPenalty'] ?? 0);
+                $barangHilangPenalty = (float) ($penalties['barangHilangPenalty'] ?? 0);
+                // Ruling now lives on QcReportPdfService::accessoryClaimRuling()
+                // (called once inside context() itself) so this, the report, and
+                // the debit-note template all read the exact same ruled figure —
+                // see that method's docblock for why this moved.
+                $ruling = $ctx['accessoryClaimRuling'] ?? ['total' => 0.0, 'count' => 0];
+                $accessoryClaimTotal = (float) $ruling['total'];
+                $accessoryClaimCount = (int) $ruling['count'];
             }
         } catch (\Throwable $e) {
-            Log::warning('RPA deduction total: penalty calc failed', ['project' => $projectId, 'error' => $e->getMessage()]);
+            Log::warning('RPA deduction total: context/penalty calc failed', ['project' => $projectId, 'error' => $e->getMessage()]);
         }
 
-        return round($total, 2);
+        return [
+            'fabric' => round($fabric, 2),
+            'manual' => round($manual, 2),
+            'rejectProduksiPenalty' => round($rejectProduksiPenalty, 2),
+            'barangHilangPenalty' => round($barangHilangPenalty, 2),
+            'accessoryClaimTotal' => round($accessoryClaimTotal, 2),
+            'accessoryClaimCount' => $accessoryClaimCount,
+            'total' => round($fabric + $manual + $rejectProduksiPenalty + $barangHilangPenalty + $accessoryClaimTotal, 2),
+        ];
     }
 
     /**

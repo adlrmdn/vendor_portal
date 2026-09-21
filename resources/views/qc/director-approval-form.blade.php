@@ -14,8 +14,22 @@
     $ded = $report['deductions'] ?? null;
     $fabricDeductionLines = $report ? $report['fabricLines']->filter(fn ($f) => ($f->deduction ?? 0) > 0)->values() : collect();
     $manualLines = $report ? $report['deductionLines'] : collect();
+    // Accessory retur-shortfall claim — the RULED lines/total from
+    // QcReportPdfService::accessoryClaimRuling() (embedded in context()'s
+    // return as $report['accessoryClaimRuling']), the same figure the
+    // inspection report / debit-note page print and RpaQueueService::
+    // deductionTotal() actually charges. This total was previously left out
+    // of $grandTotal entirely here, so the Director's own review page could
+    // show "No deductions for this inspection" (or an understated Total
+    // Deductions) for an order the Director's own approval EMAIL/WhatsApp
+    // message (sendDirectorApprovalRequest(), via deductionTotal()) already
+    // correctly flagged with a nonzero Deduction — the two views of the same
+    // pending decision disagreed. Must always match what clicking Authorize
+    // actually queues.
+    $accessoryClaimLines = $report ? ($report['accessoryClaimRuling']['lines'] ?? collect()) : collect();
+    $accessoryClaimTotal = $report ? (float) ($report['accessoryClaimRuling']['total'] ?? 0.0) : 0.0;
     $grandTotal = $report
-        ? ($ded['rejectProduksiPenalty'] + $ded['barangHilangPenalty'] + $fabricDeductionLines->sum('deduction') + $manualLines->sum('amount'))
+        ? ($ded['rejectProduksiPenalty'] + $ded['barangHilangPenalty'] + $fabricDeductionLines->sum('deduction') + $manualLines->sum('amount') + $accessoryClaimTotal)
         : 0;
     // Fabric-bottleneck cut plan (see subcon.partials.production-detail) — a
     // garment needs ALL its fabrics, so the achievable plan is capped by the
@@ -176,6 +190,9 @@
                                             @foreach($manualLines as $line)
                                                 <tr><td>{{ $line->description }}@if($line->created_by) <span class="text-muted">(added by {{ $line->created_by }})</span>@endif</td><td class="text-end">{{ $rp($line->amount) }}</td></tr>
                                             @endforeach
+                                            @if($accessoryClaimLines->isNotEmpty())
+                                                <tr><td>Accessory Retur Shortfall — {{ $accessoryClaimLines->count() }} accessory item{{ $accessoryClaimLines->count() > 1 ? 's' : '' }} returned short of Expected Retur</td><td class="text-end">{{ $rp($accessoryClaimTotal) }}</td></tr>
+                                            @endif
                                             @if($grandTotal <= 0)
                                                 <tr><td colspan="2" class="text-center text-muted py-3">No deductions for this inspection.</td></tr>
                                             @else

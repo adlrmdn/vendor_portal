@@ -187,9 +187,20 @@ class QcReportPdfService
      * the console feeds PrintReport (project + sessions + report lines +
      * defect images + fabric/deduction lines + staged remarks).
      *
+     * $summaryOnly skips D365 enrichment that only feeds DISPLAY fields the
+     * caller doesn't read — confirmed live to cost 1-4s of D365 round trips
+     * per call. Used by RpaQueueService::deductionBreakdown(), which only
+     * reads accessoryBreakdown's `claim` (needs fetchFinalRMConsumption, kept)
+     * and never reads fabricLines' D365-enriched fields or accessoryBreakdown's
+     * `display_label`/`inventory_group`/`goods_receive` (fetchItemMaster +
+     * fetchGoodsReceipts, both skipped) — pending-approval list tabs
+     * (Report Validation / Director) call this once per row, so the unused
+     * D365 work was pure multiplied waste there. Every other caller needs the
+     * full picture for display and must leave this false.
+     *
      * @return array<string,mixed>|null
      */
-    public function context(string $projectId, string $sessionId): ?array
+    public function context(string $projectId, string $sessionId, bool $summaryOnly = false): ?array
     {
         $qms = DB::connection('qms');
 
@@ -392,7 +403,7 @@ class QcReportPdfService
         // so over/underdelivery can be compared against what was actually
         // ordered, and the real posted D365 consumption. One batched
         // fabricLinesForPo() call for the whole report, not per row.
-        if ($subcon && ! empty($subcon->order_number) && $fabricLines->isNotEmpty()) {
+        if (! $summaryOnly && $subcon && ! empty($subcon->order_number) && $fabricLines->isNotEmpty()) {
             try {
                 $vsmFabricLines = $this->production->fabricLinesForPo((string) $subcon->order_number);
                 $vsmByLabel = [];
@@ -514,7 +525,7 @@ class QcReportPdfService
         $accessoryBreakdown = [];
         if ($subcon && ! empty($subcon->order_number)) {
             try {
-                $accessoryLines = $this->production->accessoryLinesForPo((string) $subcon->order_number);
+                $accessoryLines = $this->production->accessoryLinesForPo((string) $subcon->order_number, withItemMaster: ! $summaryOnly);
                 $accessoryRecon = app(MaterialReturnService::class)->linesFor($subcon)
                     ->where('item_type', 'accessory')->keyBy('label');
 
@@ -522,11 +533,15 @@ class QcReportPdfService
                 // (resolveGoodsReceipts), scoped to each accessory's OWN source
                 // PO(s) — NOT the subcon/CMT PO, which only ever receives the
                 // finished-garment service line, never raw accessory receipts.
+                // Only feeds the display-only `goods_receive` field (see
+                // $summaryOnly's docblock) — skipped entirely in summary mode.
                 $accGoodsReceive = [];
-                try {
-                    $accGoodsReceive = $this->production->resolveGoodsReceipts($accessoryLines);
-                } catch (\Throwable $e) {
-                    Log::warning('QC report PDF: accessory goods receipt fetch failed', ['project' => $projectId, 'error' => $e->getMessage()]);
+                if (! $summaryOnly) {
+                    try {
+                        $accGoodsReceive = $this->production->resolveGoodsReceipts($accessoryLines);
+                    } catch (\Throwable $e) {
+                        Log::warning('QC report PDF: accessory goods receipt fetch failed', ['project' => $projectId, 'error' => $e->getMessage()]);
+                    }
                 }
 
                 $cuttingQtyForAcc = (float) ($totals['cuttingQty'] ?? 0);
@@ -637,17 +652,52 @@ class QcReportPdfService
                     $expectedRetur = ($matsSent !== null && $estConsumption !== null)
                         ? $matsSent - $estConsumption
                         : null;
+                    // A negative Expected Retur only means the plan called for
+                    // more than was sent (nothing left over to return, by
+                    // definition) — floor it at 0 rather than showing a
+                    // negative "expected to come back" figure.
+                    if ($expectedRetur !== null && $expectedRetur < 0) {
+                        $expectedRetur = 0.0;
+                    }
 
                     // Price: same precedence as fabric's fabric_price
                     // (fabricLinesWithData()) — the admin's saved
                     // MaterialReturnLine.unit_price wins, else the VSM-derived
                     // weighted-average reference (accessoryLinesForPo()'s
-                    // unit_price). Value (ref) is informational only — there is
-                    // no deduction formula for accessories, unlike fabric.
+                    // unit_price).
                     $price = $priceAdmin ?? $priceVsm;
+                    // Value (Cons.) is informational only — price × real posted
+                    // D365 consumption, i.e. what was actually used, NOT what
+                    // was returned or the retur/expected-retur balance. Kept
+                    // separate from Balance/Claim below, which ARE
+                    // retur-related and DO feed the deduction total.
                     $value = ($price !== null && $consumption !== null) ? $price * $consumption : null;
 
+                    // Balance = Retur Qty − Expected Retur. Positive/zero: the
+                    // vendor returned at least as much as expected (fine, no
+                    // charge). Negative: a shortfall — returned less than
+                    // expected, i.e. unaccounted-for material — and IS
+                    // charged, unlike Value above.
+                    //
+                    // Retur Qty 0 IS treated as a real declared value here (not
+                    // "not yet entered") — by product decision, since
+                    // MaterialReturnLine has no column distinguishing a
+                    // genuinely-reviewed zero from an untouched form default.
+                    // This was briefly changed to require Retur Qty > 0 (to
+                    // avoid charging a claim nobody actually confirmed — see
+                    // git history around 2026-09-17), then reverted: a 0 is
+                    // wanted to count as a real shortfall claim as soon as an
+                    // Expected Retur exists, even before HO has touched the
+                    // Retur Qty field on that specific row. Know this before
+                    // trusting the Deduction total blind — verify against
+                    // Expected Retur/Balance per accessory when it matters.
+                    $balance = ($qty !== null && $expectedRetur !== null) ? $qty - $expectedRetur : null;
+                    $claim = ($balance !== null && $balance < 0 && $price !== null)
+                        ? abs($balance) * $price
+                        : (($balance !== null) ? 0.0 : null);
+
                     return [
+                        'label' => $vsmLabel,
                         'display_label' => $displayLabel,
                         'item_number' => $itemNumberCsv ?: null,
                         'unit' => $unit ?: 'PCS',
@@ -663,8 +713,10 @@ class QcReportPdfService
                         'actual_cons' => $actualConsRate,
                         'cutting_qty' => $cuttingQtyForAcc,
                         'expected_retur' => $expectedRetur,
+                        'balance' => $balance,
                         'price' => $price,
                         'value' => $value,
+                        'claim' => $claim,
                         'from_bom_only' => false,
                         'in_bom' => $inBom,
                     ];
@@ -712,6 +764,23 @@ class QcReportPdfService
                 Log::warning('QC report PDF: accessory reconciliation read failed', ['project' => $projectId, 'error' => $e->getMessage()]);
             }
         }
+
+        // Computed here (not left to each display of accessoryBreakdown to
+        // re-derive its own total) so the report, the debit note, and the
+        // actual RPA charge (RpaQueueService::deductionBreakdown(), which reads
+        // this same key off context()'s return) can never disagree on what the
+        // accessory retur shortfall total actually is. Confirmed live: before
+        // this was centralized, the report/debit-note templates summed every
+        // positive accessoryBreakdown claim directly, while the real charge
+        // went through this ruling — an order with only untouched-Retur-Qty
+        // noise (no fabric overconsumption, cutting on target) printed a
+        // nonzero "Total Deductions" on the signed report despite the actual
+        // ruled/charged amount being Rp 0, with no debit note ever created.
+        $accessoryClaimRuling = $this->accessoryClaimRuling([
+            'fabricLines' => $fabricLines,
+            'totals' => $totals,
+            'accessoryBreakdown' => $accessoryBreakdown,
+        ]);
 
         // Cut Plan per size — same fabric-bottleneck proration as the vendor/admin
         // work order page (production-detail.blade.php): take the SMALLEST
@@ -772,6 +841,7 @@ class QcReportPdfService
             'deductions' => $deductions,
             'fabricLines' => $fabricLines,
             'accessoryBreakdown' => $accessoryBreakdown,
+            'accessoryClaimRuling' => $accessoryClaimRuling,
             'deductionLines' => $deductionLines,
             'defectImages' => $defectImages,
             'attachments' => $attachments,
@@ -791,6 +861,75 @@ class QcReportPdfService
     }
 
     /**
+     * Retur Material claim ruling (2026-09) — the accessory claim total is
+     * NOT a flat sum of every accessory's positive claim. Three-tier rule:
+     *
+     *   1. If ANY fabric line's overconsumption exceeds 3% (the same
+     *      tolerance the fabric deduction formula itself charges past —
+     *      see SubconConsumptionService's docblock), the order is treated
+     *      as "in overconsumption": every accessory with claim > 0 is
+     *      summed. Clear evidence of fabric overconsumption is taken as
+     *      grounds to charge the full accessory shortfall too, not just
+     *      fabric's own charge.
+     *   2. Otherwise, check Cut Qty as a % of Order Qty (Section 3 yield-
+     *      matrix totals — the same totals the PDF report's own Cut Qty/
+     *      Order Qty percentages use). If cutting fell short by more than
+     *      3% (Cut Qty < 97% of Order Qty), only claims that are
+     *      INDIVIDUALLY over Rp 50,000 are summed — with no overconsumption
+     *      signal, a small per-item shortfall is treated as noise, but a
+     *      genuinely large one still counts.
+     *   3. If neither condition fires (overconsumption <= 3% AND Cut Qty >=
+     *      97% of Order Qty), the claim is 0 — nothing to charge.
+     *
+     * Single source of truth: called once from context() and the result
+     * embedded in its return under 'accessoryClaimRuling', so the report body,
+     * the debit-note template, AND RpaQueueService::deductionBreakdown() (the
+     * actual charge) all read the exact same ruled lines/total — none of them
+     * re-derives its own answer from the raw accessoryBreakdown claims.
+     * Previously each of those three read $accessoryBreakdown independently
+     * and only RpaQueueService applied this gate, so a report/debit-note could
+     * print a nonzero "Accessory Retur Shortfall" total that was never
+     * actually charged (tier 3 zeroed it) — confirmed live on several
+     * completed orders whose reports showed a claim but had no debit note.
+     *
+     * @param  array{fabricLines: \Illuminate\Support\Collection, totals: array<string,mixed>, accessoryBreakdown: array<int,array<string,mixed>>}  $ctx
+     * @return array{lines: \Illuminate\Support\Collection, total: float, count: int}
+     */
+    public function accessoryClaimRuling(array $ctx): array
+    {
+        $anyFabricOverconsumption = false;
+        foreach ($ctx['fabricLines'] ?? [] as $f) {
+            if ((float) ($f->overconsumption ?? 0) > 0.03) {
+                $anyFabricOverconsumption = true;
+                break;
+            }
+        }
+
+        $threshold = 0.0; // tier 1: every positive claim counts
+        if (! $anyFabricOverconsumption) {
+            $totals = $ctx['totals'] ?? [];
+            $orderQty = (float) ($totals['orderQty'] ?? 0);
+            $cutQty = (float) ($totals['cuttingQty'] ?? 0);
+            $cutQtyPct = $orderQty > 0 ? $cutQty / $orderQty : 1.0;
+            if ($cutQtyPct < 0.97) {
+                $threshold = 50000.0; // tier 2: only claims over Rp 50,000
+            } else {
+                return ['lines' => collect(), 'total' => 0.0, 'count' => 0]; // tier 3: neither trigger fired
+            }
+        }
+
+        $lines = collect($ctx['accessoryBreakdown'] ?? [])
+            ->filter(fn ($a) => (float) ($a['claim'] ?? 0) > $threshold)
+            ->values();
+
+        return [
+            'lines' => $lines,
+            'total' => round((float) $lines->sum('claim'), 2),
+            'count' => $lines->count(),
+        ];
+    }
+
+    /**
      * Penalty deductions for one session — 1:1 port of the console's
      * calculations.ts (`rejectProduksiPenalty` + `barangHilangPenalty`):
      * production reject exceeding the 1%-of-cutting-qty limit, and lost items
@@ -800,8 +939,11 @@ class QcReportPdfService
      * yield-matrix figures shown elsewhere in the report.
      *
      * $project/$reportLines/$baseLines may be passed in by context() to avoid
-     * re-querying what it already loaded; omit them to call this standalone
-     * (e.g. from RpaQueueService::deductionTotal()).
+     * re-querying what it already loaded; context() is currently the only
+     * caller — RpaQueueService::deductionBreakdown() used to call this
+     * standalone too, but that re-ran the same qms queries context() already
+     * does, so it now reads the penalty figures off context()'s own
+     * $ctx['deductions'] instead.
      *
      * @return array{penaltyPrice:float,exceedingRejectQty:int,sumRejectProduksi:int,sumCuttingQty:int,sumBarangHilang:int,rejectProduksiPenalty:float,barangHilangPenalty:float}
      */

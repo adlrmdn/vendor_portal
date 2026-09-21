@@ -1332,6 +1332,48 @@ class SubconAdminController extends Controller
             $accessoryIssue = [];
         }
 
+        // Expected Retur / Balance / Claim per accessory — same snapshot
+        // QcApprovalController::hoApprovalForm() shows at Final Approval /
+        // Report Validation, surfaced here too so the work order page reads
+        // consistently rather than looking like a stripped-down copy. Only
+        // ever available once a QC-console project/session exists for this
+        // order (well after cutting/gramasi in most cases) — best-effort,
+        // same as SubconVendorController::viewOrder()'s identical fetch.
+        //
+        // $accessoryClaimTotal is the RULED total (QcReportPdfService::
+        // accessoryClaimRuling(), embedded in context()'s return), NOT a raw
+        // sum of every positive accessoryBreakdown claim — same fix applied to
+        // QcApprovalController::hoApprovalForm()'s identical snapshot. A raw
+        // sum here fed the same consumption-input.blade.php "Grand Total
+        // (Fabric + Accessory)" footer this page shares with the HO form, so
+        // it carried the identical divergence risk from the real charge
+        // (RpaQueueService::deductionBreakdown()).
+        $accessoryClaimByLabel = [];
+        $accessoryClaimTotal = 0.0;
+        if (! empty($order->production_group)) {
+            try {
+                $projectId = DB::connection('qms')->table('packaging_projects')
+                    ->where('production_group', $order->production_group)
+                    ->orderByDesc('created_at')
+                    ->value('project_id');
+                $sessionId = $projectId
+                    ? DB::connection('qms')->table('packaging_project_sessions')
+                        ->where('project_id', $projectId)
+                        ->orderByDesc('cycle_number')
+                        ->value('session_id')
+                    : null;
+                if ($projectId && $sessionId) {
+                    $ctx = $this->reportPdf->context((string) $projectId, (string) $sessionId);
+                    foreach ($ctx['accessoryBreakdown'] ?? [] as $a) {
+                        $accessoryClaimByLabel[$a['label']] = $a;
+                    }
+                    $accessoryClaimTotal = (float) ($ctx['accessoryClaimRuling']['total'] ?? 0.0);
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — Expected Retur/Balance/Claim just don't show.
+            }
+        }
+
         $materialReturnService = app(\App\Services\MaterialReturnService::class);
         $materialReturns = $materialReturnService->attachmentsFor($order);
         $materialReturnTask = $materialReturnService->activeTaskFor($order);
@@ -1352,7 +1394,7 @@ class SubconAdminController extends Controller
         // VSM's PLM chain is broken — see qcSizeOrderQtyFor()'s docblock.
         $qcSizeOrderQty = $this->qcSizeOrderQtyFor($order);
 
-        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'totalCut', 'accessoryLines', 'accessoryGoodsReceive', 'accessoryIssue', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcPipeline', 'qcSizeOrderQty'));
+        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'fabricLines', 'totalCut', 'accessoryLines', 'accessoryGoodsReceive', 'accessoryIssue', 'accessoryRecon', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcPipeline', 'qcSizeOrderQty'));
     }
 
     /**

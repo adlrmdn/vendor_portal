@@ -338,7 +338,7 @@ class QcApprovalController extends Controller
      * fabric-reconciliation values from the matching subcon order and the total
      * cutting quantity used to derive actual consumption.
      */
-    public function hoApprovalForm(Request $request, string $token, SubconProductionService $production)
+    public function hoApprovalForm(Request $request, string $token, SubconProductionService $production, QcReportPdfService $reportPdf)
     {
         $row = $this->findByToken($token);
 
@@ -533,7 +533,48 @@ class QcApprovalController extends Controller
         // through as a live-form prefill/placeholder for the same field.
         $materialAccessoryIssue = $subcon ? $production->materialIssueForOrder((string) $subcon->production_group) : [];
 
-        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'materialAccessoryLines', 'materialAccessoryRecon', 'materialAccessoryGoodsReceive', 'materialAccessoryIssue'));
+        // Accessory retur-shortfall claim, as of the last save — the same
+        // per-fabric-label figures (expected_retur/balance/claim) the Section 6
+        // PDF breakdown and RpaQueueService::deductionTotal() use, keyed by
+        // label so material-recon-accessory.blade.php can show them alongside
+        // each row. This is necessarily a SNAPSHOT of the last saved
+        // qty/mats_sent/price, not a live recalculation of whatever HO is
+        // currently typing — Expected Retur depends on D365 consumption data
+        // with no client-side formula, unlike the Fabric table's deduction
+        // (which the JS above DOES recompute live). It only reflects new
+        // edits after this form is submitted and reloaded. Best-effort: falls
+        // back to an empty/zero total on any failure (VSM/D365 unreachable),
+        // same as every other best-effort block on this page.
+        //
+        // $accessoryClaimTotal is the RULED total (QcReportPdfService::
+        // accessoryClaimRuling(), embedded in context()'s return), NOT a raw
+        // sum of every positive accessoryBreakdown claim — same fix as the
+        // inspection report / debit-note page (see that method's docblock).
+        // Before this, this form's "Grand Total (Fabric + Accessory)" footer
+        // (consumption-input.blade.php) could show a nonzero accessory total
+        // to MD Production for an order the tiered rule would actually charge
+        // Rp 0 for — the exact figure RpaQueueService::deductionBreakdown()
+        // uses for the real charge, just computed independently and wrong.
+        $accessoryClaimByLabel = [];
+        $accessoryClaimTotal = 0.0;
+        if ($subcon) {
+            try {
+                $ctx = $reportPdf->context((string) $row->project_id, (string) $row->session_id);
+                foreach ($ctx['accessoryBreakdown'] ?? [] as $a) {
+                    // Keyed by the raw VSM/PO label (persistence key), never
+                    // display_label (an item-master display name that can
+                    // legitimately differ — see the fabric-line trim-exclusion
+                    // fix this mirrors: matching on display text instead of the
+                    // real key silently drops rows whose label was renamed).
+                    $accessoryClaimByLabel[$a['label']] = $a;
+                }
+                $accessoryClaimTotal = (float) ($ctx['accessoryClaimRuling']['total'] ?? 0.0);
+            } catch (\Throwable $e) {
+                Log::warning('QC HO form: accessory claim snapshot failed', ['project' => $row->project_id ?? null, 'error' => $e->getMessage()]);
+            }
+        }
+
+        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'materialAccessoryLines', 'materialAccessoryRecon', 'materialAccessoryGoodsReceive', 'materialAccessoryIssue', 'accessoryClaimByLabel', 'accessoryClaimTotal'));
     }
 
     /**

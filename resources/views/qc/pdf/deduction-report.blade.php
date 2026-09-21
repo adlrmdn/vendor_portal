@@ -6,9 +6,13 @@
     // for BA Section 4 — duplicated here (not shared state) so the debit-note
     // page's claim table lists the *same* line items instead of one lump sum.
     // Keep this in sync with the @php block at the top of that partial.
+    // Accessory lines come from context()'s pre-computed accessoryClaimRuling
+    // (same as the report body) — see QcReportPdfService::accessoryClaimRuling()
+    // for why this must never be a raw accessoryBreakdown sum again.
     $debitFabricDeductionLines = $fabricLines->filter(fn ($f) => ($f->deduction ?? 0) > 0)->values();
+    $debitAccessoryClaimLines = $accessoryClaimRuling['lines'] ?? collect();
     $debitHasAnyDeduction = $deductions['exceedingRejectQty'] > 0 || $deductions['sumBarangHilang'] > 0
-        || $deductionLines->isNotEmpty() || $debitFabricDeductionLines->isNotEmpty();
+        || $deductionLines->isNotEmpty() || $debitFabricDeductionLines->isNotEmpty() || $debitAccessoryClaimLines->isNotEmpty();
 @endphp
 <!DOCTYPE html>
 <html>
