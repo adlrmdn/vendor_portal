@@ -21,13 +21,14 @@ class AdminController extends Controller
     public function dashboard()
     {
         $stats = [
-            'total_pos' => PurchaseOrder::count(),
-            'active_pos' => PurchaseOrder::whereIn('status', ['pending', 'processing'])->count(),
-            'completed_pos' => PurchaseOrder::where('status', 'completed')->count(),
+            'total_pos' => PurchaseOrder::notArchived()->count(),
+            'active_pos' => PurchaseOrder::notArchived()->whereIn('status', ['pending', 'processing'])->count(),
+            'completed_pos' => PurchaseOrder::notArchived()->where('status', 'completed')->count(),
             'total_vendors' => Vendor::where('type', 'fabric')->where('is_active', true)->count(),
         ];
 
-        $recentOrders = PurchaseOrder::with(['vendor'])
+        $recentOrders = PurchaseOrder::notArchived()
+            ->with(['vendor'])
             ->withCount([
                 'items', // Total batches
                 // "Items" = real product lines. Exclude partial-shipment shadows
@@ -72,7 +73,8 @@ class AdminController extends Controller
         $itemNumber = $request->input('item_number');
         $styleFilter = $request->input('style');
 
-        $query = PurchaseOrder::with(['vendor'])
+        $query = PurchaseOrder::notArchived()
+            ->with(['vendor'])
             ->withCount([
                 'items', // Total batches
                 // "Items" = real product lines. Exclude partial-shipment shadows

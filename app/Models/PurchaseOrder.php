@@ -33,6 +33,7 @@ class PurchaseOrder extends Model
         'total_amount' => 'decimal:2',
         'order_date' => 'date',
         'delivery_date' => 'date',
+        'archived_at' => 'datetime',
     ];
 
     protected static function boot()
@@ -64,6 +65,12 @@ class PurchaseOrder extends Model
     public function scopeActive($query)
     {
         return $query->whereIn('status', ['pending', 'processing']);
+    }
+
+    /** Excludes POs archived by d365:archive-invoiced-orders from default browse/dashboard lists. */
+    public function scopeNotArchived($query)
+    {
+        return $query->whereNull('archived_at');
     }
 
     public function updateTotalAmount()

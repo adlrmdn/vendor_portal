@@ -121,7 +121,8 @@ class VendorController extends Controller
         $vendorId = Auth::user()->vendor_id;
 
         $stats = [
-            'active_pos' => PurchaseOrder::where('vendor_id', $vendorId)
+            'active_pos' => PurchaseOrder::notArchived()
+                ->where('vendor_id', $vendorId)
                 ->whereIn('status', ['pending', 'processing'])
                 ->count(),
             'pending_items' => PoItem::whereHas('purchaseOrder', function ($q) use ($vendorId) {
@@ -130,12 +131,14 @@ class VendorController extends Controller
             'processing_items' => PoItem::whereHas('purchaseOrder', function ($q) use ($vendorId) {
                 $q->where('vendor_id', $vendorId);
             })->where('status', 'processing')->count(),
-            'completed_pos' => PurchaseOrder::where('vendor_id', $vendorId) // Changed from printed_rolls
+            'completed_pos' => PurchaseOrder::notArchived() // Changed from printed_rolls
+                ->where('vendor_id', $vendorId)
                 ->where('status', 'completed')
                 ->count(),
         ];
 
-        $recentOrders = PurchaseOrder::where('vendor_id', $vendorId)
+        $recentOrders = PurchaseOrder::notArchived()
+            ->where('vendor_id', $vendorId)
             ->withCount([
                 'items', // Total batches
                 // "Items" = real product lines. Exclude partial-shipment shadows
@@ -174,7 +177,8 @@ class VendorController extends Controller
         // Includes POs from any vendor linked via a shared PC reference —
         // see accessibleVendorIds(). Ordinary (unlinked) vendors just get
         // their own vendor_id back, so this is a no-op for them.
-        $query = PurchaseOrder::whereIn('vendor_id', $this->accessibleVendorIds())
+        $query = PurchaseOrder::notArchived()
+            ->whereIn('vendor_id', $this->accessibleVendorIds())
             ->with('vendor:id,name,vendor_code')
             ->withCount([
                 'items', // Total batches
