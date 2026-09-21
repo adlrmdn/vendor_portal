@@ -1188,9 +1188,16 @@ class QcApprovalController extends Controller
         // Re-render the document at SEND time so the Director's attachment
         // carries the numbers as they stand now (post-RAF), not as of the
         // approve click. Best-effort — the emails fall back to the stored copy.
-        $this->refreshVerifiedDoc($row);
-
-        $this->sendDirectorApprovalRequest($token, $row);
+        // Deferred to a queued job: refreshVerifiedDoc()'s context() render is
+        // confirmed live to cost 1-4s of D365 round trips on its own, and
+        // sendDirectorApprovalRequest() below it repeats a chunk of that same
+        // D365 work just to build the email body — confirmed live to add ~5s
+        // to this request when run inline. Nothing after this point in the
+        // request depends on either having completed (the response below is
+        // static, and directorApprovalForm() recomputes its own figures fresh
+        // rather than reading verified_doc), so both are safe to push off the
+        // request thread. The job runs them in the same order they ran here.
+        \App\Jobs\RefreshQcVerifiedDocAndNotifyDirector::dispatch($token);
 
         // Tell the earlier participants (QC inspector + factory representative)
         // that MD Production approved and the Director stage is underway.
@@ -1894,7 +1901,7 @@ class QcApprovalController extends Controller
      * Called after every signature milestone so the document always carries the
      * signatures collected so far — the console no longer needs to be open.
      */
-    private function refreshVerifiedDoc(object $row): void
+    public function refreshVerifiedDoc(object $row): void
     {
         try {
             $svc = app(QcReportPdfService::class);
@@ -2010,7 +2017,7 @@ class QcApprovalController extends Controller
      * link (same token). Recipients from `qc_director_approver_email`, empty-aware
      * fallback to the Final (HO) list. Attaches the just-refreshed verified_doc.
      */
-    private function sendDirectorApprovalRequest(string $token, object $row): void
+    public function sendDirectorApprovalRequest(string $token, object $row): void
     {
         try {
             $to = Setting::getValue('qc_director_approver_email');
