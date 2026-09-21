@@ -165,7 +165,40 @@ class SubconVendorController extends Controller
             }
         }
 
-        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'dailyCuttingTotals', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcSizeOrderQty'));
+        // Expected Retur / Balance per accessory — same read-only snapshot
+        // QcApprovalController::hoApprovalForm() shows HO, informational only
+        // for the vendor (no Price/Claim exposed here — see
+        // fabric-reconciliation.blade.php's $returQtyOnly mode). Only ever
+        // available once a QC-console project/session exists for this order,
+        // which is well after cutting/gramasi — the vendor is filling this in
+        // long before that most of the time, so an empty result here is the
+        // common case, not a bug. Best-effort: any failure just leaves the
+        // columns off, same as QcReportPdfService::context() returning null.
+        $accessoryClaimByLabel = [];
+        if (! empty($order->production_group)) {
+            try {
+                $projectId = \Illuminate\Support\Facades\DB::connection('qms')->table('packaging_projects')
+                    ->where('production_group', $order->production_group)
+                    ->orderByDesc('created_at')
+                    ->value('project_id');
+                $sessionId = $projectId
+                    ? \Illuminate\Support\Facades\DB::connection('qms')->table('packaging_project_sessions')
+                        ->where('project_id', $projectId)
+                        ->orderByDesc('cycle_number')
+                        ->value('session_id')
+                    : null;
+                if ($projectId && $sessionId) {
+                    $ctx = app(\App\Services\QcReportPdfService::class)->context((string) $projectId, (string) $sessionId);
+                    foreach ($ctx['accessoryBreakdown'] ?? [] as $a) {
+                        $accessoryClaimByLabel[$a['label']] = $a;
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Leave empty — Expected Retur/Balance just don't show.
+            }
+        }
+
+        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'dailyCuttingTotals', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcSizeOrderQty', 'accessoryClaimByLabel'));
     }
 
     /**

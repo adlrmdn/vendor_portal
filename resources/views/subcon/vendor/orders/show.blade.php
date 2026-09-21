@@ -246,7 +246,7 @@
                     @csrf
                     @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'dailyCuttingTotals' => $dailyCuttingTotals, 'mode' => 'cutting'])
 
-                    @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon, 'editable' => true])
+                    @include('subcon.partials.fabric-reconciliation', ['fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon, 'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon, 'accessoryClaimByLabel' => $accessoryClaimByLabel ?? [], 'editable' => true])
 
                     @include('subcon.partials.blister-input', ['order' => $order, 'editable' => false, 'required' => false])
                 </form>
@@ -311,6 +311,7 @@
                 @include('subcon.partials.fabric-reconciliation', [
                     'fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon,
                     'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon,
+                    'accessoryClaimByLabel' => $accessoryClaimByLabel ?? [],
                     'editable' => $order->materialReturnVendorWindowOpen(),
                     'standalone' => true,
                     'saveRoute' => route('subcon.vendor.orders.material-reconciliation', $order->id),
@@ -359,6 +360,7 @@
                 @include('subcon.partials.fabric-reconciliation', [
                     'fabricLines' => $fabricLines, 'fabricRecon' => $fabricRecon,
                     'accessoryLines' => $accessoryLines, 'accessoryRecon' => $accessoryRecon,
+                    'accessoryClaimByLabel' => $accessoryClaimByLabel ?? [],
                     'editable' => $order->materialReturnVendorWindowOpen(),
                     'standalone' => true,
                     'saveRoute' => route('subcon.vendor.orders.material-reconciliation', $order->id),

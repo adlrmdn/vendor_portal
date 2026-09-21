@@ -18,6 +18,11 @@
       $fabricRecon     Collection of SubconFabricReconciliation keyed by label
       $accessoryLines  array from SubconProductionService::accessoryLinesForPo()
       $accessoryRecon  Collection of MaterialReturnLine (item_type=accessory) keyed by label
+      $accessoryClaimByLabel  array keyed by label — Expected Retur/Balance snapshot,
+                        optional, only available once a QC-console project/session
+                        exists for this order (usually not yet, at cutting/gramasi —
+                        see SubconVendorController::viewOrder()). Passed straight
+                        through to material-recon-accessory.blade.php.
       $editable        bool
       $standalone      bool — false (default): no own <form>/save button, relies on an
                         external form (the cutting-report form embeds this directly, so
@@ -186,10 +191,16 @@
 
         <hr class="my-3">
 
+        {{-- returQtyOnly: this partial is vendor-only (grep confirms no admin
+             page includes it) — the vendor may only report how much they're
+             returning, never set Mats Sent or Price. See
+             material-recon-accessory.blade.php's own docblock. --}}
         @include('subcon.partials.material-recon-accessory', [
             'accessoryLines' => $accessoryLines,
             'accessoryRecon' => $accessoryRecon,
+            'accessoryClaimByLabel' => $accessoryClaimByLabel ?? [],
             'editable' => $editable,
+            'returQtyOnly' => true,
         ])
 
         @if($standalone && $editable)

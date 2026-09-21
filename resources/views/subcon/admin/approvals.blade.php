@@ -41,8 +41,13 @@
                     @foreach($orders as $order)
                         @php $gate = $order->workflow_stage === \App\Models\SubconOrder::STAGE_CUTTING_REVIEW ? 'cutting' : 'gramasi'; @endphp
                         <tr>
-                            <td>
-                                <a href="{{ route('subcon.admin.orders.view', $order->id) }}" class="fw-semibold text-decoration-none font-monospace">{{ $order->order_number }}</a>
+                            <td style="word-break: break-word;">
+                                <a href="{{ route('subcon.admin.orders.view', $order->id) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $order->order_number }}</a>
+                                @if($order->production_group)
+                                    <div class="small">
+                                        <a href="{{ route('subcon.admin.orders.view', $order->id) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $order->production_group }}</a>
+                                    </div>
+                                @endif
                                 <div class="text-muted small">{{ $order->title }}</div>
                             </td>
                             <td>{{ $order->vendor?->name ?? '—' }}</td>
@@ -86,11 +91,20 @@
                     {{-- Final (QC-console) approvals: stage-1 done, awaiting Final sign-off. --}}
                     @foreach($finalApprovals as $fa)
                         <tr>
-                            <td>
+                            <td style="word-break: break-word;">
                                 @if($fa['order_id'])
-                                    <a href="{{ route('subcon.admin.orders.view', $fa['order_id']) }}" class="fw-semibold text-decoration-none font-monospace">{{ $fa['order_number'] }}</a>
+                                    <a href="{{ route('subcon.admin.orders.view', $fa['order_id']) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $fa['order_number'] }}</a>
                                 @else
-                                    <span class="fw-semibold font-monospace">{{ $fa['order_number'] }}</span>
+                                    <span class="fw-semibold text-primary font-monospace">{{ $fa['order_number'] }}</span>
+                                @endif
+                                @if(! empty($fa['production_group']))
+                                    <div class="small">
+                                        @if($fa['order_id'])
+                                            <a href="{{ route('subcon.admin.orders.view', $fa['order_id']) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $fa['production_group'] }}</a>
+                                        @else
+                                            <span class="fw-semibold text-primary font-monospace">{{ $fa['production_group'] }}</span>
+                                        @endif
+                                    </div>
                                 @endif
                                 @if($fa['style'])<div class="text-muted small">{{ $fa['style'] }}</div>@endif
                             </td>

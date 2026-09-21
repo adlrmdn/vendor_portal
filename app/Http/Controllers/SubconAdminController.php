@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\Vendor;
 use App\Services\QcReportPdfService;
 use App\Services\RpaQueueReadService;
+use App\Services\RpaQueueService;
 use App\Services\SubconConsumptionService;
 use App\Services\SubconLabelService;
 use App\Services\SubconProductionService;
@@ -653,13 +654,21 @@ class SubconAdminController extends Controller
     public function reportValidations(Request $request)
     {
         $search = trim((string) $request->query('q', ''));
+        $deductionOnly = $request->boolean('deduction_only');
 
         $pending = $this->pendingValidateSends();
         if ($search !== '') {
             $pending = self::filterPendingRows($pending, $search);
         }
+        if ($deductionOnly) {
+            $pending = array_values(array_filter($pending, fn ($p) => ($p['deduction_total'] ?? 0) > 0));
+        }
+        // Rows carrying a deduction float to the top — the list is otherwise
+        // sorted by session update order, which buries the ones that actually
+        // need a second look under everything showing "None".
+        usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
 
-        return view('subcon.admin.report-validations', compact('pending', 'search'));
+        return view('subcon.admin.report-validations', compact('pending', 'search', 'deductionOnly'));
     }
 
     /**
@@ -746,41 +755,6 @@ class SubconAdminController extends Controller
                 ? collect()
                 : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
 
-            // Deduction total per session — same figure shown on the Director tab
-            // and actually queued to Finance (RpaQueueService::deductionTotal):
-            // fabric overconsumption charges by project + manual deduction lines
-            // by session, both batched (grouped sums) rather than N+1 per row.
-            // The reject/lost-items penalty is per-session and not batchable the
-            // same way (non-linear 1%-limit step function), so it's added per
-            // row below via QcReportPdfService::calculateDeductions() — this list
-            // is small (pending approvals only), so that's not a real N+1 concern.
-            // Best-effort: an unreachable QMS table just yields 0 everywhere.
-            $fabricDedByProject = [];
-            $manualDedBySession = [];
-            try {
-                if (Schema::connection('qms')->hasTable('packaging_project_fabric_lines')) {
-                    $fabricDedByProject = DB::connection('qms')->table('packaging_project_fabric_lines')
-                        ->whereIn('project_id', $projectIds)
-                        ->groupBy('project_id')
-                        ->selectRaw('project_id, SUM(deduction) as total')
-                        ->pluck('total', 'project_id')->all();
-                }
-            } catch (\Throwable $e) {
-                // Leave empty — deduction shows as 0 rather than failing the tab.
-            }
-            $sessionIds = $sessions->pluck('session_id')->filter()->unique()->values()->all();
-            try {
-                if (Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
-                    $manualDedBySession = DB::connection('qms')->table('packaging_session_deduction_lines')
-                        ->whereIn('session_id', $sessionIds)
-                        ->groupBy('session_id')
-                        ->selectRaw('session_id, SUM(amount) as total')
-                        ->pluck('total', 'session_id')->all();
-                }
-            } catch (\Throwable $e) {
-                // Leave empty — deduction shows as 0 rather than failing the tab.
-            }
-
             // Material Flow status per order — one batched read, best-effort
             // (an unreachable `wms` connection just leaves the badge off).
             // Uses the REAL gate (MaterialReturnService::pendingStatusForOrders(),
@@ -804,21 +778,32 @@ class SubconAdminController extends Controller
                 // Leave empty — the "Send to Material Flow" state just shows as unknown.
             }
 
-            $rows = $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $projectsById, $rafByProject, $fabricDedByProject, $manualDedBySession, $materialReturnByOrder) {
+            // Deduction breakdown per session — delegated to RpaQueueService::
+            // deductionBreakdown(), the single source of truth also used to build
+            // the Director's email and the actual RPA invoice/debit-note amount
+            // (QcApprovalController::sendDirectorApprovalRequest/directorApprove;
+            // deductionTotal() is a thin wrapper over the same breakdown). Split
+            // out (not just the total) so this list can flag a material recon
+            // shortfall distinctly from a fabric overconsumption charge, rather
+            // than leaving it buried inside one lump Deduction figure.
+            //
+            // NOT batched across rows: fetchFinalRMConsumption() aggregates its
+            // result by item NUMBER only, with no per-PLM/style scoping — feeding
+            // it a union of PLM ids from multiple different orders silently
+            // blends unrelated styles' consumption rates for any item number
+            // they happen to share (confirmed live: corrupted one order's claim
+            // from Rp 108,466.64 to Rp 0). Each row must resolve its own,
+            // single-order call.
+            $rpaQueue = app(RpaQueueService::class);
+
+            $rows = $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $projectsById, $rafByProject, $rpaQueue, $materialReturnByOrder) {
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
                 // No local order yet (e.g. the D365 PO hasn't been Confirmed so
                 // the sync won't create it) — fall back to the QMS console's own
                 // project record instead of showing a bare project_id/"—".
                 $project = $projectsById[$s->project_id] ?? null;
-                $penalty = $this->reportPdf->calculateDeductions((string) $s->project_id, (string) $s->session_id);
-                $deductionTotal = round(
-                    (float) ($fabricDedByProject[$s->project_id] ?? 0)
-                    + (float) ($manualDedBySession[$s->session_id] ?? 0)
-                    + (float) $penalty['rejectProduksiPenalty']
-                    + (float) $penalty['barangHilangPenalty'],
-                    2
-                );
+                $deduction = $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id);
 
                 return [
                     'token' => $s->approval_token,
@@ -831,7 +816,8 @@ class SubconAdminController extends Controller
                     'result' => $s->result ?? null,
                     'ho_signature' => $s->ho_approval_signature ?? null,
                     'raf_status' => $rafByProject[$s->project_id] ?? null,
-                    'deduction_total' => $deductionTotal,
+                    'deduction_total' => $deduction['total'],
+                    'deduction_breakdown' => $deduction,
                     'material_return_status' => $order ? ($materialReturnByOrder[$order->id] ?? null) : null,
                 ];
             })->all();
@@ -906,11 +892,18 @@ class SubconAdminController extends Controller
         // Authorize/Reject actions render, or the page is report-view-only.
         $isDirector = self::isDirectorUser(Auth::user());
         $search = trim((string) $request->query('q', ''));
+        $deductionOnly = $request->boolean('deduction_only');
 
         $pending = $this->pendingDirectorApprovals();
         if ($search !== '') {
             $pending = self::filterPendingRows($pending, $search);
         }
+        if ($deductionOnly) {
+            $pending = array_values(array_filter($pending, fn ($p) => ($p['deduction_total'] ?? 0) > 0));
+        }
+        // Rows carrying a deduction float to the top — see the matching
+        // comment in reportValidations().
+        usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
 
         $recentDecisions = \App\Models\SubconApprovalLog::query()
             ->where('gate', 'director')
@@ -926,7 +919,7 @@ class SubconAdminController extends Controller
             ->limit(15)
             ->get();
 
-        return view('subcon.admin.director-approvals', compact('pending', 'recentDecisions', 'isDirector', 'search'));
+        return view('subcon.admin.director-approvals', compact('pending', 'recentDecisions', 'isDirector', 'search', 'deductionOnly'));
     }
 
     /**
@@ -1053,51 +1046,61 @@ class SubconAdminController extends Controller
                 ? collect()
                 : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
 
-            // Deduction total per session — same figure the Invoice/Deduction RPA
-            // will actually queue on authorization (RpaQueueService::deductionTotal):
-            // fabric overconsumption charges (by project) + manual deduction lines
-            // (by session) + the reject/lost-items penalty (per row below, via
-            // QcReportPdfService::calculateDeductions — not batchable, see the
-            // twin comment in pendingValidateSends()). Batched here (grouped
-            // sums) rather than N+1 per row for the two batchable parts.
-            // Best-effort: an unreachable QMS table just yields 0 everywhere.
-            $fabricDedByProject = [];
-            $manualDedBySession = [];
+            // Live RAF run status per project — same batched read as
+            // pendingValidateSends(). Normally Completed by this stage (RAF is
+            // triggered at hoApprove(), one gate earlier), but still shown for
+            // confirmation rather than assumed.
+            $rafByProject = [];
             try {
-                if (Schema::connection('qms')->hasTable('packaging_project_fabric_lines')) {
-                    $fabricDedByProject = DB::connection('qms')->table('packaging_project_fabric_lines')
-                        ->whereIn('project_id', $projectIds)
-                        ->groupBy('project_id')
-                        ->selectRaw('project_id, SUM(deduction) as total')
-                        ->pluck('total', 'project_id')->all();
-                }
+                $rafByProject = DB::connection('rpa')->table('rpa_queues')
+                    ->whereIn('entity_id', $projectIds)
+                    ->where('rpa_type', 'job_trans_raf')
+                    ->orderBy('id')
+                    ->pluck('status', 'entity_id')->all();
             } catch (\Throwable $e) {
-                // Leave empty — deduction shows as 0 rather than failing the tab.
-            }
-            $sessionIds = $sessions->pluck('session_id')->filter()->unique()->values()->all();
-            try {
-                if (Schema::connection('qms')->hasTable('packaging_session_deduction_lines')) {
-                    $manualDedBySession = DB::connection('qms')->table('packaging_session_deduction_lines')
-                        ->whereIn('session_id', $sessionIds)
-                        ->groupBy('session_id')
-                        ->selectRaw('session_id, SUM(amount) as total')
-                        ->pluck('total', 'session_id')->all();
-                }
-            } catch (\Throwable $e) {
-                // Leave empty — deduction shows as 0 rather than failing the tab.
+                // Remote RPA DB unreachable — statuses just render as unknown.
             }
 
-            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $fabricDedByProject, $manualDedBySession) {
+            // Material Flow status per order — same batched read as
+            // pendingValidateSends(). hoSendApproval() already gates on this
+            // being clear before a row can reach this list, but a NEWER
+            // undispatched return line can appear after Report Validation was
+            // sent (the badge must reflect the real current gate, not just
+            // "it was fine when sent" — same reasoning as isVisibleOnBoard()).
+            $materialReturnByOrder = [];
+            try {
+                $orderIds = $ordersByPg->pluck('id')->filter()->unique()->values()->all();
+                $materialReturnSvc = app(\App\Services\MaterialReturnService::class);
+                $autoApprovedIds = $materialReturnSvc->autoApprovedStatusForOrders($orderIds);
+                $materialReturnByOrder = collect($materialReturnSvc->pendingStatusForOrders($orderIds))
+                    ->map(function ($pending, $oid) use ($autoApprovedIds) {
+                        if (isset($autoApprovedIds[$oid])) {
+                            return 'auto_approved';
+                        }
+
+                        return $pending ? 'pending' : 'checked';
+                    });
+            } catch (\Throwable $e) {
+                // Leave empty — the badge just shows as unknown.
+            }
+
+            // Deduction breakdown per session — delegated to RpaQueueService::
+            // deductionBreakdown(), the single source of truth also used to
+            // build the actual Invoice/Deduction RPA amount on authorization
+            // (QcApprovalController::directorApprove; deductionTotal() is a
+            // thin wrapper over the same breakdown). Split out (not just the
+            // total) so this list can flag a material recon shortfall
+            // distinctly, same reasoning as pendingValidateSends().
+            //
+            // NOT batched across rows — see pendingValidateSends()'s comment:
+            // fetchFinalRMConsumption() blends different styles' rates for any
+            // shared item number when given PLM ids from multiple orders at once.
+            $rpaQueue = app(RpaQueueService::class);
+
+            return $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $rpaQueue, $rafByProject, $materialReturnByOrder) {
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
-                $penalty = $this->reportPdf->calculateDeductions((string) $s->project_id, (string) $s->session_id);
-                $deductionTotal = round(
-                    (float) ($fabricDedByProject[$s->project_id] ?? 0)
-                    + (float) ($manualDedBySession[$s->session_id] ?? 0)
-                    + (float) $penalty['rejectProduksiPenalty']
-                    + (float) $penalty['barangHilangPenalty'],
-                    2
-                );
+                $deduction = $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id);
 
                 return [
                     'token' => $s->approval_token,
@@ -1109,7 +1112,10 @@ class SubconAdminController extends Controller
                     'version' => $s->version ?? null,
                     'result' => $s->result ?? null,
                     'ho_signature' => $s->ho_approval_signature ?? null,
-                    'deduction_total' => $deductionTotal,
+                    'raf_status' => $rafByProject[$s->project_id] ?? null,
+                    'material_return_status' => $order ? ($materialReturnByOrder[$order->id] ?? null) : null,
+                    'deduction_total' => $deduction['total'],
+                    'deduction_breakdown' => $deduction,
                 ];
             })->all();
         } catch (\Throwable $e) {

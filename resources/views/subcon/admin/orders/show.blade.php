@@ -113,6 +113,8 @@
                     'accessoryRecon' => $accessoryRecon,
                     'accessoryGoodsReceive' => $accessoryGoodsReceive,
                     'accessoryIssue' => $accessoryIssue,
+                    'accessoryClaimByLabel' => $accessoryClaimByLabel ?? [],
+                    'accessoryClaimTotal' => $accessoryClaimTotal ?? 0,
                     // The Approve button below submits THIS form to the cutting
                     // gate (SubconApprovalController::approveInApp), which only
                     // reads 'fabrics' — an edited accessories_recon here would be
@@ -143,6 +145,8 @@
                     'accessoryRecon' => $accessoryRecon,
                     'accessoryGoodsReceive' => $accessoryGoodsReceive,
                     'accessoryIssue' => $accessoryIssue,
+                    'accessoryClaimByLabel' => $accessoryClaimByLabel ?? [],
+                    'accessoryClaimTotal' => $accessoryClaimTotal ?? 0,
                     'accessoryEditable' => true,
                 ])
                 <div class="text-end mt-2 mb-3">

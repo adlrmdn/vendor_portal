@@ -75,8 +75,8 @@
 
     {{-- Same itemization as the inspection report's "4. Deductions & Remarks"
          (Production Reject Penalty / Lost Items Penalty / Fabric
-         Overconsumption / manual lines) — this claim mirrors that section
-         rather than showing one lump sum. --}}
+         Overconsumption / Accessory Retur Shortfall / manual lines) — this
+         claim mirrors that section rather than showing one lump sum. --}}
     <table style="width: 100%; border-collapse: collapse; margin-bottom: 4pt;">
         <tr style="border-bottom: 1pt solid #333;">
             <th style="width: 46%; text-align: left; padding: 4pt 2pt;">Description</th>
@@ -124,6 +124,15 @@
                     <td style="text-align: right; padding: 4pt 2pt;">Rp {{ number_format($line->amount, 0, '.', ',') }}</td>
                 </tr>
             @endforeach
+            @if ($debitAccessoryClaimLines->isNotEmpty())
+                <tr>
+                    <td style="padding: 4pt 2pt;">Accessory Retur Shortfall ({{ $debitAccessoryClaimLines->count() }} item{{ $debitAccessoryClaimLines->count() > 1 ? 's' : '' }})</td>
+                    <td style="text-align: center; padding: 4pt 2pt;">—</td>
+                    <td style="text-align: center; padding: 4pt 2pt;">-</td>
+                    <td style="text-align: right; padding: 4pt 2pt;">—</td>
+                    <td style="text-align: right; padding: 4pt 2pt;">Rp {{ number_format($debitAccessoryClaimLines->sum('claim'), 0, '.', ',') }}</td>
+                </tr>
+            @endif
         @endif
     </table>
 

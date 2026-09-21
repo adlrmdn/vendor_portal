@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Resolves a subcon CMT purchase order to its garment production detail,
@@ -20,6 +21,47 @@ use Illuminate\Support\Facades\DB;
 class SubconProductionService
 {
     /**
+     * Per-request memoization for forPo()/fabricLinesForPo()/accessoryLinesForPo(),
+     * which otherwise each independently re-run the identical `po_lines` PLMId
+     * lookup for the same PO — confirmed live on the admin order-view page, which
+     * calls all three against the same order in one request. Keyed by PO number.
+     *
+     * @var array<string, array<int, string>>
+     */
+    private array $plmIdsCache = [];
+
+    /**
+     * Same reasoning as $plmIdsCache: materialIssueForOrder() is called once
+     * inside fabricLinesWithData() and again directly by the order-view
+     * controller for the accessory side, same productionGroup, same request.
+     *
+     * @var array<string, array<string, array{proposal: float, consumption: float, all_posted: bool}>>
+     */
+    private array $materialIssueCache = [];
+
+    /**
+     * Distinct, non-blank PLMIds on a PO's lines — the shared first step of
+     * forPo(), fabricLinesForPo() and accessoryLinesForPo(). Memoized per PO
+     * number for the lifetime of this service instance (see $plmIdsCache).
+     *
+     * @return array<int, string>
+     */
+    private function resolvePlmIds(string $poNumber): array
+    {
+        if (array_key_exists($poNumber, $this->plmIdsCache)) {
+            return $this->plmIdsCache[$poNumber];
+        }
+
+        return $this->plmIdsCache[$poNumber] = DB::connection('vsm')->table('po_lines')
+            ->where('PurchaseOrderNumber', $poNumber)
+            ->whereNotNull('PLMId')
+            ->where('PLMId', '!=', '')
+            ->distinct()
+            ->pluck('PLMId')
+            ->all();
+    }
+
+    /**
      * Production groups for a PO, each with article info and per-size lines.
      *
      * Returns [] when the PO has no resolvable PLM link or VSM is unreachable —
@@ -36,13 +78,7 @@ class SubconProductionService
     {
         try {
             // 1. PLM ids on this PO's lines (skip the empty/blank service lines).
-            $plmIds = DB::connection('vsm')->table('po_lines')
-                ->where('PurchaseOrderNumber', $poNumber)
-                ->whereNotNull('PLMId')
-                ->where('PLMId', '!=', '')
-                ->distinct()
-                ->pluck('PLMId')
-                ->all();
+            $plmIds = $this->resolvePlmIds($poNumber);
 
             $hasGroup = false;
             if (! empty($plmIds)) {
@@ -209,18 +245,12 @@ class SubconProductionService
      *
      * Best-effort — returns [] if VSM is unreachable or there is no PLM link.
      *
-     * @return array<int, array{label:string, description:string, unit:?string, fabric_sent:float, fabric_price:?float}>
+     * @return array<int, array{label:string, description:string, unit:?string, fabric_sent:float, fabric_price:?float, po_numbers:array<int,string>, po_line_numbers:array<string,array<int,int>>, item_numbers:array<int,string>}>
      */
     public function fabricLinesForPo(string $poNumber): array
     {
         try {
-            $plmIds = DB::connection('vsm')->table('po_lines')
-                ->where('PurchaseOrderNumber', $poNumber)
-                ->whereNotNull('PLMId')
-                ->where('PLMId', '!=', '')
-                ->distinct()
-                ->pluck('PLMId')
-                ->all();
+            $plmIds = $this->resolvePlmIds($poNumber);
 
             if (empty($plmIds)) {
                 return [];
@@ -230,7 +260,7 @@ class SubconProductionService
                 ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
                 ->whereIn('l.PLMId', $plmIds)
                 ->where('h.PurchPoolId', 'like', self::FABRIC_POOL_PREFIX.'%')
-                ->get(['l.LineDescription', 'l.PurchaseUnitSymbol', 'l.OrderedPurchaseQuantity', 'l.LineAmount', 'l.PurchaseOrderNumber', 'l.ItemNumber']);
+                ->get(['l.LineDescription', 'l.PurchaseUnitSymbol', 'l.OrderedPurchaseQuantity', 'l.LineAmount', 'l.PurchaseOrderNumber', 'l.ItemNumber', 'l.LineNumber']);
 
             // Combine by (description + unit): same fabric in the same metric.
             // total_amount is accumulated so a weighted unit price can be derived;
@@ -247,12 +277,37 @@ class SubconProductionService
                 }
                 $key = $desc.'|'.$unit;
                 if (! isset($grouped[$key])) {
-                    $grouped[$key] = ['description' => $desc, 'unit' => $unit ?: null, 'fabric_sent' => 0.0, 'total_amount' => 0.0, 'po_numbers' => [], 'item_numbers' => []];
+                    $grouped[$key] = ['description' => $desc, 'unit' => $unit ?: null, 'fabric_sent' => 0.0, 'total_amount' => 0.0, 'po_numbers' => [], 'item_numbers' => [], 'po_line_numbers' => []];
                 }
-                $grouped[$key]['fabric_sent'] += (float) ($ln->OrderedPurchaseQuantity ?? 0);
+                // Meters → yards, same conversion + same reasoning as
+                // resolveGoodsReceipts(): the cutting floor and every downstream
+                // consumer (Overdelivery %, the deduction formula's fabric_price)
+                // work in yards regardless of the PO's raw unit. $g['unit']/label
+                // deliberately keep the RAW unit text for traceability — only the
+                // numeric quantity (and anything derived from it, like fabric_price
+                // below) is converted. Confirmed live: leaving this unconverted
+                // made a meter-purchased fabric's Order Qty (PO) read ~9.36% short
+                // against a correctly-converted Goods Receive, and inflated the
+                // resolved fabric_price (and so the deduction charge) by the same
+                // factor whenever it was ever used as the VSM fallback price.
+                $qty = (float) ($ln->OrderedPurchaseQuantity ?? 0);
+                if (strcasecmp($unit, 'M') === 0) {
+                    $qty *= self::METER_TO_YARD;
+                }
+                $grouped[$key]['fabric_sent'] += $qty;
                 $grouped[$key]['total_amount'] += (float) ($ln->LineAmount ?? 0);
                 if (! empty($ln->PurchaseOrderNumber)) {
                     $grouped[$key]['po_numbers'][$ln->PurchaseOrderNumber] = true;
+                    // This PO's own line number(s) for THIS fabric — see
+                    // resolveGoodsReceipts()'s docblock for why this matters: the
+                    // same PO+item can carry a separate line per style (confirmed
+                    // live: an accessory PO with one line per garment style, same
+                    // item number, different LineNumber/OrderedPurchaseQuantity
+                    // each), so scoping a goods-receipt lookup by PO+item alone
+                    // attributes the WHOLE PO's receipt to every style sharing it.
+                    if ($ln->LineNumber !== null) {
+                        $grouped[$key]['po_line_numbers'][$ln->PurchaseOrderNumber][(int) $ln->LineNumber] = true;
+                    }
                 }
                 if (! empty($ln->ItemNumber)) {
                     $grouped[$key]['item_numbers'][$ln->ItemNumber] = true;
@@ -288,6 +343,7 @@ class SubconProductionService
                 unset($g['total_amount']);
                 $g['fabric_sent'] = round($g['fabric_sent'], 2);
                 $g['po_numbers'] = array_keys($g['po_numbers']);
+                $g['po_line_numbers'] = array_map('array_keys', $g['po_line_numbers']);
                 $g['item_numbers'] = array_keys($g['item_numbers']);
                 $g['label'] = $g['description'].($g['unit'] ? ' ('.$g['unit'].')' : '');
                 // Display unit: length fabric (M/YD) is always entered/converted
@@ -338,18 +394,20 @@ class SubconProductionService
      * Used to seed real, D365-sourced accessory return-quantity rows (see
      * MaterialReturnService) instead of free-typing item names.
      *
-     * @return array<int, array{label: string, display_label: string, unit: ?string, item_number: string, item_numbers: array<int,string>, po_numbers: array<int,string>, ordered_qty: float, unit_price: ?float}>
+     * $withItemMaster controls only the fetchItemMaster() enrichment of
+     * display_label — item_number/item_numbers/unit_price/label (everything
+     * a claim/deduction calc needs) come from the VSM grouping above and are
+     * unaffected. Callers that only need the claim total, not the display
+     * label (e.g. RpaQueueService::deductionBreakdown() via QcReportPdfService
+     * ::context()'s $summaryOnly), pass false to skip a live D365 round trip
+     * that would otherwise be computed and discarded.
+     *
+     * @return array<int, array{label: string, display_label: string, unit: ?string, item_number: string, item_numbers: array<int,string>, po_numbers: array<int,string>, po_line_numbers: array<string,array<int,int>>, ordered_qty: float, unit_price: ?float}>
      */
-    public function accessoryLinesForPo(string $poNumber): array
+    public function accessoryLinesForPo(string $poNumber, bool $withItemMaster = true): array
     {
         try {
-            $plmIds = DB::connection('vsm')->table('po_lines')
-                ->where('PurchaseOrderNumber', $poNumber)
-                ->whereNotNull('PLMId')
-                ->where('PLMId', '!=', '')
-                ->distinct()
-                ->pluck('PLMId')
-                ->all();
+            $plmIds = $this->resolvePlmIds($poNumber);
 
             if (empty($plmIds)) {
                 return [];
@@ -365,7 +423,7 @@ class SubconProductionService
                                 ->where('l.PurchaseUnitSymbol', 'PCS');
                         });
                 })
-                ->get(['l.LineDescription', 'l.PurchaseUnitSymbol', 'l.OrderedPurchaseQuantity', 'l.LineAmount', 'l.ItemNumber', 'l.PurchaseOrderNumber']);
+                ->get(['l.LineDescription', 'l.PurchaseUnitSymbol', 'l.OrderedPurchaseQuantity', 'l.LineAmount', 'l.ItemNumber', 'l.PurchaseOrderNumber', 'l.LineNumber']);
 
             $grouped = [];
             foreach ($lines as $ln) {
@@ -376,7 +434,7 @@ class SubconProductionService
                 }
                 $key = $desc.'|'.$unit;
                 if (! isset($grouped[$key])) {
-                    $grouped[$key] = ['description' => $desc, 'unit' => $unit, 'ordered_qty' => 0.0, 'total_amount' => 0.0, 'item_numbers' => [], 'po_numbers' => []];
+                    $grouped[$key] = ['description' => $desc, 'unit' => $unit, 'ordered_qty' => 0.0, 'total_amount' => 0.0, 'item_numbers' => [], 'po_numbers' => [], 'po_line_numbers' => []];
                 }
                 $grouped[$key]['ordered_qty'] += (float) ($ln->OrderedPurchaseQuantity ?? 0);
                 $grouped[$key]['total_amount'] += (float) ($ln->LineAmount ?? 0);
@@ -385,6 +443,14 @@ class SubconProductionService
                 }
                 if (! empty($ln->PurchaseOrderNumber)) {
                     $grouped[$key]['po_numbers'][$ln->PurchaseOrderNumber] = true;
+                    // Same reasoning as fabricLinesForPo(): a shared accessory PO
+                    // can carry one line per style against the same item number
+                    // (confirmed live — see resolveGoodsReceipts()'s docblock), so
+                    // this style's own line number(s) must be kept to scope its
+                    // goods-receipt lookup correctly.
+                    if ($ln->LineNumber !== null) {
+                        $grouped[$key]['po_line_numbers'][$ln->PurchaseOrderNumber][(int) $ln->LineNumber] = true;
+                    }
                 }
             }
 
@@ -395,7 +461,7 @@ class SubconProductionService
                 }
             }
             $itemMaster = [];
-            if (! empty($allItemNumbers)) {
+            if ($withItemMaster && ! empty($allItemNumbers)) {
                 try {
                     $itemMaster = app(\App\Services\D365JobTransactionService::class)->fetchItemMaster(array_keys($allItemNumbers));
                 } catch (\Throwable $e) {
@@ -420,6 +486,7 @@ class SubconProductionService
                 // the finished-garment service line).
                 $g['item_numbers'] = $itemNumbers;
                 $g['po_numbers'] = array_keys($g['po_numbers']);
+                $g['po_line_numbers'] = array_map('array_keys', $g['po_line_numbers']);
                 $g['label'] = $g['description'].' ('.$g['unit'].')';
                 $itemMasterDescription = null;
                 foreach ($itemNumbers as $it) {
@@ -470,11 +537,18 @@ class SubconProductionService
                     ->join('purchase_orders as po', 'po.id', '=', 'pi.po_id')
                     ->whereIn('pi.item_number', array_keys($allItems))
                     ->when(! empty($allPos), fn ($q) => $q->whereIn('po.po_number', array_keys($allPos)))
-                    ->get(['pi.item_number', 'pi.total_price', 'pi.quantity', 'po.currency']);
+                    ->get(['pi.item_number', 'pi.total_price', 'pi.quantity', 'pi.unit', 'po.currency']);
                 foreach ($rows as $r) {
                     // Price PER UNIT metric = line total ÷ ordered qty. (unit_price is
                     // D365 PurchasePrice, quoted per a price-unit basis, so it over-states.)
+                    // pi.quantity/pi.unit are the raw D365 figures (SyncD365Orders never
+                    // converts them) — meters → yards here too, same reasoning as
+                    // fabricLinesForPo(): the deduction formula this price feeds always
+                    // multiplies against a yard-denominated consumption figure.
                     $qty = (float) $r->quantity;
+                    if (strcasecmp((string) $r->unit, 'M') === 0) {
+                        $qty *= self::METER_TO_YARD;
+                    }
                     if (! isset($local[$r->item_number]) && $qty > 0 && $r->total_price !== null) {
                         $local[$r->item_number] = ['price' => round((float) $r->total_price / $qty, 2), 'currency' => $r->currency];
                     }
@@ -554,8 +628,14 @@ class SubconProductionService
     /** Policy margin divisor applied to every resolved fabric price (see resolveFabricPricing()). */
     private const FABRIC_PRICE_MARKUP_DIVISOR = 0.7;
 
-    /** 1 meter = this many yards — the only length conversion Goods Receive needs. */
-    private const METER_TO_YARD = 1.0936133;
+    /**
+     * 1 meter = this many yards. Public: also referenced by
+     * D365JobTransactionService::fetchFabricPricing(), which needs the same
+     * conversion applied to its own raw D365 quantity before deriving a
+     * price — kept as one constant rather than a second copy so the two
+     * conversions can't drift out of sync.
+     */
+    public const METER_TO_YARD = 1.0936133;
 
     /**
      * The unit a fabric line's figures are actually recorded in — for display
@@ -576,11 +656,12 @@ class SubconProductionService
     }
 
     /**
-     * Actual goods-received quantity per fabric line, direct from D365 (the real
-     * receipt documents — see D365JobTransactionService::fetchGoodsReceipts()).
-     * There's no local mirror for this (unlike fabric pricing, which po_items
-     * carries), so it's always a direct, cached, best-effort D365 call keyed by
-     * the fabric's linked PO numbers.
+     * Actual goods-received quantity per fabric/accessory line, direct from
+     * D365 (the real receipt documents — see
+     * D365JobTransactionService::fetchGoodsReceipts()). There's no local
+     * mirror for this (unlike fabric pricing, which po_items carries), so
+     * it's always a direct, cached, best-effort D365 call keyed by the
+     * line's linked PO numbers + line numbers.
      *
      * D365/VSM record quantity in whatever unit the fabric was procured in
      * (PurchaseUnitSymbol — M or YD for length fabrics, KG for weight), but the
@@ -591,7 +672,20 @@ class SubconProductionService
      * quoted in meters is converted to yards here; KG (weight) and already-YD
      * fabrics pass through unchanged.
      *
-     * @param  array<int, array<string, mixed>>  $vsmLines  from fabricLinesForPo()
+     * SCOPED BY PO LINE, not just PO+item: a PO+item pair is not necessarily
+     * unique to one style — confirmed live on MPG/PO/2601/00349 item
+     * 2510000000123 (a gold buckle), which carries TWO separate po_lines
+     * rows for the SAME item on the SAME PO: LineNumber 2 for "Minimal
+     * Alesya Vest Black" (ordered 5,536) and LineNumber 4 for "Minimal
+     * Alesya Vest Blue_Dark" (ordered 1,966). Before this was scoped by line,
+     * the Blue_Dark order's report showed Goods Receive = 7,502 (5,536 +
+     * 1,966 — literally both styles' combined receipt) instead of its own
+     * ~1,966-scale share. D365's packing-slip data carries
+     * PurchaseLineLineNumber, matching po_lines.LineNumber exactly, so this
+     * is resolvable without any extra D365 call — see
+     * fabricLinesForPo()/accessoryLinesForPo()'s po_line_numbers.
+     *
+     * @param  array<int, array<string, mixed>>  $vsmLines  from fabricLinesForPo()/accessoryLinesForPo() (must carry po_line_numbers)
      * @return array<string, array{qty: ?float, date: ?string}> keyed by label
      */
     public function resolveGoodsReceipts(array $vsmLines): array
@@ -622,9 +716,43 @@ class SubconProductionService
                 if (! isset($receipts[$p])) {
                     continue;
                 }
+                // Only count receipts posted against THIS style's own PO
+                // line(s) (fetchGoodsReceipts() now keys by line number, not
+                // just PO+item) — a PO+item pair can be shared by another
+                // style entirely (confirmed live: a shared accessory PO with
+                // one line per style, same item number, different
+                // LineNumber/OrderedPurchaseQuantity per style; collapsing on
+                // PO+item alone summed BOTH styles' receipts into each one's
+                // report). $lineNumsForThisPo empty (no LineNumber captured
+                // for this PO on this line, e.g. an older/incomplete VSM row)
+                // means no match, not "count everything" — under-showing a
+                // receipt is far safer here than attributing another style's.
+                $lineNumsForThisPo = array_map('intval', $l['po_line_numbers'][$p] ?? []);
                 foreach (($l['item_numbers'] ?? []) as $it) {
-                    if (isset($receipts[$p]['items'][$it])) {
-                        $qty = ($qty ?? 0.0) + $receipts[$p]['items'][$it];
+                    if (! isset($receipts[$p]['items'][$it])) {
+                        continue;
+                    }
+                    // Defensive: $receipts comes from fetchGoodsReceipts(), which is
+                    // cached for an hour and best-effort (a D365 hiccup or a stale/
+                    // mismatched cache entry from before this method's line-number
+                    // keying was added has previously handed this a bare float instead
+                    // of the expected [$lineNumber => $qty] array — a hard TypeError
+                    // that 500'd the HO approval form). Treat an unexpected shape as
+                    // "no receipt data for this item" rather than crash the page: this
+                    // figure is enrichment, never worth failing the whole approval over.
+                    if (! is_iterable($receipts[$p]['items'][$it])) {
+                        Log::warning('resolveGoodsReceipts: unexpected non-iterable receipt shape, skipping', [
+                            'po' => $p,
+                            'item' => $it,
+                            'type' => get_debug_type($receipts[$p]['items'][$it]),
+                        ]);
+
+                        continue;
+                    }
+                    foreach ($receipts[$p]['items'][$it] as $lineNumKey => $lineQty) {
+                        if ($lineNumKey !== '' && in_array((int) $lineNumKey, $lineNumsForThisPo, true)) {
+                            $qty = ($qty ?? 0.0) + $lineQty;
+                        }
                     }
                 }
                 if (! empty($receipts[$p]['last_delivery_date']) && (! $date || $receipts[$p]['last_delivery_date'] > $date)) {
@@ -672,6 +800,10 @@ class SubconProductionService
             return [];
         }
 
+        if (array_key_exists($productionGroup, $this->materialIssueCache)) {
+            return $this->materialIssueCache[$productionGroup];
+        }
+
         try {
             $rows = DB::connection('vsm')->table('material_issue_lines')
                 ->where('ProductionGroup', $productionGroup)
@@ -688,11 +820,11 @@ class SubconProductionService
                 }
             }
 
-            return $out;
+            return $this->materialIssueCache[$productionGroup] = $out;
         } catch (\Throwable $e) {
             report($e);
 
-            return [];
+            return $this->materialIssueCache[$productionGroup] = [];
         }
     }
 

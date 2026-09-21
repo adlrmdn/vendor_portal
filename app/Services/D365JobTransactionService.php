@@ -127,8 +127,13 @@ class D365JobTransactionService
 
     /**
      * Send 'start' command to the jobt-api.
+     *
+     * @return array{success: bool, message: string} `message` carries jobt-api's
+     *   own reported reason (its "message"/"error" field, or a Laravel-side
+     *   description) so callers can put something more specific than "it failed"
+     *   in front of an admin — e.g. in SubconJobLog after retries are exhausted.
      */
-    public function startJobs(string $productionGroup): bool
+    public function startJobs(string $productionGroup): array
     {
         $dkey = $this->getDynamicKey();
         Log::info("Sending start jobs command to jobt-api for PRG: {$productionGroup} (DynamicKey: {$dkey})");
@@ -150,28 +155,34 @@ class D365JobTransactionService
                 // jobt-api returns HTTP 200 even when its own Playwright flow failed —
                 // the real outcome is in the body's "success" field, not the status code.
                 if (($response->json('success') ?? true) === false) {
-                    Log::error("Failed to start jobs for PRG {$productionGroup} (jobt-api reported failure): ".$response->body());
+                    $reason = $response->json('error') ?? $response->json('message') ?? $response->body();
+                    Log::error("Failed to start jobs for PRG {$productionGroup} (jobt-api reported failure): {$reason}");
 
-                    return false;
+                    return ['success' => false, 'message' => "jobt-api failed to start the D365 job transaction for {$productionGroup}: {$reason}"];
                 }
 
                 Log::info("Successfully started jobs for PRG {$productionGroup}: ".$response->body());
 
-                return true;
+                return ['success' => true, 'message' => ''];
             }
 
             Log::error("Failed to start jobs for PRG {$productionGroup}. Status: {$response->status()}, Body: ".$response->body());
+
+            return ['success' => false, 'message' => "jobt-api HTTP {$response->status()} starting jobs for {$productionGroup}."];
         } catch (\Throwable $e) {
             Log::error("Exception starting jobs for PRG {$productionGroup}: ".$e->getMessage());
-        }
 
-        return false;
+            return ['success' => false, 'message' => "Exception starting jobs for {$productionGroup}: ".$e->getMessage()];
+        }
     }
 
     /**
      * Send 'trigger' command to the jobt-api.
+     *
+     * @return array{success: bool, message: string} See startJobs() for why this
+     *   isn't a bare bool.
      */
-    public function triggerJobs(string $productionGroup, array $targets): bool
+    public function triggerJobs(string $productionGroup, array $targets): array
     {
         $dkey = $this->getDynamicKey();
         Log::info("Sending trigger jobs command to jobt-api for PRG: {$productionGroup} with targets: ".json_encode($targets));
@@ -188,17 +199,32 @@ class D365JobTransactionService
             ]);
 
             if ($response->successful()) {
+                // Same jobt-api quirk as startJobs(): HTTP 200 even when the
+                // Playwright flow itself failed — the real outcome is in the
+                // body's "success" field, not the status code. This used to be
+                // unchecked here, so a jam8/update_gramasi failure inside
+                // jobt-api was reported as "Successfully triggered jobs" and the
+                // caller (syncReportToD365) never recorded an error.
+                if (($response->json('success') ?? true) === false) {
+                    $reason = $response->json('error') ?? $response->json('message') ?? $response->body();
+                    Log::error("Failed to trigger jobs for PRG {$productionGroup} (jobt-api reported failure): {$reason}");
+
+                    return ['success' => false, 'message' => "Automation trigger failed for {$productionGroup}: {$reason}"];
+                }
+
                 Log::info("Successfully triggered jobs for PRG {$productionGroup}: ".$response->body());
 
-                return true;
+                return ['success' => true, 'message' => ''];
             }
 
             Log::error("Failed to trigger jobs for PRG {$productionGroup}. Status: {$response->status()}, Body: ".$response->body());
+
+            return ['success' => false, 'message' => "jobt-api HTTP {$response->status()} triggering jobs for {$productionGroup}."];
         } catch (\Throwable $e) {
             Log::error("Exception triggering jobs for PRG {$productionGroup}: ".$e->getMessage());
-        }
 
-        return false;
+            return ['success' => false, 'message' => "Exception triggering jobs for {$productionGroup}: ".$e->getMessage()];
+        }
     }
 
     /**
@@ -672,9 +698,9 @@ class D365JobTransactionService
         }
 
         if (! empty($triggerTargets)) {
-            $triggerSuccess = $this->triggerJobs($productionGroup, $triggerTargets);
-            if (! $triggerSuccess) {
-                $results['errors'][] = 'Automation triggers failed.';
+            $trigger = $this->triggerJobs($productionGroup, $triggerTargets);
+            if (! $trigger['success']) {
+                $results['errors'][] = $trigger['message'];
             }
         }
 
@@ -953,8 +979,20 @@ class D365JobTransactionService
                         continue;
                     }
                     $currency[$po] ??= $line['CurrencyCode'] ?? null;
+                    // Meters → yards: the price this derives feeds the fabric
+                    // deduction formula, which always multiplies against a
+                    // yard-denominated consumption figure (the cutting floor
+                    // convention — see SubconProductionService::resolveGoodsReceipts()
+                    // and fabricLinesForPo()) regardless of what unit the fabric
+                    // was actually purchased in. Left unconverted, a meter-priced
+                    // fabric's resolved price (and so any deduction charged
+                    // against it) came out ~9.36% too high.
+                    $qty = (float) ($line['OrderedPurchaseQuantity'] ?? 0);
+                    if (strcasecmp((string) ($line['PurchaseUnitSymbol'] ?? ''), 'M') === 0) {
+                        $qty *= \App\Services\SubconProductionService::METER_TO_YARD;
+                    }
                     $acc[$po][$item]['amount'] = ($acc[$po][$item]['amount'] ?? 0.0) + (float) ($line['LineAmount'] ?? 0);
-                    $acc[$po][$item]['qty'] = ($acc[$po][$item]['qty'] ?? 0.0) + (float) ($line['OrderedPurchaseQuantity'] ?? 0);
+                    $acc[$po][$item]['qty'] = ($acc[$po][$item]['qty'] ?? 0.0) + $qty;
                 }
             }
 
@@ -1105,8 +1143,18 @@ class D365JobTransactionService
      * Best-effort: returns [] on any failure, cached ~1h like fetchFabricPricing
      * so a no-login page never re-hits D365 on every view.
      *
+     * `items` is keyed one level deeper than PO+item alone — by
+     * PurchaseLineLineNumber too — because the same item number can appear on
+     * multiple lines of the same PO, one per style sharing that PO (confirmed
+     * live: SubconProductionService::resolveGoodsReceipts()'s docblock has the
+     * exact case). Collapsing straight to PO+item, as this used to, summed
+     * every style's receipt into each one's own figure. The consumer
+     * (resolveGoodsReceipts()) matches against its own line's LineNumber
+     * (po_lines.LineNumber, which is exactly this field) to pick out only
+     * what was actually received against its own PO line.
+     *
      * @param  array<int, string>  $poNumbers
-     * @return array<string, array{items: array<string, float>, last_delivery_date: ?string}> keyed by PO number
+     * @return array<string, array{items: array<string, array<string, float>>, last_delivery_date: ?string}> keyed by PO number
      */
     public function fetchGoodsReceipts(array $poNumbers): array
     {
@@ -1157,7 +1205,11 @@ class D365JobTransactionService
                     if ($po === null || $item === null) {
                         continue;
                     }
-                    $qty[$po][$item] = ($qty[$po][$item] ?? 0.0) + (float) ($line['Qty'] ?? 0);
+                    // PurchaseLineLineNumber matches po_lines.LineNumber exactly —
+                    // see this method's docblock for why keying by it (not just
+                    // PO+item) is required.
+                    $lineNum = isset($line['PurchaseLineLineNumber']) ? (string) $line['PurchaseLineLineNumber'] : '';
+                    $qty[$po][$item][$lineNum] = ($qty[$po][$item][$lineNum] ?? 0.0) + (float) ($line['Qty'] ?? 0);
                 }
             }
 

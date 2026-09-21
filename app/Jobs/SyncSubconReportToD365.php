@@ -65,50 +65,40 @@ class SyncSubconReportToD365 implements ShouldQueue
             return;
         }
 
-        if (! $d365->startJobs($group)) {
-            $msg = "jobt-api failed to start the D365 job transaction for {$group} — sync not attempted this run.";
-            Log::warning("D365 {$this->gate} sync skipped for {$order->order_number}: {$msg}");
-
-            \App\Models\SubconJobLog::create([
-                'order_id' => $order->id,
-                'order_number' => $order->order_number,
-                'job_type' => $this->gate,
-                'status' => 'failed',
-                'message' => $msg,
-            ]);
-
-            return;
+        // Throwing (instead of catching + returning) is what makes $tries/$backoff
+        // above actually fire — Laravel's queue only retries on an uncaught
+        // exception. This used to catch every failure branch internally and
+        // return normally, so the job always "completed" on attempt 1 and the
+        // declared retry config was dead: a transient miss (e.g. the D365 job
+        // header not existing yet, which several of these error strings
+        // literally say "retry later" about) never actually got retried. Final
+        // failure — after all attempts are exhausted — is logged once, in
+        // failed() below, mirroring GenerateSubconLabels' proven pattern.
+        $start = $d365->startJobs($group);
+        if (! $start['success']) {
+            throw new \RuntimeException($start['message']);
         }
 
         $result = $d365->syncReportToD365($group, $changed);
 
         if (! empty($result['errors'])) {
-            $msg = implode(' ', $result['errors']);
-            Log::warning("D365 {$this->gate} sync for {$order->order_number} returned warnings: " . $msg);
-            
-            \App\Models\SubconJobLog::create([
-                'order_id' => $order->id,
-                'order_number' => $order->order_number,
-                'job_type' => $this->gate,
-                'status' => 'failed',
-                'message' => $msg,
-            ]);
-        } else {
-            Log::info("D365 {$this->gate} sync completed for {$order->order_number} (".count($changed).' rows).');
-            
-            \App\Models\SubconJobLog::create([
-                'order_id' => $order->id,
-                'order_number' => $order->order_number,
-                'job_type' => $this->gate,
-                'status' => 'success',
-                'message' => "Successfully synced " . ($this->gate === 'cutting' ? 'cutting quantities' : 'grammage weights') . " (" . count($changed) . " sizes).",
-            ]);
+            throw new \RuntimeException(implode(' ', $result['errors']));
         }
+
+        Log::info("D365 {$this->gate} sync completed for {$order->order_number} (".count($changed).' rows).');
+
+        \App\Models\SubconJobLog::create([
+            'order_id' => $order->id,
+            'order_number' => $order->order_number,
+            'job_type' => $this->gate,
+            'status' => 'success',
+            'message' => "Successfully synced " . ($this->gate === 'cutting' ? 'cutting quantities' : 'grammage weights') . " (" . count($changed) . " sizes).",
+        ]);
     }
 
     public function failed(\Throwable $e): void
     {
-        Log::error("D365 {$this->gate} sync failed for order {$this->orderId}: ".$e->getMessage());
+        Log::error("D365 {$this->gate} sync failed for order {$this->orderId} after {$this->tries} attempt(s): ".$e->getMessage());
 
         $order = SubconOrder::find($this->orderId);
         if ($order) {

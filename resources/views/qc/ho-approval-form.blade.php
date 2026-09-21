@@ -73,7 +73,7 @@
                             <dd class="col-7 col-sm-9 fw-semibold">{{ $subcon->order_number }}</dd>
                         @endif
                         @if($productionGroup)
-                            <dt class="col-5 col-sm-3 text-muted fw-normal">Production Group</dt>
+                            <dt class="col-5 col-sm-3 text-muted fw-normal">PRG</dt>
                             <dd class="col-7 col-sm-9">{{ $productionGroup }}</dd>
                         @endif
                         <dt class="col-5 col-sm-3 text-muted fw-normal">Project</dt>
@@ -158,6 +158,8 @@
                                         'accessoryRecon' => $materialAccessoryRecon ?? collect(),
                                         'accessoryGoodsReceive' => $materialAccessoryGoodsReceive ?? [],
                                         'accessoryIssue' => $materialAccessoryIssue ?? [],
+                                        'accessoryClaimByLabel' => $accessoryClaimByLabel ?? [],
+                                        'accessoryClaimTotal' => $accessoryClaimTotal ?? 0,
                                     ])
                                 @endif
 

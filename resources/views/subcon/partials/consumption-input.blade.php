@@ -23,6 +23,14 @@
       $accessoryRecon   Collection of MaterialReturnLine (item_type=accessory) keyed by label — required when $showAccessory
       $accessoryGoodsReceive  array from SubconProductionService::resolveGoodsReceipts($accessoryLines), keyed by label — required when $showAccessory
       $accessoryIssue   array from SubconProductionService::materialIssueForOrder(), keyed by ItemNumber (not label) — required when $showAccessory
+      $accessoryClaimByLabel  array from QcApprovalController::hoApprovalForm(), keyed by label —
+                        expected_retur/balance/claim per accessory, as of the last save (see
+                        that method's docblock for why it can't be live-recomputed like the
+                        Fabric table's deduction). Optional; defaults to [] (no claim columns
+                        shown — e.g. on the vendor's own cutting-report page, which never
+                        passes it since HO hasn't reviewed/priced anything yet).
+      $accessoryClaimTotal  float — sum of the above, shown as its own footer line
+                        alongside (not merged into) the live Fabric Total Deduction.
       $accessoryEditable  ?bool — editability of the Accessory sub-section specifically,
                         independent of $editable (the Fabric table's own flag). Defaults to
                         $editable. Needed because the regular admin order page shows Fabric
@@ -39,6 +47,8 @@
     $showAccessory = $showAccessory ?? false;
     $accessoryGoodsReceive = $accessoryGoodsReceive ?? [];
     $accessoryIssue = $accessoryIssue ?? [];
+    $accessoryClaimByLabel = $accessoryClaimByLabel ?? [];
+    $accessoryClaimTotal = (float) ($accessoryClaimTotal ?? 0);
     $accessoryEditable = $accessoryEditable ?? $editable;
     $totalDeduction = 0.0;
     foreach ($fabricLines as $fl) {
@@ -384,8 +394,45 @@
                 'accessoryRecon' => $accessoryRecon ?? collect(),
                 'accessoryGoodsReceive' => $accessoryGoodsReceive,
                 'accessoryIssue' => $accessoryIssue,
+                'accessoryClaimByLabel' => $accessoryClaimByLabel,
                 'editable' => $accessoryEditable,
             ])
+
+            @if(! empty($accessoryClaimByLabel))
+                <div class="d-flex justify-content-end align-items-center gap-3 mt-2 pt-2 border-top">
+                    <div class="text-muted small">
+                        Accessory Retur Shortfall
+                        <span class="fst-italic" title="Not live — Expected Retur needs D365 consumption data with no client-side formula. Recalculates after you Save.">(as of last save)</span>
+                    </div>
+                    <div class="fw-semibold">{{ $money($accessoryClaimTotal) }}</div>
+                </div>
+                <div class="d-flex justify-content-end align-items-center gap-3 mt-1">
+                    <div class="fw-semibold">Grand Total (Fabric + Accessory)</div>
+                    <div class="fw-bold text-danger cons-grand-total">{{ $money($totalDeduction + $accessoryClaimTotal) }}</div>
+                </div>
+                @if($editable)
+                    <script>
+                    (function () {
+                        // Static — the accessory claim has no client-side formula (see
+                        // the docblock above), so re-adding this fixed figure on top
+                        // of the live fabric sum is the most the Grand Total can do
+                        // without a page reload.
+                        const accessoryClaimTotal = {{ (float) $accessoryClaimTotal }};
+                        function fmtMoney(n) {
+                            return 'Rp ' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        }
+                        const fabricTotalEl = document.querySelector('.cons-ded-total');
+                        const grandTotalEl = document.querySelector('.cons-grand-total');
+                        if (! fabricTotalEl || ! grandTotalEl) return;
+                        const observer = new MutationObserver(function () {
+                            const fabricTotal = parseFloat(fabricTotalEl.textContent.replace(/[^0-9.-]/g, '')) || 0;
+                            grandTotalEl.textContent = fmtMoney(fabricTotal + accessoryClaimTotal);
+                        });
+                        observer.observe(fabricTotalEl, { childList: true, characterData: true, subtree: true });
+                    })();
+                    </script>
+                @endif
+            @endif
         @endif
     </div>
 </div>

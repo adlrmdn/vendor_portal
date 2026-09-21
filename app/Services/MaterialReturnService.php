@@ -231,8 +231,22 @@ class MaterialReturnService
             foreach ($accessoriesRecon as $rec) {
                 $label = trim((string) ($rec['label'] ?? ''));
                 $qty = (float) ($rec['qty'] ?? 0);
-                $matsSent = isset($rec['mats_sent']) && $rec['mats_sent'] !== '' ? round((float) $rec['mats_sent'], 2) : null;
-                $price = isset($rec['price']) && $rec['price'] !== '' ? round((float) $rec['price'], 2) : null;
+                // Whether the submitting form even included this field at
+                // all — NOT the same as isset()/empty(). The vendor's
+                // returQtyOnly form (material-recon-accessory.blade.php)
+                // never renders a mats_sent/price <input> at all, so those
+                // keys are simply absent from $rec on a vendor save; the
+                // admin/HO form always submits both (even a blank one, as
+                // '' or '0'). Only omit qty_sent/unit_price from the update
+                // payload when the field was genuinely never submitted, so a
+                // vendor saving their Retur Qty can never silently null out
+                // HO's already-saved Mats Sent/Price — array_key_exists()
+                // here is load-bearing, isset()/empty() would treat "field
+                // not in the form" the same as "admin explicitly cleared it".
+                $matsSentSubmitted = array_key_exists('mats_sent', $rec);
+                $matsSent = $matsSentSubmitted && $rec['mats_sent'] !== '' ? round((float) $rec['mats_sent'], 2) : null;
+                $priceSubmitted = array_key_exists('price', $rec);
+                $price = $priceSubmitted && $rec['price'] !== '' ? round((float) $rec['price'], 2) : null;
                 if ($label === '' || ($qty <= 0 && $matsSent === null)) {
                     continue;
                 }
@@ -243,11 +257,15 @@ class MaterialReturnService
                     'vendor_name' => $order->vendor?->name,
                     'unit' => trim((string) ($rec['unit'] ?? '')) ?: 'PCS',
                     'qty_declared' => $qty,
-                    'qty_sent' => $matsSent,
-                    'unit_price' => $price,
                     'uploaded_by_role' => $role,
                     'uploaded_by_name' => $actorName,
                 ];
+                if ($matsSentSubmitted) {
+                    $payload['qty_sent'] = $matsSent;
+                }
+                if ($priceSubmitted) {
+                    $payload['unit_price'] = $price;
+                }
 
                 // A row already linked to a Material Flow task (dispatched, checked
                 // or not) whose declared qty is actually being revised must be
