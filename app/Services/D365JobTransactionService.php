@@ -1115,7 +1115,14 @@ class D365JobTransactionService
             return [];
         }
 
-        $cacheKey = 'd365_goods_receipt_'.md5(implode(',', $poNumbers));
+        // Versioned ("v2") so a future change to this method's return shape can't be
+        // silently served stale by an old cache entry — bump the version, not just
+        // the logic, whenever $out's shape changes. Confirmed live: the v1 shape was
+        // items[$item] = float, now items[$item][$lineNumber] = float; without the
+        // version bump, entries written by the old code (up to 1h old) still under
+        // the same key would hand SubconProductionService::resolveGoodsReceipts() a
+        // float where it now expects an array, fatally erroring the HO approval page.
+        $cacheKey = 'd365_goods_receipt_v2_'.md5(implode(',', $poNumbers));
         if (Cache::has($cacheKey)) {
             return Cache::get($cacheKey);
         }

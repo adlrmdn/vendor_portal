@@ -517,7 +517,16 @@ class QcApprovalController extends Controller
         // resolveGoodsReceipts() lookup fabric already gets on this form, scoped
         // to each accessory's own source PO(s) via accessoryLinesForPo()'s
         // po_numbers/item_numbers (never the CMT subcon PO itself).
-        $materialAccessoryGoodsReceive = $subcon ? $production->resolveGoodsReceipts($materialAccessoryLines) : [];
+        // Best-effort, same pattern as SubconAdminController's equivalent call —
+        // a D365/cache hiccup here is enrichment data only and must not 500 the
+        // whole HO approval page (confirmed live: a stale cache entry threw a
+        // TypeError deep in resolveGoodsReceipts() and took the page down).
+        try {
+            $materialAccessoryGoodsReceive = $subcon ? $production->resolveGoodsReceipts($materialAccessoryLines) : [];
+        } catch (\Throwable $e) {
+            report($e);
+            $materialAccessoryGoodsReceive = [];
+        }
         // D365 Material Issue posting (vsm.material_issue_lines), keyed by
         // ItemNumber — same source the PDF report already uses as its Mats
         // Sent fallback (proposal) when no admin qty_sent is saved. Threaded
