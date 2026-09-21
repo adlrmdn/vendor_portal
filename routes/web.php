@@ -174,6 +174,7 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     Route::delete('/vendors/{id}', [SubconAdminController::class, 'deleteVendor'])->name('vendors.destroy');
     Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
     Route::get('/report-validations', [SubconAdminController::class, 'reportValidations'])->name('report-validations');
+    Route::post('/report-validations/deductions', [SubconAdminController::class, 'reportValidationDeductions'])->name('report-validations.deductions');
     Route::get('/director-approvals', [SubconAdminController::class, 'directorApprovals'])->name('director-approvals');
     Route::post('/director-approvals/{token}/recall', [SubconAdminController::class, 'recallToReportValidation'])->name('director-approvals.recall');
     Route::get('/approval-logs', [SubconAdminController::class, 'approvalLogs'])->name('approval-logs');

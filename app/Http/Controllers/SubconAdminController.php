@@ -784,19 +784,71 @@ class SubconAdminController extends Controller
         $search = trim((string) $request->query('q', ''));
         $deductionOnly = $request->boolean('deduction_only');
 
-        $pending = $this->pendingValidateSends();
+        // deduction_total/breakdown is deferred (null) by default — see
+        // pendingValidateSends()'s docblock, confirmed live to cost ~160ms/row
+        // of qms + D365 round trips, 3.4s for a 21-row list either cold OR
+        // warm (it's mostly plain DB latency, not the D365 response cache).
+        // report-validations.blade.php renders a placeholder and fills it in
+        // via reportValidationDeductions() right after. The explicit
+        // "Deduction only" filter is the one case that still needs the real
+        // figures synchronously, since it can't filter on a value it hasn't
+        // fetched yet — that request alone pays the full cost.
+        $pending = $this->pendingValidateSends(withDeductions: $deductionOnly);
         if ($search !== '') {
             $pending = self::filterPendingRows($pending, $search);
         }
         if ($deductionOnly) {
             $pending = array_values(array_filter($pending, fn ($p) => ($p['deduction_total'] ?? 0) > 0));
+            // Rows carrying a deduction float to the top — only meaningful
+            // once deduction_total is actually known (deductionOnly path);
+            // the default lazy-loaded path leaves the list in session-update
+            // order, since sorting by a value that isn't fetched yet would
+            // do nothing anyway.
+            usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
         }
-        // Rows carrying a deduction float to the top — the list is otherwise
-        // sorted by session update order, which buries the ones that actually
-        // need a second look under everything showing "None".
-        usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
 
         return view('subcon.admin.report-validations', compact('pending', 'search', 'deductionOnly'));
+    }
+
+    /**
+     * Lazy-load endpoint for report-validations.blade.php's Deduction column
+     * (see reportValidations()'s docblock for why it's deferred). Takes the
+     * tokens of the rows actually rendered on the page and returns each one's
+     * deduction cell, pre-rendered server-side (same
+     * subcon.partials.report-validation-deduction partial the initial page
+     * would have used) rather than raw JSON, so the client has no HTML to
+     * reconstruct — same "server renders, JS swaps a fragment" shape as the
+     * Daily Production Tracking board's style-card refresh.
+     */
+    public function reportValidationDeductions(Request $request)
+    {
+        $data = $request->validate([
+            'tokens' => 'required|array|min:1|max:200',
+            'tokens.*' => 'string',
+        ]);
+
+        $rpaQueue = app(RpaQueueService::class);
+        $out = [];
+
+        try {
+            $sessions = DB::connection('qms')->table('packaging_project_sessions')
+                ->whereIn('approval_token', $data['tokens'])
+                ->get(['approval_token', 'project_id', 'session_id']);
+        } catch (\Throwable $e) {
+            Log::warning('Report validation deductions: session lookup failed', ['error' => $e->getMessage()]);
+
+            return response()->json([]);
+        }
+
+        foreach ($sessions as $s) {
+            $breakdown = $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id);
+            $out[$s->approval_token] = view('subcon.partials.report-validation-deduction', [
+                'total' => $breakdown['total'],
+                'breakdown' => $breakdown,
+            ])->render();
+        }
+
+        return response()->json($out);
     }
 
     /**
@@ -826,9 +878,26 @@ class SubconAdminController extends Controller
      * row carries the live RAF run status (one batched read from the remote
      * RPA DB, best-effort). Never 500s the tab.
      *
+     * $withDeductions controls the one genuinely expensive part: each row's
+     * deduction_total/breakdown, via RpaQueueService::deductionBreakdown() →
+     * QcReportPdfService::context(). Profiled live (this session) at ~160ms/
+     * row REGARDLESS of warm/cold — unlike the D365-response-cached costs
+     * fixed elsewhere in this controller, most of this is plain qms DB round
+     * trips (context() re-queries project/session/report-line rows per call,
+     * with no request- or response-level cache), so it scales linearly with
+     * the pending count (3.4s for 21 rows, measured twice back to back) and
+     * can't be fixed by caching alone. It also can't be batched across rows
+     * the way the rest of this method's lookups are — see deductionBreakdown()
+     * → context()'s D365 fetchFinalRMConsumption() call: blending PLM ids
+     * from different orders into one D365 filter silently mixes their
+     * consumption rates for any item number they share (confirmed live:
+     * corrupted one order's claim from Rp 108,466.64 to Rp 0). Default false:
+     * reportValidations() defers this to reportValidationDeductions(), a
+     * lazy-load endpoint the page's own JS calls right after rendering.
+     *
      * @return array<int, array<string, mixed>>
      */
-    private function pendingValidateSends(): array
+    private function pendingValidateSends(bool $withDeductions = true): array
     {
         try {
             if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
@@ -924,14 +993,18 @@ class SubconAdminController extends Controller
             // single-order call.
             $rpaQueue = app(RpaQueueService::class);
 
-            $rows = $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $projectsById, $rafByProject, $rpaQueue, $materialReturnByOrder) {
+            $rows = $sessions->map(function ($s) use ($pgByProject, $ordersByPg, $projectsById, $rafByProject, $rpaQueue, $materialReturnByOrder, $withDeductions) {
                 $pg = $pgByProject[$s->project_id] ?? null;
                 $order = $pg ? ($ordersByPg[$pg] ?? null) : null;
                 // No local order yet (e.g. the D365 PO hasn't been Confirmed so
                 // the sync won't create it) — fall back to the QMS console's own
                 // project record instead of showing a bare project_id/"—".
                 $project = $projectsById[$s->project_id] ?? null;
-                $deduction = $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id);
+                // null (not 0) when deferred — the view/JS must be able to tell
+                // "not fetched yet" apart from "fetched, genuinely zero".
+                $deduction = $withDeductions
+                    ? $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id)
+                    : null;
 
                 return [
                     'token' => $s->approval_token,
@@ -944,7 +1017,7 @@ class SubconAdminController extends Controller
                     'result' => $s->result ?? null,
                     'ho_signature' => $s->ho_approval_signature ?? null,
                     'raf_status' => $rafByProject[$s->project_id] ?? null,
-                    'deduction_total' => $deduction['total'],
+                    'deduction_total' => $deduction['total'] ?? null,
                     'deduction_breakdown' => $deduction,
                     'material_return_status' => $order ? ($materialReturnByOrder[$order->id] ?? null) : null,
                 ];

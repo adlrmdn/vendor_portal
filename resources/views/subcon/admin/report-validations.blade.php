@@ -37,7 +37,7 @@
                 </thead>
                 <tbody>
                     @foreach($pending as $p)
-                        <tr>
+                        <tr data-token="{{ $p['token'] }}">
                             <td style="word-break: break-word;">
                                 @if($p['order_id'])
                                     <a href="{{ route('subcon.admin.orders.view', $p['order_id']) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $p['order_number'] }}</a>
@@ -57,23 +57,16 @@
                                 <div class="text-muted small">{{ $p['vendor'] }}</div>
                             </td>
                             <td class="small text-muted" style="word-break: break-word;">{{ $p['ho_signature'] ?: '—' }}</td>
-                            <td>
-                                @if(($p['deduction_total'] ?? 0) > 0)
-                                    <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25">
-                                        <i class="fas fa-circle-minus me-1"></i> Rp {{ number_format($p['deduction_total'], 0, ',', '.') }}
-                                    </span>
-                                    @php $d = $p['deduction_breakdown'] ?? []; @endphp
-                                    <div class="mt-1 d-flex flex-wrap gap-1">
-                                        @if(($d['fabric'] ?? 0) > 0)<span class="badge bg-light text-dark border">Fabric Cons</span>@endif
-                                        @if(($d['rejectProduksiPenalty'] ?? 0) > 0)<span class="badge bg-light text-dark border">Production</span>@endif
-                                        @if(($d['barangHilangPenalty'] ?? 0) > 0)<span class="badge bg-light text-dark border">Barang Hilang</span>@endif
-                                        @if(($d['accessoryClaimTotal'] ?? 0) > 0)<span class="badge bg-light text-dark border">Retur Material</span>@endif
-                                        @if(($d['manual'] ?? 0) > 0)<span class="badge bg-light text-dark border">Manual</span>@endif
-                                    </div>
+                            <td data-deduction-cell>
+                                @if($p['deduction_total'] === null)
+                                    {{-- Deferred — see SubconAdminController::pendingValidateSends()'s
+                                         docblock: this column alone was confirmed live to cost
+                                         ~160ms/row of qms/D365 round trips, so the list renders
+                                         without it and report-validations-scripts.blade.php below
+                                         fills it in via one background fetch right after. --}}
+                                    <span class="placeholder-glow"><span class="placeholder col-8"></span></span>
                                 @else
-                                    <span class="badge bg-success-subtle text-success border border-success border-opacity-25">
-                                        <i class="fas fa-circle-check me-1"></i> None
-                                    </span>
+                                    @include('subcon.partials.report-validation-deduction', ['total' => $p['deduction_total'], 'breakdown' => $p['deduction_breakdown']])
                                 @endif
                             </td>
                             <td>
@@ -147,4 +140,44 @@
         </div>
     </div>
 </div>
+
+@unless($deductionOnly)
+    {{-- Deduction cells were left as placeholders above (see
+         SubconAdminController::pendingValidateSends()'s docblock) — one
+         background fetch fills them all in right after the list itself has
+         already rendered. Same "server renders, JS swaps a fragment" shape
+         as daily-production-scripts.blade.php's dpFetchAndSwapStyleCard(). --}}
+    <script>
+        (function () {
+            const cells = document.querySelectorAll('[data-token] [data-deduction-cell]');
+            if (! cells.length) {
+                return;
+            }
+            const tokens = Array.from(document.querySelectorAll('tr[data-token]')).map(row => row.dataset.token);
+            const csrf = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+            fetch(@json(route('subcon.admin.report-validations.deductions')), {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrf,
+                    Accept: 'application/json',
+                },
+                body: JSON.stringify({tokens: tokens}),
+            })
+                .then(r => r.ok ? r.json() : {})
+                .then(html => {
+                    Object.keys(html).forEach(token => {
+                        const row = document.querySelector('tr[data-token="' + CSS.escape(token) + '"]');
+                        const cell = row ? row.querySelector('[data-deduction-cell]') : null;
+                        if (cell) {
+                            cell.innerHTML = html[token];
+                        }
+                    });
+                })
+                .catch(() => { /* placeholders just stay put — a manual reload retries */ });
+        })();
+    </script>
+@endunless
 @endsection
