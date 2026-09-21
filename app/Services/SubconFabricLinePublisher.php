@@ -34,12 +34,17 @@ class SubconFabricLinePublisher
     /**
      * @param  string|null  $projectId  set to adopt the rows to a project (HO stage);
      *                                  null stages them (cutting stage, no project yet).
+     * @return array<int, array<string, mixed>> the fabricLinesWithData() rows this
+     *                                           call computed — returned so a caller
+     *                                           that needs them too (e.g. for a log
+     *                                           count) doesn't have to recompute the
+     *                                           same D365-touching pipeline again.
      */
-    public function publish(SubconOrder $order, ?string $projectId = null): void
+    public function publish(SubconOrder $order, ?string $projectId = null): array
     {
         $pg = trim((string) ($order->production_group ?? ''));
         if ($pg === '') {
-            return; // no production_group → nothing the console could fetch by
+            return []; // no production_group → nothing the console could fetch by
         }
 
         try {
@@ -51,7 +56,7 @@ class SubconFabricLinePublisher
                     'order' => $order->order_number,
                 ]);
 
-                return;
+                return [];
             }
 
             // Newer columns — only write them where the console schema has them.
@@ -139,11 +144,15 @@ class SubconFabricLinePublisher
                 'lines' => $written,
                 'project_id' => $projectId,
             ]);
+
+            return $lines;
         } catch (\Throwable $e) {
             Log::error('Subcon fabric publish failed', [
                 'order' => $order->order_number ?? null,
                 'error' => $e->getMessage(),
             ]);
+
+            return [];
         }
     }
 }

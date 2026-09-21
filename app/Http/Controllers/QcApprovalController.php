@@ -559,7 +559,14 @@ class QcApprovalController extends Controller
         $accessoryClaimTotal = 0.0;
         if ($subcon) {
             try {
-                $ctx = $reportPdf->context((string) $row->project_id, (string) $row->session_id);
+                // summaryOnly: true — accessoryBreakdown/accessoryClaimRuling
+                // (the only two keys read below) are computed identically either
+                // way (see context()'s docblock); full mode's only extra work is
+                // re-enriching $ctx['fabricLines'] via a second, redundant
+                // fabricLinesForPo()/D365-item-master round trip — this form
+                // already has its own fabricLines from fabricLinesWithData()
+                // above and never reads $ctx['fabricLines'].
+                $ctx = $reportPdf->context((string) $row->project_id, (string) $row->session_id, summaryOnly: true);
                 foreach ($ctx['accessoryBreakdown'] ?? [] as $a) {
                     // Keyed by the raw VSM/PO label (persistence key), never
                     // display_label (an item-master display name that can
@@ -778,11 +785,15 @@ class QcApprovalController extends Controller
         // project_id. Runs BEFORE the signature so the console sees the lines when
         // the signature triggers PDF regen. Best-effort + guarded — same rows the
         // console can also pull earlier (staged at cutting approval with no project).
+        // publish() already runs fabricLinesWithData() internally (the same
+        // D365-touching pricing/goods-receipt/material-issue pipeline
+        // warmApprovalCaches() profiles at ~1s cold) — reuse its return value
+        // below (just a log count) instead of recomputing it.
+        $fabricLines = [];
         if ($subcon) {
-            $publisher->publish($subcon, (string) $row->project_id);
+            $fabricLines = $publisher->publish($subcon, (string) $row->project_id);
             app(\App\Services\SubconRemarksPublisher::class)->publish($subcon);
         }
-        $fabricLines = $subcon ? $production->fabricLinesWithData($subcon) : [];
 
         $hoActor = $this->actorLabel($request, self::HO_SIGNER);
         $signature = 'Digitally Signed: '.$hoActor
@@ -873,13 +884,11 @@ class QcApprovalController extends Controller
             'note' => 'Head Office approval recorded ('.count($fabricLines).' fabric line(s), '.count($data['deductions'] ?? []).' deduction(s)).',
         ]);
 
-        // MD Production approved → refresh the signed PDF (now carrying both
-        // signatures) and queue the RAF RPA job. The Director is NOT notified
-        // here any more: MD Production reviews the numbers once RAF has run and
-        // presses "Validate & Send Approval" (hoSendApproval) to open stage 3.
-        // All best-effort: the approval above has already committed.
-        $this->refreshVerifiedDoc($row);
-
+        // MD Production approved → queue the RAF RPA job. The Director is NOT
+        // notified here any more: MD Production reviews the numbers once RAF
+        // has run and presses "Validate & Send Approval" (hoSendApproval) to
+        // open stage 3. All best-effort: the approval above has already committed.
+        //
         // Skip RAF specifically (not the approval/signature/PDF above) when VSM
         // already reports this style finished in production — that D365 job is
         // closed, so queuing RAF against it would just fail as a false failure.
@@ -894,10 +903,13 @@ class QcApprovalController extends Controller
             app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
         }
 
-        // Email the Validate & Send link to the MD Production list so step 2
-        // is reachable from the inbox too (not just the redirect below and the
-        // Report Validation tab).
-        $this->sendValidateSendRequest($token, $row, $hoActor);
+        // Refresh the signed PDF (now carrying both signatures) and email the
+        // Validate & Send link to the MD Production list so step 2 is reachable
+        // from the inbox too. Deferred (see RefreshQcVerifiedDocAndNotifyHo):
+        // refreshVerifiedDoc()'s context() render alone is confirmed live to
+        // cost 1-4s of D365 round trips, and the redirect below doesn't depend
+        // on either having completed.
+        \App\Jobs\RefreshQcVerifiedDocAndNotifyHo::dispatch($token, $hoActor);
 
         // Back to the same form, which now renders the validate-and-send step.
         return redirect()->route('qc.ho-approve', array_filter([
@@ -1752,10 +1764,6 @@ class QcApprovalController extends Controller
 
         Log::info('QC director authorization rejected', ['token' => $token, 'project_id' => $row->project_id ?? null, 'reason' => $reason]);
 
-        // Workflow state changed (validation cleared) → re-render the shared
-        // document so nothing keeps showing the stale validation state.
-        $this->refreshVerifiedDoc($row);
-
         [$subcon, , $productionGroup] = $this->subconContext($row);
         \App\Models\SubconApprovalLog::record([
             'order_id' => $subcon->id ?? null,
@@ -1768,9 +1776,13 @@ class QcApprovalController extends Controller
             'note' => 'Director rejection recorded — back to Report Validation.'.($reason !== '' ? ' Reason: '.$reason : ''),
         ]);
 
-        // Re-open step 2b only: send MD Production the Validate & Send link
-        // again (NOT the Review & Approve form), carrying the Director's reason.
-        $this->sendValidateSendRequest($token, $row, $directorActor, $reason !== ''
+        // Workflow state changed (validation cleared) → re-render the shared
+        // document so nothing keeps showing the stale validation state, then
+        // re-open step 2b: send MD Production the Validate & Send link again
+        // (NOT the Review & Approve form), carrying the Director's reason.
+        // Deferred — see RefreshQcVerifiedDocAndNotifyHo — same reasoning as
+        // hoApprove().
+        \App\Jobs\RefreshQcVerifiedDocAndNotifyHo::dispatch($token, $directorActor, $reason !== ''
             ? 'Rejected by the Director — reason: '.$reason
             : 'Rejected by the Director. Please re-validate and send again.');
 
@@ -1897,6 +1909,36 @@ class QcApprovalController extends Controller
     }
 
     /**
+     * Pre-warm hoApprovalForm()'s D365 response caches (fabricLinesWithData,
+     * accessoryLinesForPo, resolveGoodsReceipts, context(summaryOnly)) before
+     * a human ever opens the link — confirmed live (this session) to cost
+     * ~4.9s cold vs. ~60ms once D365JobTransactionService's 1h response cache
+     * is populated. Dispatched (see WarmQcHoApprovalCache) right after the
+     * "Review & Approve" / "Validate & Send" email is queued, so the natural
+     * email-delivery + human-notices-it gap absorbs the cold-fetch cost
+     * instead of the click. Same cache keys hoApprovalForm() itself computes
+     * from (row/subcon), so a cache hit there is a genuine reuse, not a
+     * coincidence. Results are discarded — this exists purely for its
+     * Cache::put side effects. Best-effort: never throws.
+     */
+    public function warmApprovalCaches(object $row): void
+    {
+        try {
+            [$subcon] = $this->subconContext($row);
+            if (! $subcon) {
+                return;
+            }
+            $production = app(SubconProductionService::class);
+            $production->fabricLinesWithData($subcon);
+            $accessoryLines = $production->accessoryLinesForPo($subcon->order_number);
+            $production->resolveGoodsReceipts($accessoryLines);
+            app(QcReportPdfService::class)->context((string) $row->project_id, (string) $row->session_id, summaryOnly: true);
+        } catch (\Throwable $e) {
+            Log::warning('QC approval cache warm-up failed', ['project' => $row->project_id ?? null, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
      * Regenerate the inspection PDF from QMS data and store it as verified_doc.
      * Called after every signature milestone so the document always carries the
      * signatures collected so far — the console no longer needs to be open.
@@ -1959,7 +2001,7 @@ class QcApprovalController extends Controller
      * Same recipient resolution as sendHoApprovalRequest; attaches the
      * just-refreshed verified_doc.
      */
-    private function sendValidateSendRequest(string $token, object $row, string $approvedBy, ?string $note = null): void
+    public function sendValidateSendRequest(string $token, object $row, string $approvedBy, ?string $note = null): void
     {
         try {
             $to = Setting::getValue('qc_ho_approver_email');
@@ -2005,6 +2047,8 @@ class QcApprovalController extends Controller
                     ],
                 ]);
             }
+
+            \App\Jobs\WarmQcHoApprovalCache::dispatch($token);
 
             Log::info('QC validate-send email queued', ['token' => $token, 'to' => $recipients]);
         } catch (\Throwable $e) {
@@ -2384,6 +2428,8 @@ class QcApprovalController extends Controller
                 'remarks' => $subcon->remarks ?? null,
                 'note' => $note,
             ]);
+
+            \App\Jobs\WarmQcHoApprovalCache::dispatch($token);
 
             Log::info('QC HO approval email queued', ['token' => $token, 'to' => $recipients]);
         } catch (\Throwable $e) {

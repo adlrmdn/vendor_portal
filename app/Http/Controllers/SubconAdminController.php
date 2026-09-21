@@ -1505,7 +1505,11 @@ class SubconAdminController extends Controller
                         ->value('session_id')
                     : null;
                 if ($projectId && $sessionId) {
-                    $ctx = $this->reportPdf->context((string) $projectId, (string) $sessionId);
+                    // summaryOnly: true — only accessoryBreakdown/accessoryClaimRuling
+                    // are read below, both computed identically either way (see
+                    // context()'s docblock); full mode's extra D365 item-master
+                    // re-fetch into $ctx['fabricLines'] would be pure waste here.
+                    $ctx = $this->reportPdf->context((string) $projectId, (string) $sessionId, summaryOnly: true);
                     foreach ($ctx['accessoryBreakdown'] ?? [] as $a) {
                         $accessoryClaimByLabel[$a['label']] = $a;
                     }
