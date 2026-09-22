@@ -52,7 +52,7 @@ class D365JobTransactionService
     /**
      * Get OAuth token for D365 environment.
      */
-    private function getD365Token(): ?string
+    protected function getD365Token(): ?string
     {
         $tenantId = config('services.d365.tenant_id');
         $clientId = config('services.d365.client_id');
@@ -1348,6 +1348,47 @@ class D365JobTransactionService
         }
 
         return $out;
+    }
+
+    /**
+     * Garment sales price direct from D365's `ReleasedProductMastersV2`
+     * (`SalesPrice` field), keyed by item number = PLM id. Mirrors the QC
+     * Console's own `fetch_odata_sales_price` (Rust) — reused here for the
+     * Official Report's reject-tolerance deduction (penalty_price =
+     * sales_price * 0.70, see SubconOfficialReportService). Best-effort:
+     * null on any failure, a blank PLMId, or no matching D365 record —
+     * callers must let the admin fill the price in by hand in that case.
+     */
+    public function fetchSalesPrice(string $plmId): ?float
+    {
+        $plmId = trim($plmId);
+        if ($plmId === '') {
+            return null;
+        }
+
+        $cacheKey = 'd365_sales_price_'.md5($plmId);
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $token = $this->getD365Token();
+        if (! $token) {
+            return null;
+        }
+
+        try {
+            $filter = 'ItemNumber eq '.$this->odataLit($plmId);
+            $rows = $this->odataGet($token, 'ReleasedProductMastersV2', $filter);
+            $price = isset($rows[0]['SalesPrice']) ? (float) $rows[0]['SalesPrice'] : null;
+
+            Cache::put($cacheKey, $price, now()->addHour());
+
+            return $price;
+        } catch (\Throwable $e) {
+            Log::error('D365 sales price fetch exception: '.$e->getMessage());
+
+            return null;
+        }
     }
 
     /**

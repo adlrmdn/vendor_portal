@@ -266,6 +266,53 @@ class SubconProductionService
     }
 
     /**
+     * Per-unit price (LineAmount ÷ OrderedPurchaseQuantity — never
+     * PurchasePrice, same principle as resolveFabricPricing()) for the
+     * AddPro PO line whose description best matches this ADD-* operation's
+     * suffix keyword (e.g. ADD-Sab -> "Sab", matched case-insensitively
+     * against "Item Jasa Add Process Sablon"). Falls back to the PO's only
+     * line when there's exactly one and no description match.
+     *
+     * KNOWN LIMITATION: on a PO where more than one line shares the same
+     * operation's description keyword, this returns the lowest-numbered
+     * matching line's price, which is a guess when those lines could carry
+     * different amounts.
+     */
+    public function resolveAddProcessLineUnitPrice(string $poNumber, string $operation): ?float
+    {
+        try {
+            $lines = DB::connection('vsm')->table('po_lines')
+                ->where('PurchaseOrderNumber', $poNumber)
+                ->orderBy('LineNumber')
+                ->get(['LineNumber', 'LineDescription', 'LineAmount', 'OrderedPurchaseQuantity']);
+
+            if ($lines->isEmpty()) {
+                return null;
+            }
+
+            $operation = trim($operation);
+            $keyword = stripos($operation, 'ADD-') === 0 ? trim(substr($operation, 4)) : '';
+
+            $match = null;
+            if ($keyword !== '') {
+                $match = $lines->first(fn ($l) => str_contains(strtolower((string) ($l->LineDescription ?? '')), strtolower($keyword)));
+            }
+            $match ??= $lines->count() === 1 ? $lines->first() : null;
+
+            $qty = (float) ($match->OrderedPurchaseQuantity ?? 0);
+            if (! $match || $qty <= 0) {
+                return null;
+            }
+
+            return (float) $match->LineAmount / $qty;
+        } catch (\Throwable $e) {
+            report($e);
+
+            return null;
+        }
+    }
+
+    /**
      * Per-size Cut Qty (+ reject) already produced for a production group,
      * read from the local `vsm.job_transaction_line_details` mirror (synced
      * from D365, see vsm-job-transaction-routing memory) — this is the real
