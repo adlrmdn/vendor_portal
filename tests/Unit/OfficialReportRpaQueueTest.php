@@ -9,6 +9,13 @@ use Tests\TestCase;
 
 class OfficialReportRpaQueueTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        SubconOfficialReport::where('production_group', 'MPG/PRG/TEST/RPA01')->delete();
+    }
+
     private function makeReport(array $overrides = []): SubconOfficialReport
     {
         return SubconOfficialReport::create(array_merge([
@@ -30,6 +37,7 @@ class OfficialReportRpaQueueTest extends TestCase
             ->whereIn('rpa_type', ['invoice_addprocess', 'deduction_addprocess'])
             ->where('entity_id', 'like', 'MPG/PRG/TEST/RPA01%')
             ->delete();
+        SubconOfficialReport::where('production_group', 'MPG/PRG/TEST/RPA01')->delete();
         parent::tearDown();
     }
 
@@ -42,6 +50,7 @@ class OfficialReportRpaQueueTest extends TestCase
         $this->assertTrue($ok);
         $this->assertDatabaseHas('rpa_queues', [
             'entity_id' => 'MPG/PRG/TEST/RPA01:ADD-Was',
+            'entity_type' => 'add_process',
             'rpa_type' => 'invoice_addprocess',
             'status' => 'pending',
         ], 'rpa');
@@ -62,6 +71,7 @@ class OfficialReportRpaQueueTest extends TestCase
         $this->assertTrue($service->queueOfficialReportDeduction($withDeduction, 'data:application/pdf;base64,AAAA'));
         $this->assertDatabaseHas('rpa_queues', [
             'entity_id' => 'MPG/PRG/TEST/RPA01:ADD-Sab',
+            'entity_type' => 'add_process',
             'rpa_type' => 'deduction_addprocess',
             'status' => 'pending',
         ], 'rpa');

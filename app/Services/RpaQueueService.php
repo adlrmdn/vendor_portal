@@ -818,10 +818,19 @@ class RpaQueueService
      * still in its updatable status; insert a fresh row otherwise (unless one is
      * already processing).
      *
+     * `$entityType` defaults to 'packaging_project' — correct for every
+     * existing caller (queueJobTransRaf/queueInvoice/queueDeduction, all qms
+     * packaging-project entities). Add-Process-scoped callers (e.g.
+     * queueOfficialReportInvoice/queueOfficialReportDeduction) must pass
+     * 'add_process' explicitly — downstream listeners (e.g. automaton/
+     * pw_service/debit_note/listener.py) filter on this column, and
+     * queueAddProcessGoodsReceive() already established 'add_process' as the
+     * correct value for this entity family.
+     *
      * @param  array<string,mixed>  $payload
      * @param  list<string>  $activeStatuses
      */
-    private function upsertJob(string $entityId, string $rpaType, string $insertStatus, array $payload, string $updatableStatus, array $activeStatuses): void
+    private function upsertJob(string $entityId, string $rpaType, string $insertStatus, array $payload, string $updatableStatus, array $activeStatuses, string $entityType = 'packaging_project'): void
     {
         $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
@@ -837,7 +846,7 @@ class RpaQueueService
                 ->update(['payload' => $json, 'updated_at' => now()]);
         } else {
             DB::connection('rpa')->table('rpa_queues')->insert([
-                'entity_type' => 'packaging_project',
+                'entity_type' => $entityType,
                 'entity_id' => $entityId,
                 'rpa_type' => $rpaType,
                 'status' => $insertStatus,
@@ -876,7 +885,7 @@ class RpaQueueService
 
             $queuedPayload = $this->offloadSignedDocToS3('invoice_addprocess', $entityId, $payload);
 
-            $this->upsertJob($entityId, 'invoice_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing']);
+            $this->upsertJob($entityId, 'invoice_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing'], entityType: 'add_process');
 
             return true;
         } catch (\Throwable $e) {
@@ -910,7 +919,7 @@ class RpaQueueService
 
             $queuedPayload = $this->offloadSignedDocToS3('deduction_addprocess', $entityId, $payload);
 
-            $this->upsertJob($entityId, 'deduction_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing']);
+            $this->upsertJob($entityId, 'deduction_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing'], entityType: 'add_process');
 
             return true;
         } catch (\Throwable $e) {
