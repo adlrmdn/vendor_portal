@@ -245,6 +245,14 @@ class SubconOrder extends Model
     public const LABEL_GEN_FAILED = 'failed';
 
     /**
+     * A known D365 business-rule rejection (closed store, empty Gramasi) —
+     * distinct from LABEL_GEN_FAILED because retrying can never fix it; only
+     * a person correcting the D365/report data can. See
+     * GenerateSubconLabels::NON_RETRYABLE_DTT_ERROR_PATTERNS.
+     */
+    public const LABEL_GEN_BLOCKED = 'blocked';
+
+    /**
      * A generation run is considered live only for this long. Guards against a
      * crashed/killed job leaving the button locked forever — comfortably above
      * the job's own timeout×tries so a genuinely-running job is never unlocked
@@ -264,6 +272,12 @@ class SubconOrder extends Model
     public function labelGenFailed(): bool
     {
         return $this->label_gen_status === self::LABEL_GEN_FAILED;
+    }
+
+    /** True if the last run hit a D365 business-rule rejection retrying can't fix. */
+    public function labelGenBlocked(): bool
+    {
+        return $this->label_gen_status === self::LABEL_GEN_BLOCKED;
     }
 
     /** Mark a generation run as started (button-locking state). */
@@ -296,6 +310,23 @@ class SubconOrder extends Model
         ])->save();
     }
 
+    /**
+     * Record a D365 business-rule rejection (closed store, empty Gramasi) —
+     * same bookkeeping as markLabelGenFailed(), but a distinct status so the
+     * UI can show it as "needs a D365 fix" rather than "retry me".
+     */
+    public function markLabelGenBlocked(string $reason): void
+    {
+        $this->forceFill([
+            ...($this->workflow_stage !== self::STAGE_COMPLETED
+                ? ['workflow_stage' => self::STAGE_WAITING_DISTRIBUTION]
+                : []),
+            'label_gen_status' => self::LABEL_GEN_BLOCKED,
+            'label_gen_error' => \Illuminate\Support\Str::limit($reason, 1000),
+            'label_gen_at' => now(),
+        ])->save();
+    }
+
     /** Clear generation state after a successful run. */
     public function clearLabelGenState(): void
     {
@@ -309,6 +340,16 @@ class SubconOrder extends Model
     public function canEditCutting(): bool
     {
         return $this->workflow_stage === self::STAGE_CUTTING;
+    }
+
+    /** Vendor may submit a cutting revision after cutting was already approved, up until the order is completed. */
+    public function canReviseCutting(): bool
+    {
+        return in_array($this->workflow_stage, [
+            self::STAGE_GRAMASI,
+            self::STAGE_WAITING_DISTRIBUTION,
+            self::STAGE_LABELS,
+        ], true) && $this->cutting_approved_at !== null && ! $this->isAwaitingApproval();
     }
 
     /** Vendor may edit/submit gramasi + blister capacity. */

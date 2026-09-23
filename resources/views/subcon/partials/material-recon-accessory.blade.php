@@ -128,38 +128,38 @@
     <div class="fw-semibold small text-secondary text-uppercase" style="letter-spacing:.05em;">
         <i class="fas fa-shapes me-1"></i> Accessory
     </div>
-    @if($editable && ! $returQtyOnly)
-        <button type="button" class="btn btn-outline-secondary btn-sm" id="add-recon-accessory"><i class="fas fa-plus me-1"></i> Add accessory</button>
+    @if($editable)
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="add-recon-accessory"><i class="fas fa-plus me-1"></i> {{ __('Add accessory') }}</button>
     @endif
 </div>
 
 @if(! $editable && empty($accSeed))
-    <div class="text-muted small">No accessory return quantities declared.</div>
+    <div class="text-muted small">{{ __('No accessory return quantities declared.') }}</div>
 @else
     <div class="table-responsive" style="max-height: 320px; overflow-y: auto;">
         <table class="table table-sm align-middle mb-0">
             <thead class="table-light" style="position: sticky; top: 0; z-index: 1;">
                 <tr>
-                    <th style="min-width:240px;">Item</th>
+                    <th style="min-width:240px;">{{ __('Item') }}</th>
                     @if(! $returQtyOnly)
-                        <th class="text-end" style="width:120px;">Goods Receive</th>
+                        <th class="text-end" style="width:120px;">{{ __('Goods Receive') }}</th>
                     @endif
-                    <th class="text-end" style="width:120px;">Mats Sent</th>
-                    <th class="text-end" style="width:120px;">Retur Qty</th>
+                    <th class="text-end" style="width:120px;">{{ __('Mats Sent') }}</th>
+                    <th class="text-end" style="width:120px;">{{ __('Retur Qty') }}</th>
                     @if($returQtyOnly)
                         @if($showExpectedBalance)
-                            <th class="text-end" style="width:110px;">Expected Retur</th>
-                            <th class="text-end" style="width:100px;">Balance</th>
+                            <th class="text-end" style="width:110px;">{{ __('Expected Retur') }}</th>
+                            <th class="text-end" style="width:100px;">{{ __('Balance') }}</th>
                         @endif
                     @else
-                        <th class="text-end" style="width:130px;">Price</th>
+                        <th class="text-end" style="width:130px;">{{ __('Price') }}</th>
                         @if($showClaim)
-                            <th class="text-end" style="width:110px;">Expected Retur</th>
-                            <th class="text-end" style="width:100px;">Balance</th>
-                            <th class="text-end" style="width:120px;">Claim</th>
+                            <th class="text-end" style="width:110px;">{{ __('Expected Retur') }}</th>
+                            <th class="text-end" style="width:100px;">{{ __('Balance') }}</th>
+                            <th class="text-end" style="width:120px;">{{ __('Claim') }}</th>
                         @endif
                     @endif
-                    @if($editable && ! $returQtyOnly)<th style="width:40px;"></th>@endif
+                    @if($editable)<th style="width:40px;"></th>@endif
                 </tr>
             </thead>
             <tbody id="recon-accessory-rows">
@@ -272,7 +272,7 @@
                                 {{ $c && $c['claim'] !== null ? 'Rp '.number_format((float) $c['claim'], 2) : '—' }}
                             </td>
                         @endif
-                        @if($editable && ! $returQtyOnly)
+                        @if($editable)
                             <td class="text-end">
                                 @unless($a['from_vsm'])
                                     <button type="button" class="btn btn-sm btn-outline-danger recon-accessory-remove" title="Remove"><i class="fas fa-times"></i></button>
@@ -286,7 +286,7 @@
     </div>
 @endif
 
-@if($editable && ! $returQtyOnly)
+@if($editable)
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     const accRows = document.getElementById('recon-accessory-rows');
@@ -294,19 +294,30 @@ document.addEventListener('DOMContentLoaded', function () {
     if (! accRows || ! accAddBtn) return;
 
     let aIdx = {{ count($accSeed) }};
+    const isReturOnly = {{ $returQtyOnly ? 'true' : 'false' }};
 
     accAddBtn.addEventListener('click', function () {
         const i = aIdx++;
         const tr = document.createElement('tr');
-        tr.innerHTML =
-            '<td><input type="text" class="form-control form-control-sm" name="accessories_recon[' + i + '][label]" placeholder="Accessory description" required></td>' +
-            '<td class="text-end text-muted">—</td>' +
-            '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:100px;" name="accessories_recon[' + i + '][mats_sent]" value="0"></td>' +
-            '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:100px;" name="accessories_recon[' + i + '][qty]" value="0">' +
-                '<input type="text" class="form-control form-control-sm d-inline-block mt-1" style="width:100px;" name="accessories_recon[' + i + '][unit]" value="PCS" placeholder="Unit"></td>' +
-            '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:110px;" name="accessories_recon[' + i + '][price]" value="0"></td>' +
-            {{ $showClaim ? "'<td class=\"text-end text-muted\">—</td><td class=\"text-end text-muted\">—</td><td class=\"text-end text-muted\">—</td>' +" : '' }}
-            '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger recon-accessory-remove" title="Remove"><i class="fas fa-times"></i></button></td>';
+        if (isReturOnly) {
+            tr.innerHTML =
+                '<td><input type="text" class="form-control form-control-sm" name="accessories_recon[' + i + '][label]" placeholder="{{ __('Accessory description') }}" required></td>' +
+                '<td class="text-end text-muted">—</td>' +
+                '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:100px;" name="accessories_recon[' + i + '][qty]" value="0">' +
+                    '<input type="text" class="form-control form-control-sm d-inline-block mt-1" style="width:100px;" name="accessories_recon[' + i + '][unit]" value="PCS" placeholder="Unit"></td>' +
+                {!! $showExpectedBalance ? "'<td class=\"text-end text-muted\">—</td><td class=\"text-end text-muted\">—</td>' +" : "'' +" !!}
+                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger recon-accessory-remove" title="Remove"><i class="fas fa-times"></i></button></td>';
+        } else {
+            tr.innerHTML =
+                '<td><input type="text" class="form-control form-control-sm" name="accessories_recon[' + i + '][label]" placeholder="Accessory description" required></td>' +
+                '<td class="text-end text-muted">—</td>' +
+                '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:100px;" name="accessories_recon[' + i + '][mats_sent]" value="0"></td>' +
+                '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:100px;" name="accessories_recon[' + i + '][qty]" value="0">' +
+                    '<input type="text" class="form-control form-control-sm d-inline-block mt-1" style="width:100px;" name="accessories_recon[' + i + '][unit]" value="PCS" placeholder="Unit"></td>' +
+                '<td class="text-end"><input type="number" step="0.01" min="0" inputmode="decimal" onfocus="if(!parseFloat(this.value))this.select()" class="form-control form-control-sm text-end d-inline-block" style="width:110px;" name="accessories_recon[' + i + '][price]" value="0"></td>' +
+                {!! $showClaim ? "'<td class=\"text-end text-muted\">—</td><td class=\"text-end text-muted\">—</td><td class=\"text-end text-muted\">—</td>' +" : "'' +" !!}
+                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger recon-accessory-remove" title="Remove"><i class="fas fa-times"></i></button></td>';
+        }
         accRows.appendChild(tr);
     });
 

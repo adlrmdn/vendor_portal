@@ -404,7 +404,7 @@ class SubconDailyProductionService
         $orderIds = $orders->pluck('id')->filter()->all();
 
         try {
-            $query = SubconDailyProductionDayNote::where('entry_date', $entryDate);
+            $query = SubconDailyProductionDayNote::whereDate('entry_date', $entryDate);
             if ($vendorId && empty($orderIds)) {
                 $query->where('vendor_id', $vendorId);
             } else {
@@ -452,7 +452,7 @@ class SubconDailyProductionService
         if ($note === '') {
             try {
                 SubconDailyProductionDayNote::where('order_id', $order->id)
-                    ->where('entry_date', $entryDate)
+                    ->whereDate('entry_date', $entryDate)
                     ->delete();
             } catch (\Throwable $e) {
                 report($e);
@@ -486,7 +486,7 @@ class SubconDailyProductionService
             try {
                 SubconDailyProductionDayNote::where('vendor_id', $vendorId)
                     ->whereNull('order_id')
-                    ->where('entry_date', $entryDate)
+                    ->whereDate('entry_date', $entryDate)
                     ->delete();
             } catch (\Throwable $e) {
                 report($e);

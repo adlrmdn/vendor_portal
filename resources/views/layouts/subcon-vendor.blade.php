@@ -15,29 +15,36 @@
                     <li class="nav-item">
                         <a href="{{ route('subcon.vendor.dashboard') }}"
                             class="nav-link {{ request()->routeIs('subcon.vendor.dashboard') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Dashboard">
-                            <i class="fas fa-tachometer-alt me-2"></i> <span>Dashboard</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Dashboard') }}">
+                            <i class="fas fa-tachometer-alt me-2"></i> <span>{{ __('Dashboard') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.vendor.orders') }}"
                             class="nav-link {{ request()->routeIs('subcon.vendor.orders*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="My Work Orders">
-                            <i class="fas fa-clipboard-list me-2"></i> <span>My Work Orders</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('My Work Orders') }}">
+                            <i class="fas fa-clipboard-list me-2"></i> <span>{{ __('My Work Orders') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.vendor.daily-production.index') }}"
                             class="nav-link {{ request()->routeIs('subcon.vendor.daily-production*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Daily Production">
-                            <i class="fas fa-industry me-2"></i> <span>Daily Production</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Daily Production') }}">
+                            <i class="fas fa-industry me-2"></i> <span>{{ __('Daily Production') }}</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('subcon.vendor.guidebook') }}"
+                            class="nav-link {{ request()->routeIs('subcon.vendor.guidebook*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Guidebook') }}">
+                            <i class="fas fa-book-reader me-2"></i> <span>{{ __('Guidebook') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.vendor.profile') }}"
                             class="nav-link {{ request()->routeIs('subcon.vendor.profile*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Profile Settings">
-                            <i class="fas fa-user-cog me-2"></i> <span>Profile Settings</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Profile Settings') }}">
+                            <i class="fas fa-user-cog me-2"></i> <span>{{ __('Profile Settings') }}</span>
                         </a>
                     </li>
                 </ul>

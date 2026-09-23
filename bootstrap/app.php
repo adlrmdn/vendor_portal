@@ -14,6 +14,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->web(append: [
             \App\Http\Middleware\PreventBackHistory::class,
+            \App\Http\Middleware\SetLocale::class,
         ]);
         // Machine-to-machine callback (automaton/pw_service/debit_note) —
         // no browser session, so no CSRF token to send. Auth is the

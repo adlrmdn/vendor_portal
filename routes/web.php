@@ -189,6 +189,7 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     Route::get('/approval-logs', [SubconAdminController::class, 'approvalLogs'])->name('approval-logs');
     Route::get('/orders', [SubconAdminController::class, 'orders'])->name('orders');
     Route::get('/orders-waiting-distribution', [SubconAdminController::class, 'waitingDistribution'])->name('orders-waiting-distribution');
+    Route::get('/orders/label-gen-status', [SubconAdminController::class, 'labelGenStatus'])->name('orders.label-gen-status');
     Route::post('/orders/{id}/generate-labels-manual', [SubconAdminController::class, 'generateLabelsManual'])->name('orders.generate-labels-manual');
     Route::get('/orders/{id}', [SubconAdminController::class, 'viewOrder'])->name('orders.view');
     Route::get('/orders/{id}/export-cutting', [SubconAdminController::class, 'exportCuttingReport'])->name('orders.export-cutting');
@@ -302,6 +303,7 @@ Route::middleware(['auth', 'role:subcon_vendor'])->prefix('subcon/vendor')->name
     Route::put('/profile', [SubconVendorController::class, 'updateProfile'])->name('profile.update');
     Route::put('/profile/password', [SubconVendorController::class, 'updatePassword'])->name('profile.password');
     Route::get('/user-guide', [SubconVendorController::class, 'userGuide'])->name('user-guide');
+    Route::get('/guidebook', [SubconVendorController::class, 'guidebook'])->name('guidebook');
 
     // Daily production tracking (Cutting/Load-Sewing/Sewing/Load-Finishing/
     // Finishing&Packing) — separate from the approval-workflow stage above.
@@ -312,6 +314,16 @@ Route::middleware(['auth', 'role:subcon_vendor'])->prefix('subcon/vendor')->name
     Route::post('/daily-production/{id}/close', [SubconDailyProductionController::class, 'close'])->name('daily-production.close');
     Route::post('/daily-production/{id}/reopen', [SubconDailyProductionController::class, 'reopen'])->name('daily-production.reopen');
 });
+
+// Localization Switcher Route
+Route::get('/locale/{lang}', function ($lang) {
+    if (in_array($lang, ['id', 'en'])) {
+        session(['locale' => $lang]);
+        app()->setLocale($lang);
+    }
+
+    return redirect()->back();
+})->name('locale.switch');
 
 // Notification Routes
 Route::post('/notifications/mark-as-read', function () {

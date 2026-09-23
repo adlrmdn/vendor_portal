@@ -303,10 +303,10 @@
                                     @endif
                                 </td>
                                 <td class="text-end text-primary">
-                                    <span id="total-cutting-qty-val" class="fw-bold">{{ number_format($totalCuttingQty) }}</span> <span class="text-muted small fw-normal">pcs</span>
+                                    <span id="total-cutting-qty-val" class="total-cutting-qty-val fw-bold">{{ number_format($totalCuttingQty) }}</span> <span class="text-muted small fw-normal">pcs</span>
                                 </td>
                                 <td class="text-end">
-                                    <span id="total-balance-val" class="fw-bold {{ $totalBalClass }}"
+                                    <span id="total-balance-val" class="total-balance-val fw-bold {{ $totalBalClass }}"
                                           data-cut-plan-total="{{ $cuttPlanTotal ?? '' }}"
                                           data-total-order-qty="{{ $totalQty }}">{!! $totalBalText !!}</span>
                                 </td>
@@ -435,15 +435,19 @@
     @endif
 @endforelse
 
+@if($editCutting)
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const fmt = new Intl.NumberFormat();
     const inputs = Array.from(document.querySelectorAll('.cutting-qty-input'));
-    const totalCutEl = document.getElementById('total-cutting-qty-val');
-    const totalBalEl = document.getElementById('total-balance-val');
+    if (!inputs.length) return;
+
+    const container = inputs[0].closest('.subcon-order-card') || document;
+    const totalCutEl = container.querySelector('.total-cutting-qty-val') || document.getElementById('total-cutting-qty-val');
+    const totalBalEl = container.querySelector('.total-balance-val') || document.getElementById('total-balance-val');
     // The submit button lives in the page (outside this partial) and targets
-    // the stage form via form="stageForm".
-    const submitBtn = document.querySelector('button[type="submit"][form="stageForm"]');
+    // the stage form via form="stageForm" or cuttingRevisionForm.
+    const submitBtn = document.querySelector('button[type="submit"][form="stageForm"], form#cuttingRevisionForm button[type="submit"], button[type="submit"][form="cuttingRevisionForm"]');
 
     // Balance = Qty Cut − Cut Plan once Cut Plan is available, else Qty Cut − Order
     // Qty. Under-cut negative, over-cut positive.
@@ -477,7 +481,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const balance = cut - balanceBase;
 
-            const target = document.getElementById(input.dataset.balanceTarget);
+            const target = input.closest('tr')?.querySelector('.balance-cell') || document.getElementById(input.dataset.balanceTarget);
             if (target) {
                 target.innerHTML = balText(balance, has);
                 target.className = 'balance-cell fw-semibold ' + balClass(balance, has);
@@ -490,7 +494,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const tb = totalCut - totalBalanceBase;
             const has = totalCut > 0;
             totalBalEl.innerHTML = balText(tb, has);
-            totalBalEl.className = 'fw-bold ' + balClass(tb, has);
+            totalBalEl.className = 'total-balance-val fw-bold ' + balClass(tb, has);
         }
 
         if (submitBtn) {
@@ -503,6 +507,7 @@ document.addEventListener('DOMContentLoaded', function() {
         input.addEventListener('change', recompute);
     });
 
-    if (inputs.length) recompute();
+    recompute();
 });
 </script>
+@endif

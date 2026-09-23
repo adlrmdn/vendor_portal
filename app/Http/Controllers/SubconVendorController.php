@@ -202,7 +202,14 @@ class SubconVendorController extends Controller
             }
         }
 
-        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'dailyCuttingTotals', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcSizeOrderQty', 'accessoryClaimByLabel'));
+        $dailyProductionSummary = null;
+        try {
+            $dailyProductionSummary = $dailyProduction->forOrder($order);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return view('subcon.vendor.orders.show', compact('order', 'productionGroups', 'summary', 'cuttingReports', 'dailyCuttingTotals', 'fabricLines', 'fabricRecon', 'accessoryLines', 'accessoryRecon', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcSizeOrderQty', 'accessoryClaimByLabel', 'dailyProductionSummary'));
     }
 
     /**
@@ -260,7 +267,8 @@ class SubconVendorController extends Controller
         $vendorId = Auth::user()->vendor_id;
         $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
 
-        if (! $order->canEditCutting()) {
+        $isRevision = $order->canReviseCutting();
+        if (! ($order->canEditCutting() || $isRevision)) {
             return back()->with('error', 'Cutting report can no longer be edited at this stage ('.$order->stageLabel().').');
         }
 
@@ -292,13 +300,14 @@ class SubconVendorController extends Controller
         }
 
         $duplicate = false;
-        \Illuminate\Support\Facades\DB::transaction(function () use (&$order, $data, &$duplicate) {
+        \Illuminate\Support\Facades\DB::transaction(function () use (&$order, $data, &$duplicate, &$isRevision) {
             // Re-check under a row lock: closes the window where a double-click
             // or resubmitted POST lands after the first request already moved
             // the order to cutting_review, which would otherwise re-spawn a
             // second approval email + admin notification for the same submit.
             $order = SubconOrder::where('id', $order->id)->lockForUpdate()->first();
-            if (! $order->canEditCutting()) {
+            $isRevision = $order->canReviseCutting();
+            if (! ($order->canEditCutting() || $isRevision)) {
                 $duplicate = true;
 
                 return;
@@ -367,9 +376,13 @@ class SubconVendorController extends Controller
         $this->emailApprover($order, 'cutting');
         $this->notifyAdmins(new SubconApprovalRequested($order, 'cutting'));
 
+        if ($isRevision) {
+            return back()->with('success', __('Cutting report revision submitted for approval.'));
+        }
+
         return back()->with('success', $order->cutting_partial
-            ? 'Partial cutting report submitted for approval. After approval you can continue entering the remaining quantities.'
-            : 'Cutting report submitted for approval.');
+            ? __('Partial cutting report submitted for approval. After approval you can continue entering the remaining quantities.')
+            : __('Cutting report submitted for approval.'));
     }
 
     /**
@@ -865,6 +878,14 @@ class SubconVendorController extends Controller
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('subcon.pdf.vendor-guide-id')->setPaper('a4');
 
         return $pdf->stream('Panduan Vendor - Portal Subkontraktor.pdf');
+    }
+
+    /**
+     * Illustrated bilingual onboarding guidebook.
+     */
+    public function guidebook()
+    {
+        return view('subcon.vendor.guidebook');
     }
 
     /**

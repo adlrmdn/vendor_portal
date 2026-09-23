@@ -194,7 +194,29 @@
                     <!-- Dashboard link removed (duplicates sidebar) -->
                 </ul>
 
-                <ul class="navbar-nav ms-auto">
+                <ul class="navbar-nav ms-auto align-items-center">
+                    <!-- Language Switcher -->
+                    <li class="nav-item dropdown px-2 d-flex align-items-center">
+                        <a class="nav-link dropdown-toggle py-1 px-2 border rounded text-dark small fw-semibold bg-light" href="#" id="languageDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            @if(app()->getLocale() === 'id')
+                                <span>🇮🇩 ID</span>
+                            @else
+                                <span>🇬🇧 EN</span>
+                            @endif
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end shadow-sm border-0" aria-labelledby="languageDropdown">
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center {{ app()->getLocale() === 'id' ? 'fw-bold active' : '' }}" href="{{ route('locale.switch', 'id') }}">
+                                    <span class="me-2">🇮🇩</span> Bahasa Indonesia
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item d-flex align-items-center {{ app()->getLocale() === 'en' ? 'fw-bold active' : '' }}" href="{{ route('locale.switch', 'en') }}">
+                                    <span class="me-2">🇬🇧</span> English
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
                     @guest
                         <li class="nav-item">
                             <a class="nav-link" href="{{ route('login') }}">

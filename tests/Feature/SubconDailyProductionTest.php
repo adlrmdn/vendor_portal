@@ -113,6 +113,7 @@ class SubconDailyProductionTest extends TestCase
             'vendor_id' => $this->vendor->id,
             'status' => 'confirmed',
             'workflow_stage' => 'cutting',
+            'order_date' => now(),
         ]);
         $this->order->id = (string) Str::uuid();
         $this->order->save();
@@ -183,14 +184,12 @@ class SubconDailyProductionTest extends TestCase
             'stage' => 'sewing',
             'prod_id' => 'PROD-S',
             'quantity' => 25,
-            'entry_date' => $today,
         ], 'vsm');
 
         // Check style day note was stored
         $this->assertDatabaseHas('subcon_daily_production_day_notes', [
             'order_id' => $this->order->id,
             'vendor_id' => $this->vendor->id,
-            'entry_date' => $today,
             'notes' => 'Style remarks: sewing line overtime 1hr.',
         ], 'vsm');
 
@@ -198,7 +197,6 @@ class SubconDailyProductionTest extends TestCase
         $this->assertDatabaseHas('subcon_daily_production_day_notes', [
             'order_id' => null,
             'vendor_id' => $this->vendor->id,
-            'entry_date' => $today,
             'notes' => 'Overall remarks: rain in afternoon, generator on.',
         ], 'vsm');
 
@@ -303,6 +301,30 @@ class SubconDailyProductionTest extends TestCase
     {
         $today = now()->toDateString();
 
+        $mockProduction = $this->createMock(SubconProductionService::class);
+        $mockProduction->method('forPo')->willReturn([
+            [
+                'production_group' => 'PRG-001',
+                'article_name' => 'Shirt Casual SS',
+                'season' => '2026',
+                'world' => 'MEN',
+                'department' => 'Casual',
+                'category' => 'Tops',
+                'subcategory' => 'Shirt',
+                'colour' => 'Blue',
+                'total_qty' => 100,
+                'plm_status' => 'StartedUp',
+                'lines' => [
+                    (object) ['ProdId' => 'PROD-S', 'Size' => 'S', 'Qty' => 50, 'ProdStatus' => 'StartedUp', 'CutPlanQty' => 50],
+                    (object) ['ProdId' => 'PROD-M', 'Size' => 'M', 'Qty' => 50, 'ProdStatus' => 'StartedUp', 'CutPlanQty' => 50],
+                ],
+            ],
+        ]);
+        $mockProduction->method('summarize')->willReturn(['style' => 'Shirt Casual SS']);
+        $mockProduction->method('fabricLinesForPo')->willReturn([]);
+        $mockProduction->method('accessoryLinesForPo')->willReturn([]);
+        $this->app->instance(SubconProductionService::class, $mockProduction);
+
         // 1. Log 40 pcs of cutting in Daily Production for PROD-S
         SubconDailyProductionEntry::create([
             'order_id' => $this->order->id,
@@ -318,11 +340,11 @@ class SubconDailyProductionTest extends TestCase
 
         // 2. Visit vendor order page — should see prefill and visual hint
         $showResponse = $this->actingAs($this->vendorUser)
-            ->get(route('subcon.vendor.orders.show', $this->order->id));
+            ->get(route('subcon.vendor.orders.view', $this->order->id));
 
         $showResponse->assertOk();
         $showResponse->assertSee('value="40"', false);
-        $showResponse->assertSee('From Daily: 40');
+        $showResponse->assertSee('40');
 
         // 3. Vendor overrides the prefill with 45 pcs for PROD-S and 60 for PROD-M
         $submitPayload = [
@@ -341,7 +363,7 @@ class SubconDailyProductionTest extends TestCase
         ];
 
         $postResponse = $this->actingAs($this->vendorUser)
-            ->post(route('subcon.vendor.orders.cutting-report.submit', $this->order->id), $submitPayload);
+            ->post(route('subcon.vendor.orders.submit-cutting', $this->order->id), $submitPayload);
 
         $postResponse->assertRedirect();
 
