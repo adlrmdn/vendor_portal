@@ -26,5 +26,12 @@ class SubconOfficialReportPdfTest extends TestCase
 
         $this->assertNotNull($uri);
         $this->assertStringStartsWith('data:application/pdf;base64,', $uri);
+
+        // Strengthen beyond the data-URI prefix: decode the payload and
+        // confirm it's actually a real, non-trivial PDF, not e.g. an empty
+        // or truncated render that still happens to carry the right prefix.
+        $bytes = base64_decode(substr($uri, strlen('data:application/pdf;base64,')));
+        $this->assertStringStartsWith('%PDF', $bytes);
+        $this->assertGreaterThan(1000, strlen($bytes));
     }
 }
