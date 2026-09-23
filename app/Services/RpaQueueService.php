@@ -848,4 +848,75 @@ class RpaQueueService
 
         Log::info('RPA job queued', ['entity' => $entityId, 'type' => $rpaType]);
     }
+
+    /**
+     * Invoice for one Official Report's own AddPro PO — spec §10. Separate
+     * entity scheme/rpa_type from queueInvoice() (no qms `$project` object
+     * here): entity_id = "{production_group}:{operation}", amount =
+     * unit_price (matched PO line, resolveAddProcessLineUnitPrice()) *
+     * good_qty. Best-effort/never-throwing, same contract as every other
+     * method here.
+     */
+    public function queueOfficialReportInvoice(\App\Models\SubconOfficialReport $report, string $signedDoc): bool
+    {
+        try {
+            $entityId = "{$report->production_group}:{$report->operation}";
+
+            $unitPrice = app(SubconProductionService::class)->resolveAddProcessLineUnitPrice(
+                (string) $report->matched_po_number,
+                $report->operation
+            ) ?? 0.0;
+
+            $payload = [
+                'PO' => (string) $report->matched_po_number,
+                'vendor_name' => (string) $report->matched_po_vendor_name,
+                'signed_doc' => $signedDoc,
+                'amount' => $unitPrice * (float) $report->good_qty,
+            ];
+
+            $queuedPayload = $this->offloadSignedDocToS3('invoice_addprocess', $entityId, $payload);
+
+            $this->upsertJob($entityId, 'invoice_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing']);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('RPA official-report invoice queue failed', ['report' => $report->id, 'error' => $e->getMessage()]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Deduction for one Official Report — only queued when
+     * $report->totalDeduction() > 0, same "only when > 0" rule as
+     * queueDeduction(). Separate rpa_type (`deduction_addprocess`) — spec §10.
+     */
+    public function queueOfficialReportDeduction(\App\Models\SubconOfficialReport $report, string $signedDoc): bool
+    {
+        try {
+            $entityId = "{$report->production_group}:{$report->operation}";
+            $amount = $report->totalDeduction();
+
+            if ($amount <= 0) {
+                return true;
+            }
+
+            $payload = [
+                'PO' => (string) $report->matched_po_number,
+                'vendor_name' => (string) $report->matched_po_vendor_name,
+                'signed_doc' => $signedDoc,
+                'amount' => $amount,
+            ];
+
+            $queuedPayload = $this->offloadSignedDocToS3('deduction_addprocess', $entityId, $payload);
+
+            $this->upsertJob($entityId, 'deduction_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing']);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('RPA official-report deduction queue failed', ['report' => $report->id, 'error' => $e->getMessage()]);
+
+            return false;
+        }
+    }
 }
