@@ -4,10 +4,13 @@ namespace Tests\Feature;
 
 use App\Models\SubconOfficialReport;
 use App\Services\SubconOfficialReportService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class SubconOfficialReportPdfTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_renders_a_pdf_data_uri_for_an_unsigned_report()
     {
         $report = SubconOfficialReport::create([
