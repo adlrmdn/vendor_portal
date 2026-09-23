@@ -12,6 +12,7 @@ use Tests\TestCase;
 class SubconOfficialReportMailTest extends TestCase
 {
     use RefreshDatabase;
+
     public function test_approval_mailable_renders_for_ho_and_director_stages()
     {
         Mail::fake();
