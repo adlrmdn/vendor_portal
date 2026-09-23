@@ -181,4 +181,37 @@ class SubconOfficialReportService
             ]
         );
     }
+
+    /**
+     * Renders the Official Report PDF as a `data:application/pdf;base64,...`
+     * URI (spec §9) — the shape RpaQueueService's offloadSignedDocToS3()
+     * expects (matches QcReportPdfService::renderDataUri()'s contract).
+     * Overview fields (article name / season / PLM id) come from
+     * forProductionGroup()'s own group metadata, best-effort — a
+     * standalone/PLM-less group simply renders '—' for those, same as the
+     * rest of this feature treats a missing PLM link. forProductionGroup()
+     * has no delivery-plan data source at all, so that field is always null
+     * here (renders as '—') — a known, accepted limitation, not a bug.
+     */
+    public function renderPdfDataUri(SubconOfficialReport $report): ?string
+    {
+        try {
+            $groups = $this->production->forProductionGroup($report->production_group);
+            $first = $groups[0] ?? [];
+
+            $bytes = \Barryvdh\DomPDF\Facade\Pdf::loadView('subcon.pdf.official-report', [
+                'report' => $report,
+                'articleName' => $first['article_name'] ?? null,
+                'deliveryPlan' => null,
+                'season' => $first['season'] ?? null,
+                'plmId' => $first['plm_id'] ?? null,
+            ])->setPaper('a4', 'portrait')->output();
+
+            return 'data:application/pdf;base64,'.base64_encode($bytes);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Official Report PDF render failed', ['report' => $report->id, 'error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
 }
