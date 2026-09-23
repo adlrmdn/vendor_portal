@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\SubconAddProcessReport;
 use App\Models\SubconOfficialReport;
 use App\Models\SubconOrder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Business logic for the Official Report (Berita Acara) — the per-Add-Process-
@@ -136,8 +137,21 @@ class SubconOfficialReportService
         $salesPrice = $salesPriceOverride;
         $salesPriceSource = $salesPrice !== null ? 'manual' : null;
         if ($salesPrice === null) {
-            $groups = $this->production->forProductionGroup($productionGroup);
-            $plmId = collect($groups)->pluck('plm_id')->filter()->first();
+            // forProductionGroup() always hardcodes plm_id to '' (it has no
+            // real PLM lookup of its own) — the real PLM link, when one
+            // exists, lives in plm_activity, same source
+            // addProcessPurchaseOrdersForGroup() already reads elsewhere in
+            // SubconProductionService. Best-effort: a vsm outage or a
+            // standalone/in-house group with no PLM link both fall through
+            // to the existing "admin fills sales_price manually" path.
+            $plmId = null;
+            try {
+                $plmId = DB::connection('vsm')->table('plm_activity')
+                    ->where('ProductionGroup', $productionGroup)
+                    ->value('PLMId');
+            } catch (\Throwable $e) {
+                report($e);
+            }
             $salesPrice = $plmId ? $this->d365->fetchSalesPrice((string) $plmId) : null;
             $salesPriceSource = $salesPrice !== null ? 'd365' : null;
         }
@@ -163,6 +177,7 @@ class SubconOfficialReportService
                 'reject_penalty' => $deduction['reject_penalty'],
                 'additional_deduction' => $additionalDeduction,
                 'remarks' => $remarks,
+                'director_decline_reason' => null,
             ]
         );
     }
