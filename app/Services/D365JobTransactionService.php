@@ -1366,9 +1366,15 @@ class D365JobTransactionService
             return null;
         }
 
+        // Wrapped (['v' => $price]) rather than caching $price bare: Cache::has()
+        // is implemented as `! is_null($this->get($key))`, so a bare-cached null
+        // (the "no matching D365 record" result) would make Cache::has() report
+        // false forever after, silently defeating the cache for every PLMId with
+        // no D365 match — this wrapper keeps a cached null distinguishable from
+        // "not cached yet".
         $cacheKey = 'd365_sales_price_'.md5($plmId);
         if (Cache::has($cacheKey)) {
-            return Cache::get($cacheKey);
+            return Cache::get($cacheKey)['v'];
         }
 
         $token = $this->getD365Token();
@@ -1381,7 +1387,7 @@ class D365JobTransactionService
             $rows = $this->odataGet($token, 'ReleasedProductMastersV2', $filter);
             $price = isset($rows[0]['SalesPrice']) ? (float) $rows[0]['SalesPrice'] : null;
 
-            Cache::put($cacheKey, $price, now()->addHour());
+            Cache::put($cacheKey, ['v' => $price], now()->addHour());
 
             return $price;
         } catch (\Throwable $e) {
