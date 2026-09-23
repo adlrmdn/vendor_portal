@@ -1374,7 +1374,13 @@ class D365JobTransactionService
         // "not cached yet".
         $cacheKey = 'd365_sales_price_'.md5($plmId);
         if (Cache::has($cacheKey)) {
-            return Cache::get($cacheKey)['v'];
+            // Defensive unwrap: a persistent cache store may still hold a
+            // pre-fix bare float/null entry written before this ['v' => ...]
+            // wrapping was introduced — reading ['v'] off that would warn and
+            // misread, so only unwrap when it's actually wrapped.
+            $cached = Cache::get($cacheKey);
+
+            return is_array($cached) ? $cached['v'] : $cached;
         }
 
         $token = $this->getD365Token();

@@ -53,6 +53,9 @@ class SubconAddProcessController extends Controller
             $officialReports = \App\Models\SubconOfficialReport::where('production_group', $prg)
                 ->get()->keyBy('operation');
             foreach ($operations as $operation) {
+                if (isset($officialReports[$operation])) {
+                    continue; // the view never shows the gate result once a report exists
+                }
                 $officialReportGates[$operation] = $officialReportsService->gate($prg, $operation);
             }
         }

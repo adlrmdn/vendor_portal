@@ -317,6 +317,10 @@
                                 <label class="form-label small mb-1">Additional Deduction (Rp)</label>
                                 <input type="number" step="0.01" min="0" name="additional_deduction" class="form-control form-control-sm" style="width: 140px;" value="0">
                             </div>
+                            <div>
+                                <label class="form-label small mb-1">Sales Price (Rp, optional — D365 auto-fill if blank)</label>
+                                <input type="number" step="0.01" min="0" name="sales_price" class="form-control form-control-sm" style="width: 160px;">
+                            </div>
                             <div class="flex-grow-1" style="min-width: 200px;">
                                 <label class="form-label small mb-1">Remarks</label>
                                 <input type="text" name="remarks" class="form-control form-control-sm">

@@ -874,7 +874,11 @@ class RpaQueueService
             $unitPrice = app(SubconProductionService::class)->resolveAddProcessLineUnitPrice(
                 (string) $report->matched_po_number,
                 $report->operation
-            ) ?? 0.0;
+            );
+            if ($unitPrice === null) {
+                Log::warning("Official Report invoice for {$report->production_group}:{$report->operation} — could not resolve a unit price for PO {$report->matched_po_number}, queuing at Rp 0.");
+            }
+            $unitPrice = $unitPrice ?? 0.0;
 
             $payload = [
                 'PO' => (string) $report->matched_po_number,
