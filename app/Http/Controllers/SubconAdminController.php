@@ -806,6 +806,38 @@ class SubconAdminController extends Controller
         if ($search !== '') {
             $pending = self::filterPendingRows($pending, $search);
         }
+
+        // Official Report rows needing MD Production's revision (Director
+        // declined) — union alongside the qms-session rows, same page, per
+        // the design's "one page, no redundant new list" decision.
+        $officialReportRevisions = \App\Models\SubconOfficialReport::where('status', \App\Models\SubconOfficialReport::STATUS_PENDING_HO)
+            ->where('revision_count', '>', 0)
+            ->get()
+            ->map(fn ($r) => [
+                'type' => 'official_report',
+                'token' => null,
+                'order_id' => null,
+                'order_number' => $r->operation,
+                'production_group' => $r->production_group,
+                'style' => null,
+                'vendor' => $r->matched_po_vendor_name,
+                'ho_signature' => $r->ho_approval_signature,
+                'deduction_total' => $r->totalDeduction(),
+                'deduction_breakdown' => null,
+                'result' => null,
+                'raf_status' => null,
+                'material_return_status' => null,
+                'director_rejected' => false,
+                'revision_count' => $r->revision_count,
+                'action_url' => route('subcon.admin.official-reports.ho-approve', $r->id),
+            ])->all();
+
+        if ($search !== '') {
+            $officialReportRevisions = self::filterPendingRows($officialReportRevisions, $search);
+        }
+
+        $pending = array_merge($pending, $officialReportRevisions);
+
         if ($deductionOnly) {
             $pending = array_values(array_filter($pending, fn ($p) => ($p['deduction_total'] ?? 0) > 0));
             // Rows carrying a deduction float to the top — only meaningful

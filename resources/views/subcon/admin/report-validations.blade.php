@@ -37,6 +37,7 @@
                 </thead>
                 <tbody>
                     @foreach($pending as $p)
+                        @php $isOfficialReport = ($p['type'] ?? null) === 'official_report'; @endphp
                         <tr data-token="{{ $p['token'] }}">
                             <td style="word-break: break-word;">
                                 @if($p['order_id'])
@@ -55,10 +56,15 @@
                                 @endif
                                 @if($p['style'])<div class="text-muted small">{{ $p['style'] }}</div>@endif
                                 <div class="text-muted small">{{ $p['vendor'] }}</div>
+                                @if($isOfficialReport)
+                                    <span class="badge bg-info-subtle text-info border border-info-subtle mt-1">Add Process</span>
+                                @endif
                             </td>
                             <td class="small text-muted" style="word-break: break-word;">{{ $p['ho_signature'] ?: '—' }}</td>
                             <td data-deduction-cell>
-                                @if($p['deduction_total'] === null)
+                                @if($isOfficialReport)
+                                    Rp {{ number_format($p['deduction_total'], 0, ',', '.') }}
+                                @elseif($p['deduction_total'] === null)
                                     {{-- Deferred — see SubconAdminController::pendingValidateSends()'s
                                          docblock: this column alone was confirmed live to cost
                                          ~160ms/row of qms/D365 round trips, so the list renders
@@ -75,47 +81,63 @@
                                         <span class="badge {{ strtoupper($p['result']) === 'PASSED' ? 'bg-success-subtle text-success border-success' : 'bg-danger-subtle text-danger border-danger' }} border border-opacity-25">{{ strtoupper($p['result']) }}</span>
                                     </div>
                                 @endif
-                                @php $raf = strtolower((string) ($p['raf_status'] ?? '')); @endphp
-                                <div class="mt-1">
-                                    @if($raf === 'completed')
-                                        <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Completed</span>
-                                    @elseif(in_array($raf, ['pending', 'processing'], true))
-                                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-robot me-1"></i>RAF {{ ucfirst($raf) }}</span>
-                                    @elseif($raf === 'failed')
-                                        <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Failed</span>
-                                    @else
-                                        <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">RAF Unknown</span>
-                                    @endif
-                                </div>
-                                <div class="mt-1">
-                                    @if(($p['material_return_status'] ?? null) === 'pending')
-                                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Pending</span>
-                                    @elseif(($p['material_return_status'] ?? null) === 'auto_approved')
-                                        <span class="badge bg-info-subtle text-info border border-info border-opacity-25" title="Admin override — inventory has not actually checked this order."><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Auto-Approved</span>
-                                    @elseif(($p['material_return_status'] ?? null) === 'checked')
-                                        <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Checked</span>
-                                    @endif
-                                </div>
-                                @if(!empty($p['director_rejected']))
+                                @unless($isOfficialReport)
+                                    @php $raf = strtolower((string) ($p['raf_status'] ?? '')); @endphp
                                     <div class="mt-1">
-                                        <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25">
-                                            <i class="fas fa-triangle-exclamation me-1"></i> Director Rejected
-                                        </span>
+                                        @if($raf === 'completed')
+                                            <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Completed</span>
+                                        @elseif(in_array($raf, ['pending', 'processing'], true))
+                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-robot me-1"></i>RAF {{ ucfirst($raf) }}</span>
+                                        @elseif($raf === 'failed')
+                                            <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Failed</span>
+                                        @else
+                                            <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">RAF Unknown</span>
+                                        @endif
                                     </div>
-                                @endif
+                                    <div class="mt-1">
+                                        @if(($p['material_return_status'] ?? null) === 'pending')
+                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Pending</span>
+                                        @elseif(($p['material_return_status'] ?? null) === 'auto_approved')
+                                            <span class="badge bg-info-subtle text-info border border-info border-opacity-25" title="Admin override — inventory has not actually checked this order."><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Auto-Approved</span>
+                                        @elseif(($p['material_return_status'] ?? null) === 'checked')
+                                            <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Checked</span>
+                                        @endif
+                                    </div>
+                                    @if(!empty($p['director_rejected']))
+                                        <div class="mt-1">
+                                            <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25">
+                                                <i class="fas fa-triangle-exclamation me-1"></i> Director Rejected
+                                            </span>
+                                        </div>
+                                    @endif
+                                @endunless
                             </td>
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
-                                    {{-- The inspection report as it currently stands — rendered
-                                         fresh from current data on every open. --}}
-                                    <a href="{{ route('qc.document', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
-                                        <i class="fas fa-file-pdf me-1"></i> Report
-                                    </a>
-                                    {{-- Opens the token-based form in validate mode (read-only
-                                         numbers + Validate & Send Approval) — same as the email link. --}}
-                                    <a href="{{ route('qc.ho-approve', ['token' => $p['token']]) }}" class="btn btn-sm btn-primary" target="_blank" rel="noopener">
-                                        <i class="fas fa-paper-plane me-1"></i> Validate &amp; Send
-                                    </a>
+                                    @if($isOfficialReport)
+                                        {{-- hoApproveInApp is POST-only (no GET form to link to) —
+                                             submits as-is to resend the already-revised figures to
+                                             the Director, same one-click-POST-form pattern as
+                                             subcon/admin/approvals.blade.php's Approve button. --}}
+                                        <form method="POST" action="{{ $p['action_url'] }}" class="m-0"
+                                              onsubmit="return confirm('Resend this Official Report ({{ $p['order_number'] }}) to the Director?');">
+                                            @csrf
+                                            <button type="submit" class="btn btn-sm btn-primary">
+                                                <i class="fas fa-rotate me-1"></i> Revise &amp; Resend
+                                            </button>
+                                        </form>
+                                    @else
+                                        {{-- The inspection report as it currently stands — rendered
+                                             fresh from current data on every open. --}}
+                                        <a href="{{ route('qc.document', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
+                                            <i class="fas fa-file-pdf me-1"></i> Report
+                                        </a>
+                                        {{-- Opens the token-based form in validate mode (read-only
+                                             numbers + Validate & Send Approval) — same as the email link. --}}
+                                        <a href="{{ route('qc.ho-approve', ['token' => $p['token']]) }}" class="btn btn-sm btn-primary" target="_blank" rel="noopener">
+                                            <i class="fas fa-paper-plane me-1"></i> Validate &amp; Send
+                                        </a>
+                                    @endif
                                 </div>
                             </td>
                         </tr>
