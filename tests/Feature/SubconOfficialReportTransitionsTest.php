@@ -51,6 +51,11 @@ class SubconOfficialReportTransitionsTest extends TestCase
         $this->assertSame(SubconOfficialReport::STATUS_PENDING_DIRECTOR, $report->status);
         $this->assertStringContainsString('Ika', $report->ho_approval_signature);
         $this->assertNotNull($report->ho_approved_at);
+        $this->assertDatabaseHas('subcon_job_logs', [
+            'job_type' => 'official_report:ADD-Was',
+            'status' => 'ho_approved',
+            'order_number' => 'MPG/PRG/2512/000014',
+        ]);
     }
 
     public function test_ho_approval_can_revise_deduction_and_remarks_on_resend()
@@ -62,6 +67,11 @@ class SubconOfficialReportTransitionsTest extends TestCase
         $report->refresh();
         $this->assertSame(75000.0, $report->additional_deduction);
         $this->assertSame('Revised after director feedback', $report->remarks);
+        $this->assertDatabaseHas('subcon_job_logs', [
+            'job_type' => 'official_report:ADD-Was',
+            'status' => 'ho_approved',
+            'order_number' => 'MPG/PRG/2512/000014',
+        ]);
     }
 
     public function test_director_approval_completes_and_queues_rpa()
@@ -77,6 +87,11 @@ class SubconOfficialReportTransitionsTest extends TestCase
             'entity_id' => 'MPG/PRG/2512/000014:ADD-Was',
             'rpa_type' => 'invoice_addprocess',
         ], 'rpa');
+        $this->assertDatabaseHas('subcon_job_logs', [
+            'job_type' => 'official_report:ADD-Was',
+            'status' => 'director_approved',
+            'order_number' => 'MPG/PRG/2512/000014',
+        ]);
     }
 
     public function test_director_decline_returns_to_pending_ho_and_increments_revision_count()
@@ -89,5 +104,10 @@ class SubconOfficialReportTransitionsTest extends TestCase
         $this->assertSame(SubconOfficialReport::STATUS_PENDING_HO, $report->status);
         $this->assertSame(1, $report->revision_count);
         $this->assertSame('Deduction figures look off, please recheck.', $report->director_decline_reason);
+        $this->assertDatabaseHas('subcon_job_logs', [
+            'job_type' => 'official_report:ADD-Was',
+            'status' => 'director_declined',
+            'order_number' => 'MPG/PRG/2512/000014',
+        ]);
     }
 }

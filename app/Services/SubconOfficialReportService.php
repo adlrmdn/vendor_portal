@@ -220,8 +220,10 @@ class SubconOfficialReportService
      * MD Production approves — first send or a post-decline resend (same
      * method either way, spec §6's "no HO-decline route" note). Deduction/
      * remarks are only overwritten when explicitly passed (the revision
-     * case); recomputes reject_penalty/total off any new additional
-     * deduction so the signed PDF always reflects the figures being signed.
+     * case); this method never touches reject_penalty — it's unaffected by
+     * additional_deduction. totalDeduction() is computed from the model's
+     * current state, so it naturally reflects any new additional_deduction
+     * once saved, without any recompute step here.
      */
     public function applyHoApproval(SubconOfficialReport $report, string $approver, ?float $additionalDeduction = null, ?string $remarks = null): void
     {
