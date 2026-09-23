@@ -46,7 +46,18 @@ class SubconAddProcessController extends Controller
             $cutQuantities = $production->cutQuantitiesForGroup($prg);
         }
 
-        return view('subcon.admin.add-process.index', compact('prg', 'cmtOrder', 'addProcessPos', 'productionGroups', 'operations', 'existingReports', 'cutQuantities'));
+        $officialReports = [];
+        $officialReportGates = [];
+        if ($prg !== '') {
+            $officialReportsService = app(\App\Services\SubconOfficialReportService::class);
+            $officialReports = \App\Models\SubconOfficialReport::where('production_group', $prg)
+                ->get()->keyBy('operation');
+            foreach ($operations as $operation) {
+                $officialReportGates[$operation] = $officialReportsService->gate($prg, $operation);
+            }
+        }
+
+        return view('subcon.admin.add-process.index', compact('prg', 'cmtOrder', 'addProcessPos', 'productionGroups', 'operations', 'existingReports', 'cutQuantities', 'officialReports', 'officialReportGates'));
     }
 
     public function submit(Request $request)

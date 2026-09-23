@@ -292,6 +292,43 @@
                         </button>
                     </div>
                 </form>
+
+                @php
+                    $existingOfficialReport = $officialReports[$operation] ?? null;
+                    $officialGate = $officialReportGates[$operation] ?? ['ok' => false, 'reason' => 'Not checked.'];
+                @endphp
+                <div class="mt-3 pt-3 border-top">
+                    @if($existingOfficialReport)
+                        <span class="status-indicator status-indicator-{{ $existingOfficialReport->isCompleted() ? 'success' : 'info' }}">
+                            Official Report:
+                            {{ match(true) {
+                                $existingOfficialReport->isCompleted() => 'Completed',
+                                $existingOfficialReport->needsRevision() => 'Needs Revision (Director declined)',
+                                $existingOfficialReport->isPendingDirector() => 'Pending Director',
+                                default => 'Pending MD Production',
+                            } }}
+                        </span>
+                    @elseif($officialGate['ok'])
+                        <form method="POST" action="{{ route('subcon.admin.official-reports.send') }}" class="d-flex flex-wrap gap-2 align-items-end">
+                            @csrf
+                            <input type="hidden" name="production_group" value="{{ $prg }}">
+                            <input type="hidden" name="operation" value="{{ $operation }}">
+                            <div>
+                                <label class="form-label small mb-1">Additional Deduction (Rp)</label>
+                                <input type="number" step="0.01" min="0" name="additional_deduction" class="form-control form-control-sm" style="width: 140px;" value="0">
+                            </div>
+                            <div class="flex-grow-1" style="min-width: 200px;">
+                                <label class="form-label small mb-1">Remarks</label>
+                                <input type="text" name="remarks" class="form-control form-control-sm">
+                            </div>
+                            <button type="submit" class="btn btn-sm btn-outline-primary">
+                                <i class="fas fa-file-signature me-1"></i> Send Official Report
+                            </button>
+                        </form>
+                    @else
+                        <span class="text-muted small"><i class="fas fa-circle-info me-1"></i> Official Report unavailable: {{ $officialGate['reason'] }}</span>
+                    @endif
+                </div>
             @endforeach
 
             <script>
