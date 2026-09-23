@@ -55,6 +55,7 @@
                 </thead>
                 <tbody>
                     @foreach($pending as $p)
+                        @php $isOfficialReport = ($p['type'] ?? null) === 'official_report'; @endphp
                         <tr data-token="{{ $p['token'] }}">
                             <td style="word-break: break-word;">
                                 @if($p['order_id'])
@@ -73,10 +74,15 @@
                                 @endif
                                 @if($p['style'])<div class="text-muted small">{{ $p['style'] }}</div>@endif
                                 <div class="text-muted small">{{ $p['vendor'] }}</div>
+                                @if($isOfficialReport)
+                                    <span class="badge bg-info-subtle text-info border border-info-subtle mt-1">Add Process</span>
+                                @endif
                             </td>
                             <td class="small text-muted" style="word-break: break-word;">{{ $p['ho_signature'] ?: '—' }}</td>
                             <td data-deduction-cell>
-                                @if($p['deduction_total'] === null)
+                                @if($isOfficialReport)
+                                    Rp {{ number_format($p['deduction_total'], 0, ',', '.') }}
+                                @elseif($p['deduction_total'] === null)
                                     {{-- Deferred — see SubconAdminController::pendingDirectorApprovals()'s
                                          docblock; filled in by the background fetch below. --}}
                                     <span class="placeholder-glow"><span class="placeholder col-8"></span></span>
@@ -90,53 +96,70 @@
                                         <span class="badge {{ strtoupper($p['result']) === 'PASSED' ? 'bg-success-subtle text-success border-success' : 'bg-danger-subtle text-danger border-danger' }} border border-opacity-25">{{ strtoupper($p['result']) }}</span>
                                     </div>
                                 @endif
-                                @php $raf = strtolower((string) ($p['raf_status'] ?? '')); @endphp
-                                <div class="mt-1">
-                                    @if($raf === 'completed')
-                                        <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Completed</span>
-                                    @elseif(in_array($raf, ['pending', 'processing'], true))
-                                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-robot me-1"></i>RAF {{ ucfirst($raf) }}</span>
-                                    @elseif($raf === 'failed')
-                                        <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Failed</span>
-                                    @else
-                                        <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">RAF Unknown</span>
-                                    @endif
-                                </div>
-                                <div class="mt-1">
-                                    @if(($p['material_return_status'] ?? null) === 'pending')
-                                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Pending</span>
-                                    @elseif(($p['material_return_status'] ?? null) === 'auto_approved')
-                                        <span class="badge bg-info-subtle text-info border border-info border-opacity-25" title="Admin override — inventory has not actually checked this order."><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Auto-Approved</span>
-                                    @elseif(($p['material_return_status'] ?? null) === 'checked')
-                                        <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Checked</span>
-                                    @endif
-                                </div>
+                                @unless($isOfficialReport)
+                                    @php $raf = strtolower((string) ($p['raf_status'] ?? '')); @endphp
+                                    <div class="mt-1">
+                                        @if($raf === 'completed')
+                                            <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Completed</span>
+                                        @elseif(in_array($raf, ['pending', 'processing'], true))
+                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-robot me-1"></i>RAF {{ ucfirst($raf) }}</span>
+                                        @elseif($raf === 'failed')
+                                            <span class="badge bg-danger-subtle text-danger border border-danger border-opacity-25"><i class="fas fa-robot me-1"></i>RAF Failed</span>
+                                        @else
+                                            <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">RAF Unknown</span>
+                                        @endif
+                                    </div>
+                                    <div class="mt-1">
+                                        @if(($p['material_return_status'] ?? null) === 'pending')
+                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Pending</span>
+                                        @elseif(($p['material_return_status'] ?? null) === 'auto_approved')
+                                            <span class="badge bg-info-subtle text-info border border-info border-opacity-25" title="Admin override — inventory has not actually checked this order."><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Auto-Approved</span>
+                                        @elseif(($p['material_return_status'] ?? null) === 'checked')
+                                            <span class="badge bg-success-subtle text-success border border-success border-opacity-25"><i class="fas fa-truck-ramp-box me-1"></i>Material Flow Checked</span>
+                                        @endif
+                                    </div>
+                                @endunless
                             </td>
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
-                                    {{-- Signed inspection report as it currently stands (QC + Factory
-                                         Rep + MD Production signatures) — the email attachment. --}}
-                                    <a href="{{ route('qc.document', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
-                                        <i class="fas fa-file-pdf me-1"></i> Report
-                                    </a>
-                                    {{-- Pulls the row back to Report Validation without a rejection
-                                         reason or email — a quiet correction path open to any subcon
-                                         admin, not just the Director (see recallToReportValidation). --}}
-                                    <form action="{{ route('subcon.admin.director-approvals.recall', ['token' => $p['token']]) }}" method="POST" class="d-inline" onsubmit="return confirm('Recall {{ $p['order_number'] }} back to Report Validation? No email will be sent — this just re-opens Validate &amp; Send.');">
-                                        @csrf
-                                        <button type="submit" class="btn btn-sm btn-outline-warning">
-                                            <i class="fas fa-rotate-left me-1"></i> Recall
-                                        </button>
-                                    </form>
+                                    @unless($isOfficialReport)
+                                        {{-- Signed inspection report as it currently stands (QC + Factory
+                                             Rep + MD Production signatures) — the email attachment. --}}
+                                        <a href="{{ route('qc.document', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
+                                            <i class="fas fa-file-pdf me-1"></i> Report
+                                        </a>
+                                        {{-- Pulls the row back to Report Validation without a rejection
+                                             reason or email — a quiet correction path open to any subcon
+                                             admin, not just the Director (see recallToReportValidation). --}}
+                                        <form action="{{ route('subcon.admin.director-approvals.recall', ['token' => $p['token']]) }}" method="POST" class="d-inline" onsubmit="return confirm('Recall {{ $p['order_number'] }} back to Report Validation? No email will be sent — this just re-opens Validate &amp; Send.');">
+                                            @csrf
+                                            <button type="submit" class="btn btn-sm btn-outline-warning">
+                                                <i class="fas fa-rotate-left me-1"></i> Recall
+                                            </button>
+                                        </form>
+                                    @endunless
                                     @if($isDirector)
-                                        {{-- Opens the existing token-based Director form (read-only summary
-                                             + Authorize & Sign) — same workflow as the email link. --}}
-                                        <a href="{{ route('qc.director-approve', ['token' => $p['token']]) }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
-                                            <i class="fas fa-stamp me-1"></i> Review &amp; Authorize
-                                        </a>
-                                        <a href="{{ route('qc.director-decline', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener">
-                                            <i class="fas fa-times me-1"></i> Reject
-                                        </a>
+                                        @if($isOfficialReport)
+                                            {{-- Signed GET confirm pages built in Task 9 — Authorize opens
+                                                 a read-only review + Authorize button, Reject opens a
+                                                 reason-entry form. Same in-app-generated signed-URL
+                                                 pattern as Report Validation's "Revise & Resend" link. --}}
+                                            <a href="{{ $p['authorize_url'] }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
+                                                <i class="fas fa-stamp me-1"></i> Review &amp; Authorize
+                                            </a>
+                                            <a href="{{ $p['reject_url'] }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener">
+                                                <i class="fas fa-times me-1"></i> Reject
+                                            </a>
+                                        @else
+                                            {{-- Opens the existing token-based Director form (read-only summary
+                                                 + Authorize & Sign) — same workflow as the email link. --}}
+                                            <a href="{{ route('qc.director-approve', ['token' => $p['token']]) }}" class="btn btn-sm btn-success" target="_blank" rel="noopener">
+                                                <i class="fas fa-stamp me-1"></i> Review &amp; Authorize
+                                            </a>
+                                            <a href="{{ route('qc.director-decline', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-danger" target="_blank" rel="noopener">
+                                                <i class="fas fa-times me-1"></i> Reject
+                                            </a>
+                                        @endif
                                     @endif
                                 </div>
                             </td>

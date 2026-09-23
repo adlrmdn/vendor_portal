@@ -1151,6 +1151,40 @@ class SubconAdminController extends Controller
         if ($search !== '') {
             $pending = self::filterPendingRows($pending, $search);
         }
+
+        // Official Report rows awaiting the Director's final authorization —
+        // union alongside the qms-session rows, same page, per the design's
+        // "one page, no redundant new list" decision (mirrors reportValidations()).
+        $officialReportsPendingDirector = \App\Models\SubconOfficialReport::where('status', \App\Models\SubconOfficialReport::STATUS_PENDING_DIRECTOR)
+            ->get()
+            ->map(fn ($r) => [
+                'type' => 'official_report',
+                'token' => null,
+                'order_id' => null,
+                'order_number' => $r->operation,
+                'production_group' => $r->production_group,
+                'style' => null,
+                'vendor' => $r->matched_po_vendor_name,
+                'ho_signature' => $r->ho_approval_signature,
+                'deduction_total' => $r->totalDeduction(),
+                'deduction_breakdown' => null,
+                'result' => null,
+                'raf_status' => null,
+                'material_return_status' => null,
+                // Signed GET confirm pages built in Task 9 — Authorize opens a
+                // read-only review + Authorize button, Reject opens a
+                // reason-entry form. Same signed-URL-generation technique as
+                // reportValidations()'s "Revise & Resend" link.
+                'authorize_url' => url(\Illuminate\Support\Facades\URL::signedRoute('subcon.official-report.director-approve', ['report' => $r->id], absolute: false)),
+                'reject_url' => url(\Illuminate\Support\Facades\URL::signedRoute('subcon.official-report.director-decline', ['report' => $r->id], absolute: false)),
+            ])->all();
+
+        if ($search !== '') {
+            $officialReportsPendingDirector = self::filterPendingRows($officialReportsPendingDirector, $search);
+        }
+
+        $pending = array_merge($pending, $officialReportsPendingDirector);
+
         if ($deductionOnly) {
             $pending = array_values(array_filter($pending, fn ($p) => ($p['deduction_total'] ?? 0) > 0));
             // Rows carrying a deduction float to the top — only meaningful
