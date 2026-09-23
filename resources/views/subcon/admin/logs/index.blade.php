@@ -95,6 +95,7 @@
                     <option value="">All statuses</option>
                     <option value="success" @selected($status === 'success')>Success</option>
                     <option value="failed" @selected($status === 'failed')>Failed</option>
+                    <option value="blocked" @selected($status === 'blocked')>Blocked (D365)</option>
                 </select>
             </div>
             <div class="col-sm-2 d-flex gap-2">
@@ -153,6 +154,13 @@
                                     <span class="badge bg-success badge-premium text-white">
                                         <i class="fas fa-check-circle me-1"></i> Success
                                     </span>
+                                @elseif($log->status === 'blocked')
+                                    {{-- A known D365 business-rule rejection (closed store, empty
+                                         Gramasi) — retrying can't fix it, so it's flagged distinctly
+                                         from a genuine failure. --}}
+                                    <span class="badge bg-warning badge-premium text-dark">
+                                        <i class="fas fa-circle-exclamation me-1"></i> Blocked (D365)
+                                    </span>
                                 @else
                                     <span class="badge bg-danger badge-premium text-white">
                                         <i class="fas fa-exclamation-circle me-1"></i> Failed
@@ -160,19 +168,19 @@
                                 @endif
                             </td>
                             <td>
-                                @if($log->status === 'failed' && strlen($log->message) > 120)
+                                @if(in_array($log->status, ['failed', 'blocked'], true) && strlen($log->message) > 120)
                                     <div>
-                                        <span class="text-danger fw-semibold">{{ Str::limit($log->message, 120) }}</span>
-                                        <button class="btn btn-sm btn-outline-secondary log-details-btn ms-2" type="button" 
+                                        <span class="{{ $log->status === 'blocked' ? 'text-warning-emphasis' : 'text-danger' }} fw-semibold">{{ Str::limit($log->message, 120) }}</span>
+                                        <button class="btn btn-sm btn-outline-secondary log-details-btn ms-2" type="button"
                                                 data-bs-toggle="collapse" data-bs-target="#logDetails-{{ $log->id }}">
                                             Show Details
                                         </button>
                                         <div class="collapse mt-2" id="logDetails-{{ $log->id }}">
-                                            <div class="code-pill text-danger">{{ $log->message }}</div>
+                                            <div class="code-pill {{ $log->status === 'blocked' ? 'text-warning-emphasis' : 'text-danger' }}">{{ $log->message }}</div>
                                         </div>
                                     </div>
                                 @else
-                                    <span class="{{ $log->status === 'failed' ? 'text-danger fw-semibold' : 'text-muted' }}">
+                                    <span class="{{ $log->status === 'failed' ? 'text-danger fw-semibold' : ($log->status === 'blocked' ? 'text-warning-emphasis fw-semibold' : 'text-muted') }}">
                                         {{ $log->message }}
                                     </span>
                                 @endif

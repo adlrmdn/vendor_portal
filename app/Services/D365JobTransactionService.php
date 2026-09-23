@@ -129,9 +129,9 @@ class D365JobTransactionService
      * Send 'start' command to the jobt-api.
      *
      * @return array{success: bool, message: string} `message` carries jobt-api's
-     *   own reported reason (its "message"/"error" field, or a Laravel-side
-     *   description) so callers can put something more specific than "it failed"
-     *   in front of an admin — e.g. in SubconJobLog after retries are exhausted.
+     *                                               own reported reason (its "message"/"error" field, or a Laravel-side
+     *                                               description) so callers can put something more specific than "it failed"
+     *                                               in front of an admin — e.g. in SubconJobLog after retries are exhausted.
      */
     public function startJobs(string $productionGroup): array
     {
@@ -180,7 +180,7 @@ class D365JobTransactionService
      * Send 'trigger' command to the jobt-api.
      *
      * @return array{success: bool, message: string} See startJobs() for why this
-     *   isn't a bare bool.
+     *                                               isn't a bare bool.
      */
     public function triggerJobs(string $productionGroup, array $targets): array
     {
@@ -711,8 +711,9 @@ class D365JobTransactionService
      * Reject-quantity field on `JobTransactionLinesDetails` a given add-process
      * Operation's reject qty should be PATCHed into. Only a handful of named
      * reject columns exist in D365 (see raf-service-flow memory's leaf-reject
-     * list); ADD-Pleat and any future/unrecognised ADD-* operation have no
-     * dedicated column, so they fall back to the general RejectProduksi bucket.
+     * list); ADD-Pleat, an "Add Process Belt" (if/when it exists), and any
+     * other unrecognised ADD-* operation have no dedicated column, so they
+     * fall back to the general RejectFinishing bucket.
      */
     private function rejectFieldForOperation(string $operation): string
     {
@@ -720,7 +721,7 @@ class D365JobTransactionService
             $this->isOperation($operation, 'ADD-Was') => 'RejectWashing',
             $this->isOperation($operation, 'ADD-Embro') => 'RejectEmbro',
             $this->isOperation($operation, 'ADD-Sab') => 'RejectPrinting',
-            default => 'RejectProduksi',
+            default => 'RejectFinishing',
         };
     }
 
@@ -802,6 +803,12 @@ class D365JobTransactionService
         }
 
         $rejectField = $this->rejectFieldForOperation($operation);
+        // Whether any successful PATCH above actually included $rejectField —
+        // distinct from "$rejectUpdates was requested": a size can be in
+        // $rejectUpdates but have no matching line, or the patch itself can
+        // fail. Only a PATCH that actually landed makes the reject-formula
+        // trigger below meaningful (see jobt-api's "reject" action).
+        $rejectPatched = false;
 
         Log::info("{$operation} job resolved: {$jobId}. Fetching line details.");
         $linesUrl = $this->getResource().'/data/JobTransactionLinesDetails?$filter=JobTransactionId eq '.$this->odataLit($jobId).'&cross-company=true';
@@ -816,7 +823,8 @@ class D365JobTransactionService
                     if (isset($qtyUpdates[$size])) {
                         $changes['Jam7'] = $qtyUpdates[$size];
                     }
-                    if (isset($rejectUpdates[$size])) {
+                    $includesReject = isset($rejectUpdates[$size]);
+                    if ($includesReject) {
                         $changes[$rejectField] = $rejectUpdates[$size];
                     }
                     if (empty($changes)) {
@@ -833,6 +841,9 @@ class D365JobTransactionService
                     Log::info("Patching {$operation} for size {$size}: ".json_encode($changes));
                     if ($this->patchOData('JobTransactionLinesDetails', $key, $changes)) {
                         $results['odata_updates']++;
+                        if ($includesReject) {
+                            $rejectPatched = true;
+                        }
                     }
                 }
                 if ($results['odata_updates'] === 0) {
@@ -846,7 +857,23 @@ class D365JobTransactionService
         }
 
         if ($results['odata_updates'] > 0) {
-            $trigger = $this->triggerJobs($productionGroup, [['operation' => $operation, 'actions' => ['jam8']]]);
+            // "jam8" fires the good-qty (Jam7) formula. "reject" fires D365's
+            // shared reject-recompute formula by re-typing RejectFinishing's
+            // own value — NOT $rejectField. Touching RejectFinishing is what
+            // actually fires the recompute regardless of which named column
+            // ($rejectField above) the reject qty itself was PATCHed into;
+            // it isn't a per-field-specific trigger, it's the one field
+            // reg_raf already proved this on (CMT-Pak). Retargeting the
+            // *trigger* at $rejectField instead would mean touching
+            // RejectWashing/RejectEmbro/RejectPrinting selectors that have
+            // never actually been verified against the real D365 grid.
+            $target = ['operation' => $operation, 'actions' => ['jam8']];
+            if ($rejectPatched) {
+                $target['actions'][] = 'reject';
+                $target['reject_field'] = 'RejectFinishing';
+            }
+
+            $trigger = $this->triggerJobs($productionGroup, [$target]);
             $results['trigger'] = $trigger['success'];
             if (! $trigger['success']) {
                 $results['errors'][] = $trigger['message'];

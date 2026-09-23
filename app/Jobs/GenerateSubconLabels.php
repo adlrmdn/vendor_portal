@@ -131,7 +131,34 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
         }
 
         if (! $apiSuccess) {
-            throw new \RuntimeException("DTT label generation failed for {$order->order_number}: {$errorMsg}");
+            $fullMessage = "DTT label generation failed for {$order->order_number}: {$errorMsg}";
+
+            // Known D365 business-rule rejections (a closed store, an empty
+            // Gramasi field) are deterministic — merchandising/the vendor has
+            // to fix the underlying D365/report data, so retrying the same
+            // call 2 more times over the next couple of minutes can only ever
+            // reproduce the same error. That's the "stuck" symptom: the admin
+            // sees "Generating…" for minutes before anything changes. Skip the
+            // retries and mark it "blocked" (not "failed") so the UI can flag
+            // it as needing a D365 fix rather than inviting a pointless retry.
+            if (self::isNonRetryableDttError($errorMsg)) {
+                Log::warning("Label generation blocked for {$order->order_number} (D365 business rule, not retrying): {$errorMsg}");
+                $order->markLabelGenBlocked($fullMessage);
+
+                \App\Models\SubconJobLog::create([
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'job_type' => 'label_generation',
+                    'status' => 'blocked',
+                    'message' => $fullMessage,
+                ]);
+
+                $this->delete();
+
+                return;
+            }
+
+            throw new \RuntimeException($fullMessage);
         }
 
         $order->workflow_stage = SubconOrder::STAGE_LABELS;
@@ -158,6 +185,32 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
         } catch (\Throwable $e) {
             Log::warning("Coli/Blister sync threw for {$order->order_number}: ".$e->getMessage());
         }
+    }
+
+    /**
+     * D365 business-rule rejections the DTT bot reports verbatim in its error
+     * text — confirmed (see project memory) to require a human fix in D365
+     * (reallocate/remove a closed store's DT lines, or re-enter Gramasi) and
+     * never to resolve by simply calling the same DTT flow again.
+     */
+    private const NON_RETRYABLE_DTT_ERROR_PATTERNS = [
+        'is closed',                    // e.g. "The store: WH0113 is closed..!"
+        'under 30 days of closed date', // older phrasing of the same store-closed rule
+        'gramasi in item is empty',
+    ];
+
+    /** Public so a one-off backfill/console command can reclassify old rows against the same list. */
+    public static function isNonRetryableDttError(string $message): bool
+    {
+        $message = strtolower($message);
+
+        foreach (self::NON_RETRYABLE_DTT_ERROR_PATTERNS as $pattern) {
+            if (str_contains($message, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

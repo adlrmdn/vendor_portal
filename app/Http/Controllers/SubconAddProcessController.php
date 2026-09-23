@@ -31,15 +31,39 @@ class SubconAddProcessController extends Controller
         $cmtOrder = null;
         $addProcessPos = [];
         $productionGroups = [];
+        $summary = ['style' => null, 'size_count' => 0, 'total_qty' => 0.0];
+        $steps = [];
+        // Every ADD-* step D365's route has for this group, before the
+        // confirmed-PO gate below — kept separately so the "nothing here"
+        // message can say *why* (no step at all vs. step exists but no
+        // confirmed PO yet) instead of one generic empty state.
+        $allOperations = [];
         $operations = [];
+        // Each operation's own AddPro PO (or null) — a group can carry more
+        // than one ADD-* step with a separate commercial PO each, so this
+        // can't just be "the group's PO(s)" shown once; see
+        // SubconProductionService::matchAddProcessPoForOperation()'s docblock.
+        $operationPos = [];
         $existingReports = collect();
         $cutQuantities = [];
 
         if ($prg !== '') {
             $cmtOrder = SubconOrder::with('vendor')->where('production_group', $prg)->first();
+            // Already Confirmed-only (see addProcessPurchaseOrdersForGroup()'s
+            // docblock) — a Draft/InReview/Rejected PO simply won't appear
+            // here, which is what drives the filter below.
             $addProcessPos = $production->addProcessPurchaseOrdersForGroup($prg);
             $productionGroups = $production->forProductionGroup($prg);
-            $operations = $production->addProcessOperationsForGroup($prg);
+            $summary = $production->summarize($productionGroups);
+            $steps = $production->addProcessStepsForGroup($prg);
+            $allOperations = array_keys($steps);
+            foreach ($allOperations as $operation) {
+                $operationPos[$operation] = $production->matchAddProcessPoForOperation($addProcessPos, $operation);
+            }
+            // Nothing to report on until D365 has a confirmed commercial PO
+            // for THIS operation — mirrors SubconAdminController::
+            // addProcessOrdersList()'s same rule for the Work Orders list.
+            $operations = array_values(array_filter($allOperations, fn ($op) => $operationPos[$op] !== null));
             $existingReports = SubconAddProcessReport::where('production_group', $prg)
                 ->get()
                 ->groupBy('operation');
@@ -52,7 +76,7 @@ class SubconAddProcessController extends Controller
             $officialReportsService = app(\App\Services\SubconOfficialReportService::class);
             $officialReports = \App\Models\SubconOfficialReport::where('production_group', $prg)
                 ->get()->keyBy('operation');
-            foreach ($operations as $operation) {
+            foreach ($allOperations as $operation) {
                 if (isset($officialReports[$operation])) {
                     continue; // the view never shows the gate result once a report exists
                 }
@@ -60,10 +84,10 @@ class SubconAddProcessController extends Controller
             }
         }
 
-        return view('subcon.admin.add-process.index', compact('prg', 'cmtOrder', 'addProcessPos', 'productionGroups', 'operations', 'existingReports', 'cutQuantities', 'officialReports', 'officialReportGates'));
+        return view('subcon.admin.add-process.index', compact('prg', 'cmtOrder', 'addProcessPos', 'productionGroups', 'summary', 'steps', 'allOperations', 'operations', 'operationPos', 'existingReports', 'cutQuantities', 'officialReports', 'officialReportGates'));
     }
 
-    public function submit(Request $request)
+    public function submit(Request $request, SubconProductionService $production)
     {
         $data = $request->validate([
             'production_group' => 'required|string',
@@ -77,6 +101,24 @@ class SubconAddProcessController extends Controller
 
         $productionGroup = $data['production_group'];
         $operation = $data['operation'];
+
+        // Mirrors the view's skip-when-unconfirmed/skip-when-invoiced rules
+        // (see index()/the blade) — re-checked here since neither operation's
+        // form is rendered in those states, but the route itself has no
+        // other guard against a direct POST.
+        $matchedPo = $production->matchAddProcessPoForOperation(
+            $production->addProcessPurchaseOrdersForGroup($productionGroup),
+            $operation
+        );
+        if (! $matchedPo) {
+            return redirect()->route('subcon.admin.add-process.index', ['prg' => $productionGroup])
+                ->with('error', "{$operation} has no confirmed purchase order yet — reporting isn't available until D365 confirms one.");
+        }
+        if (strcasecmp($matchedPo['status'] ?? '', 'Invoiced') === 0) {
+            return redirect()->route('subcon.admin.add-process.index', ['prg' => $productionGroup])
+                ->with('error', "{$operation} already has an invoiced purchase order ({$matchedPo['po_number']}) — reporting is closed.");
+        }
+
         $changed = [];
 
         DB::transaction(function () use ($productionGroup, $operation, $data, &$changed) {

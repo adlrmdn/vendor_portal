@@ -22,6 +22,17 @@ use Illuminate\Support\Facades\Storage;
  *   - deduction      — queued with invoice, only when the portal-computed
  *     deduction total (Σ fabric_lines.deduction + Σ session deduction lines +
  *     reject/lost-items penalty) > 0. Same signed_doc-bearing shape as invoice.
+ *   - goods_receive_addprocess — queued when an Add Process (ADD-Was/Embro/
+ *     Sab/Pleat) report syncs to D365 successfully (SyncSubconAddProcessToD365).
+ *     NOT a port of a console builder — this is a portal-original rpa_type,
+ *     deliberately kept separate from the WMS Goods Receiver scanner app's
+ *     own `wms_queues`/`good_receipt_headers` (that schema's
+ *     `good_receipt_lines.roll_id` is NOT NULL — fabric-roll bookkeeping that
+ *     doesn't fit a garment service). A dedicated listener (automaton/
+ *     pw_service/goods_receive/addprocess_listener.py) polls this rpa_type
+ *     and forwards the payload as-is to the SAME automation the scanner app
+ *     already drives (goods_receive/gr-api, POST /process-receipt) — see
+ *     queueAddProcessGoodsReceive()'s docblock.
  *
  * S3 offload (shared `rpa_lake` bucket, stable per-entity key overwritten on
  * every upsert — mirrors the DB row's own upsert semantics) is split by how
@@ -856,6 +867,88 @@ class RpaQueueService
         }
 
         Log::info('RPA job queued', ['entity' => $entityId, 'type' => $rpaType]);
+    }
+
+    /**
+     * Queue one goods-receipt request for an Add Process delivery — see the
+     * class docblock's `goods_receive_addprocess` entry for the routing
+     * rationale (own rpa_type + listener, never the WMS scanner's tables).
+     *
+     * `receipt_number` is `{$poNumber}-{roman}` (I, II, III, ...) — one per
+     * delivery/try against that PO, since Add Process has no vendor-supplied
+     * delivery-note number the way the scanner app's operator-entered
+     * receipt_number does (real examples: "1006", "SJ 1005"). The roman
+     * numeral is the count of goods_receive_addprocess rows already queued
+     * for this PO (any status, including prior failures — a retried "try"
+     * still counts) plus one.
+     *
+     * `close_receipt` is always true. `$qty` must already be the caller's
+     * intended delta for this one receipt (SyncSubconAddProcessToD365 sums
+     * good qty across sizes for the current sync batch, not an all-time
+     * running total) — this method does no aggregation of its own.
+     *
+     * Best-effort/never-throwing, same contract as every other method here.
+     */
+    public function queueAddProcessGoodsReceive(string $productionGroup, string $operation, string $poNumber, int $lineNumber, float $qty): void
+    {
+        try {
+            $priorTries = DB::connection('rpa')->table('rpa_queues')
+                ->where('rpa_type', 'goods_receive_addprocess')
+                ->whereRaw("payload->>'target_po' = ?", [$poNumber])
+                ->count();
+
+            $receiptNumber = $poNumber.'-'.$this->romanNumeral($priorTries + 1);
+
+            $payload = [
+                'target_po' => $poNumber,
+                'receipt_number' => $receiptNumber,
+                'company' => 'mpg',
+                'lines' => [[
+                    'line_number' => $lineNumber,
+                    'quantity' => number_format($qty, 2, '.', ''),
+                    'close_receipt' => true,
+                ]],
+            ];
+
+            DB::connection('rpa')->table('rpa_queues')->insert([
+                'entity_type' => 'add_process',
+                'entity_id' => "{$productionGroup}:{$operation}",
+                'rpa_type' => 'goods_receive_addprocess',
+                'status' => 'pending',
+                'payload' => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                'source' => self::SOURCE,
+            ]);
+
+            Log::info("Queued goods_receive_addprocess for {$operation} on PRG {$productionGroup} (PO {$poNumber}, receipt {$receiptNumber}, line {$lineNumber}, qty {$qty}).");
+        } catch (\Throwable $e) {
+            Log::error("Failed to queue goods_receive_addprocess for {$operation} on PRG {$productionGroup}: ".$e->getMessage());
+            report($e);
+        }
+    }
+
+    /**
+     * Standard subtractive roman-numeral conversion, for queueAddProcessGoodsReceive()'s
+     * receipt_number. Add Process deliveries against one PO are expected to
+     * number in the single digits, but this handles any positive integer
+     * rather than hardcoding a lookup table.
+     */
+    private function romanNumeral(int $number): string
+    {
+        $map = [
+            'M' => 1000, 'CM' => 900, 'D' => 500, 'CD' => 400,
+            'C' => 100, 'XC' => 90, 'L' => 50, 'XL' => 40,
+            'X' => 10, 'IX' => 9, 'V' => 5, 'IV' => 4, 'I' => 1,
+        ];
+
+        $result = '';
+        foreach ($map as $roman => $value) {
+            while ($number >= $value) {
+                $result .= $roman;
+                $number -= $value;
+            }
+        }
+
+        return $result;
     }
 
     /**

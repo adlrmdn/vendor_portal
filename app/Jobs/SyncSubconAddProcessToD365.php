@@ -4,6 +4,8 @@ namespace App\Jobs;
 
 use App\Models\SubconOrder;
 use App\Services\D365JobTransactionService;
+use App\Services\RpaQueueService;
+use App\Services\SubconProductionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -50,7 +52,7 @@ class SyncSubconAddProcessToD365 implements ShouldQueue
      */
     public function __construct(public string $productionGroup, public string $operation, public array $changed) {}
 
-    public function handle(D365JobTransactionService $d365): void
+    public function handle(D365JobTransactionService $d365, SubconProductionService $production, RpaQueueService $rpaQueue): void
     {
         if (empty($this->changed)) {
             return;
@@ -68,6 +70,29 @@ class SyncSubconAddProcessToD365 implements ShouldQueue
         Log::info("D365 add-process ({$this->operation}) sync completed for PRG {$this->productionGroup} (".count($this->changed).' rows).');
 
         $this->logResult('success', "Successfully synced {$this->operation} quantities (".count($this->changed).' sizes).');
+
+        // Goods receipt against the matched AddPro PO — qty is the sum of
+        // good qty across sizes in THIS batch (a delivery/try), not an
+        // all-time running total; see RpaQueueService::queueAddProcessGoodsReceive()'s
+        // docblock for why (each submit becomes its own numbered receipt,
+        // PO-I/PO-II/...). Best-effort and after the D365 side has already
+        // succeeded — never blocks or retries the job transaction sync above.
+        $goodQty = array_sum(array_column($this->changed, 'qty'));
+        if ($goodQty > 0) {
+            $matchedPo = $production->matchAddProcessPoForOperation(
+                $production->addProcessPurchaseOrdersForGroup($this->productionGroup),
+                $this->operation
+            );
+            $lineNumber = $matchedPo
+                ? $production->resolveAddProcessLineNumber($matchedPo['po_number'], $this->operation)
+                : null;
+
+            if ($matchedPo && $lineNumber !== null) {
+                $rpaQueue->queueAddProcessGoodsReceive($this->productionGroup, $this->operation, $matchedPo['po_number'], $lineNumber, $goodQty);
+            } else {
+                Log::warning("Skipped goods_receive_addprocess queueing for {$this->operation} on PRG {$this->productionGroup} — no matched PO or resolvable line number.");
+            }
+        }
     }
 
     public function failed(\Throwable $e): void

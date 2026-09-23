@@ -20,6 +20,8 @@ use Illuminate\Support\Facades\Log;
  */
 class SubconProductionService
 {
+    public function __construct(private readonly D365JobTransactionService $d365JobTransactions) {}
+
     /**
      * Per-request memoization for forPo()/fabricLinesForPo()/accessoryLinesForPo(),
      * which otherwise each independently re-run the identical `po_lines` PLMId
@@ -222,19 +224,29 @@ class SubconProductionService
 
     /**
      * Distinct "add process" side-step operations (ADD-Was/ADD-Embro/ADD-Sab/
-     * ADD-Pleat/...) present on a production group's D365 route, read from
+     * ADD-Pleat/...) present on a production group's D365 route, together
+     * with each one's JobTransactionId and `resource` — read from
      * `vsm.job_transaction_headers` (synced independently by automaton/vsm —
      * see vsm-job-transaction-routing memory). Casing is inconsistent in D365
      * (e.g. `ADD-Was` vs `add-was`), so this dedupes case-insensitively while
-     * keeping the first-seen raw casing — that's the value callers must PATCH/
-     * trigger against later, so it must match a real Operation value in D365.
+     * keeping the first-seen raw casing as the array key — that's the value
+     * callers must PATCH/trigger against later, so it must match a real
+     * Operation value in D365.
+     *
+     * CONFIRMED LIVE: `resource` is `CMT` on every single ADD-* row (201/201)
+     * — an add-process step is always subcontracted work, independent of
+     * whether the production group's own cutting/sewing route is CMT or
+     * in-house (see addProcessPurchaseOrdersForGroup()'s docblock: it's
+     * billed on its own separate AddPro PO regardless). Callers use this to
+     * label the step, not to filter — it's carried through as-is rather than
+     * hardcoded, in case D365 ever has an exception.
      *
      * Best-effort: returns [] if VSM is unreachable or the group has no ADD-*
      * step (a normal, common case — most routes don't have one).
      *
-     * @return array<int, string>
+     * @return array<string, array{job_transaction_id: string, resource: ?string}> keyed by raw-cased Operation
      */
-    public function addProcessOperationsForGroup(string $productionGroup): array
+    public function addProcessStepsForGroup(string $productionGroup): array
     {
         $productionGroup = trim($productionGroup);
         if ($productionGroup === '') {
@@ -242,22 +254,24 @@ class SubconProductionService
         }
 
         try {
-            $raw = DB::connection('vsm')->table('job_transaction_headers')
+            $rows = DB::connection('vsm')->table('job_transaction_headers')
                 ->where('ProductionGroup', $productionGroup)
                 ->where('Operation', 'ilike', 'ADD-%')
-                ->distinct()
-                ->pluck('Operation');
+                ->get(['Operation', 'JobTransactionId', 'resource']);
 
-            $seen = [];
-            foreach ($raw as $op) {
-                $key = strtolower(trim((string) $op));
-                if ($key === '' || isset($seen[$key])) {
+            $out = [];
+            $seenKeys = [];
+            foreach ($rows as $row) {
+                $op = trim((string) $row->Operation);
+                $key = strtolower($op);
+                if ($op === '' || isset($seenKeys[$key])) {
                     continue;
                 }
-                $seen[$key] = trim((string) $op);
+                $seenKeys[$key] = true;
+                $out[$op] = ['job_transaction_id' => $row->JobTransactionId, 'resource' => $row->resource];
             }
 
-            return array_values($seen);
+            return $out;
         } catch (\Throwable $e) {
             report($e);
 
@@ -266,15 +280,122 @@ class SubconProductionService
     }
 
     /**
-     * Per-unit price (LineAmount ÷ OrderedPurchaseQuantity — never
-     * PurchasePrice, same principle as resolveFabricPricing()) for the
-     * AddPro PO line whose description best matches this ADD-* operation's
-     * suffix keyword (e.g. ADD-Sab -> "Sab", matched case-insensitively
-     * against "Item Jasa Add Process Sablon"). Falls back to the PO's only
-     * line when there's exactly one and no description match.
+     * Matches the most likely add-process PO among a group's AddPro-pool POs
+     * (as returned by addProcessPurchaseOrdersForGroup()) to a specific ADD-*
+     * Operation, since a production group can carry more than one add-process
+     * step with a separate PO each (e.g. both ADD-Was and ADD-Embro). D365's
+     * line descriptions follow "Item Jasa Add Process <Keyword>" (Washing/
+     * Embro/Sablon/Pleating/...) where <Keyword> is always a superset of the
+     * Operation's own suffix (ADD-Was -> "Was" is contained in "Washing",
+     * ADD-Sab -> "Sab" is contained in "Sablon"), so matching on that suffix
+     * generalises to any future ADD-* operation without a hardcoded list.
      *
-     * KNOWN LIMITATION: on a PO where more than one line shares the same
-     * operation's description keyword, this returns the lowest-numbered
+     * Falls back to the group's only PO when there's exactly one and no
+     * description match — most groups only ever have a single add-process PO
+     * — but stays null (ambiguous) rather than guessing when there's more
+     * than one and none match.
+     *
+     * @param  array<int, array{po_number: string, vendor_code: ?string, vendor_name?: ?string, description: ?string, status: ?string}>  $pos
+     * @return array{po_number: string, vendor_code: ?string, vendor_name?: ?string, description: ?string, status: ?string}|null
+     */
+    public function matchAddProcessPoForOperation(array $pos, string $operation): ?array
+    {
+        if (empty($pos)) {
+            return null;
+        }
+
+        $keyword = $this->addProcessKeyword($operation);
+
+        if (! empty($keyword)) {
+            foreach ($pos as $po) {
+                if (str_contains(strtolower((string) ($po['description'] ?? '')), strtolower($keyword))) {
+                    return $po;
+                }
+            }
+        }
+
+        return count($pos) === 1 ? $pos[0] : null;
+    }
+
+    /**
+     * Shared with resolveAddProcessLineNumber() — the "ADD-<suffix>" ->
+     * description-keyword derivation used to match a PO/line to an operation.
+     * See matchAddProcessPoForOperation()'s docblock for the reasoning.
+     */
+    private function addProcessKeyword(string $operation): ?string
+    {
+        $operation = trim($operation);
+        if (stripos($operation, 'ADD-') !== 0) {
+            return null;
+        }
+
+        $keyword = trim(substr($operation, 4));
+
+        return $keyword !== '' ? $keyword : null;
+    }
+
+    /**
+     * Which line on an AddPro-pool PO to post a goods receipt against for a
+     * given ADD-* operation, as a 0-indexed `line_number` (the goods_receive
+     * automation's own convention — see its README/ProcessRequest) rather
+     * than D365's native 1-indexed LineNumber.
+     *
+     * CONFIRMED LIVE: an AddPro PO is not always single-line — MPG/PO/2605/01274
+     * has 2 lines (one Sablon, one Embro; description matching disambiguates
+     * cleanly), but MPG/PO/2607/01318 has 6 lines that are ALL "Item Jasa Add
+     * Process Embro" (evidently one line per delivery batch/split, not one
+     * per operation type) — description matching can't tell those apart.
+     * KNOWN LIMITATION: in that second case this returns the lowest-numbered
+     * matching line every time, which is a guess, not a verified mapping —
+     * there's no signal in `po_lines` that says which specific line a given
+     * Add Process submission's goods receipt should land on.
+     *
+     * @return int|null 0-indexed line number, or null if the PO has no lines
+     *                  or (0 or 2+ matches with no way to disambiguate and
+     *                  more than one line exists)
+     */
+    public function resolveAddProcessLineNumber(string $poNumber, string $operation): ?int
+    {
+        try {
+            $lines = DB::connection('vsm')->table('po_lines')
+                ->where('PurchaseOrderNumber', $poNumber)
+                ->orderBy('LineNumber')
+                ->get(['LineNumber', 'LineDescription']);
+
+            if ($lines->isEmpty()) {
+                return null;
+            }
+
+            $keyword = $this->addProcessKeyword($operation);
+            if (! empty($keyword)) {
+                $match = $lines->first(fn ($l) => str_contains(strtolower((string) ($l->LineDescription ?? '')), strtolower($keyword)));
+                if ($match) {
+                    return ((int) $match->LineNumber) - 1;
+                }
+            }
+
+            // No keyword hit (unrecognised operation) — only safe to guess
+            // when the PO has exactly one line to begin with.
+            return $lines->count() === 1 ? ((int) $lines->first()->LineNumber) - 1 : null;
+        } catch (\Throwable $e) {
+            report($e);
+
+            return null;
+        }
+    }
+
+    /**
+     * Per-unit price (LineAmount ÷ OrderedPurchaseQuantity — never
+     * PurchasePrice, same principle as resolveFabricPricing()) for the same
+     * AddPro PO line resolveAddProcessLineNumber() would match for this
+     * operation. A deliberate sibling method, not a change to that method's
+     * return shape — resolveAddProcessLineNumber()'s existing caller
+     * (SyncSubconAddProcessToD365, goods receive queueing) expects a bare
+     * int and is already relied on; this keeps that contract untouched.
+     *
+     * Same KNOWN LIMITATION as resolveAddProcessLineNumber(): on a PO where
+     * more than one line shares the same operation's description keyword
+     * (see that method's docblock), this returns the lowest-numbered
      * matching line's price, which is a guess when those lines could carry
      * different amounts.
      */
@@ -290,11 +411,9 @@ class SubconProductionService
                 return null;
             }
 
-            $operation = trim($operation);
-            $keyword = stripos($operation, 'ADD-') === 0 ? trim(substr($operation, 4)) : '';
-
+            $keyword = $this->addProcessKeyword($operation);
             $match = null;
-            if ($keyword !== '') {
+            if (! empty($keyword)) {
                 $match = $lines->first(fn ($l) => str_contains(strtolower((string) ($l->LineDescription ?? '')), strtolower($keyword)));
             }
             $match ??= $lines->count() === 1 ? $lines->first() : null;
@@ -386,7 +505,30 @@ class SubconProductionService
      * enters qty/reject directly on the Add Process page regardless of
      * whether this lookup finds anything.
      *
-     * @return array<int, array{po_number: string, vendor_code: ?string, description: ?string, status: ?string}>
+     * Two independent sources are unioned, because neither covers every
+     * group on its own:
+     *  - `plm_activity.ProductionGroup -> PLMId -> po_lines.PLMId` catches a
+     *    group that has a REAL PLM/style link and a separate AddPro PO
+     *    alongside its main CMT PO (the PLM/25/11/00089 example above) —
+     *    `production_groups.PONumber` would only hold that CMT PO here.
+     *  - `production_groups.PONumber -> po_headers` directly catches
+     *    "standalone" groups (`production_groups.Source = 'standalone'`,
+     *    `PLMId` null) that never got a `plm_activity` row at all — CONFIRMED
+     *    LIVE: MPG/PRG/2601/000044 (standalone, no PLM link) has its AddPro
+     *    PO (MPG/PO/2601/00196, "Item Jasa Add Process Embro") recorded only
+     *    via `production_groups.PONumber`; the PLM-based join alone returns
+     *    nothing for it since `plm_activity` has no row for this group.
+     * Deduped by po_number since a group with a real PLM link could
+     * (in principle) surface the same PO from both sources.
+     *
+     * Only `DocumentApprovalStatus = 'Confirmed'` POs are returned — a
+     * Draft/InReview/Rejected PO isn't a real commercial commitment yet (same
+     * approval-status gate `d365:sync-subcon-orders` already applies to the
+     * main work-order sync), so it's treated as "no PO yet" everywhere this
+     * is used: it won't show on the Work Orders list, the CMT order page, or
+     * the Add Process report page until D365 confirms it.
+     *
+     * @return array<int, array{po_number: string, vendor_code: ?string, vendor_name: ?string, description: ?string, status: ?string, due_date: ?string}>
      */
     public function addProcessPurchaseOrdersForGroup(string $productionGroup): array
     {
@@ -396,6 +538,8 @@ class SubconProductionService
         }
 
         try {
+            $pos = collect();
+
             $plmIds = DB::connection('vsm')->table('plm_activity')
                 ->where('ProductionGroup', $productionGroup)
                 ->pluck('PLMId')
@@ -403,22 +547,49 @@ class SubconProductionService
                 ->unique()
                 ->all();
 
-            if (empty($plmIds)) {
+            if (! empty($plmIds)) {
+                $pos = $pos->concat(
+                    DB::connection('vsm')->table('po_lines as l')
+                        ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
+                        ->whereIn('l.PLMId', $plmIds)
+                        ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                        ->where('h.DocumentApprovalStatus', 'Confirmed')
+                        ->get(['l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate'])
+                );
+            }
+
+            $standalonePoNumber = DB::connection('vsm')->table('production_groups')
+                ->where('ProductionGroup', $productionGroup)
+                ->value('PONumber');
+
+            if ($standalonePoNumber) {
+                $pos = $pos->concat(
+                    DB::connection('vsm')->table('po_lines as l')
+                        ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
+                        ->where('l.PurchaseOrderNumber', $standalonePoNumber)
+                        ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                        ->where('h.DocumentApprovalStatus', 'Confirmed')
+                        ->get(['l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate'])
+                );
+            }
+
+            $result = $pos->unique('PurchaseOrderNumber')->values();
+            if ($result->isEmpty()) {
                 return [];
             }
 
-            $lines = DB::connection('vsm')->table('po_lines as l')
-                ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
-                ->whereIn('l.PLMId', $plmIds)
-                ->where('h.PurchPoolId', 'ilike', 'AddPro%')
-                ->get(['l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus']);
+            $vendorNames = $this->d365JobTransactions->fetchVendorNames(
+                $result->pluck('OrderVendorAccountNumber')->filter()->unique()->values()->all()
+            );
 
-            return $lines->map(fn ($l) => [
+            return $result->map(fn ($l) => [
                 'po_number' => $l->PurchaseOrderNumber,
                 'vendor_code' => $l->OrderVendorAccountNumber,
+                'vendor_name' => $vendorNames[$l->OrderVendorAccountNumber] ?? null,
                 'description' => $l->LineDescription,
+                'due_date' => $l->RequestedDeliveryDate,
                 'status' => $l->PurchaseOrderStatus,
-            ])->unique('po_number')->values()->all();
+            ])->all();
         } catch (\Throwable $e) {
             report($e);
 
@@ -429,27 +600,56 @@ class SubconProductionService
     /**
      * Bulk counterpart of addProcessPurchaseOrdersForGroup() — every AddPro-pool
      * PO across all production groups in one query (for a list page; avoids an
-     * N+1 of one vsm round-trip per row). Same read-only/informational contract.
+     * N+1 of one vsm round-trip per row). Same read-only/informational contract,
+     * and the same two-source union (PLM-linked groups + standalone groups via
+     * `production_groups.PONumber`) — see that method's docblock for why both
+     * are needed. Same `DocumentApprovalStatus = 'Confirmed'` gate too — see
+     * addProcessPurchaseOrdersForGroup()'s docblock.
      *
-     * @return array<string, array<int, array{po_number: string, vendor_code: ?string, description: ?string, status: ?string}>> keyed by ProductionGroup
+     * @return array<string, array<int, array{po_number: string, vendor_code: ?string, description: ?string, status: ?string, due_date: ?string}>> keyed by ProductionGroup
      */
     public function addProcessPurchaseOrdersByGroup(): array
     {
         try {
-            $lines = DB::connection('vsm')->table('po_lines as l')
+            $byGroup = [];
+
+            $plmLines = DB::connection('vsm')->table('po_lines as l')
                 ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
                 ->join('plm_activity as a', 'a.PLMId', '=', 'l.PLMId')
                 ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                ->where('h.DocumentApprovalStatus', 'Confirmed')
                 ->whereNotNull('a.ProductionGroup')
-                ->get(['a.ProductionGroup', 'l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus']);
+                ->get(['a.ProductionGroup', 'l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate']);
 
-            $byGroup = [];
-            foreach ($lines as $l) {
+            foreach ($plmLines as $l) {
                 $byGroup[$l->ProductionGroup][$l->PurchaseOrderNumber] = [
                     'po_number' => $l->PurchaseOrderNumber,
                     'vendor_code' => $l->OrderVendorAccountNumber,
                     'description' => $l->LineDescription,
                     'status' => $l->PurchaseOrderStatus,
+                    'due_date' => $l->RequestedDeliveryDate,
+                ];
+            }
+
+            // Standalone groups (no plm_activity row at all, e.g. MPG/PRG/2601/000044)
+            // — production_groups.PONumber is the only local record of their AddPro
+            // PO. Won't collide with the PLM-based rows above: a group with a real
+            // CMT work order has its PONumber pointing at the CMT-pool PO instead,
+            // so it simply fails the PurchPoolId filter here and contributes nothing.
+            $standaloneLines = DB::connection('vsm')->table('po_lines as l')
+                ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
+                ->join('production_groups as g', 'g.PONumber', '=', 'l.PurchaseOrderNumber')
+                ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                ->where('h.DocumentApprovalStatus', 'Confirmed')
+                ->get(['g.ProductionGroup', 'l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate']);
+
+            foreach ($standaloneLines as $l) {
+                $byGroup[$l->ProductionGroup][$l->PurchaseOrderNumber] ??= [
+                    'po_number' => $l->PurchaseOrderNumber,
+                    'vendor_code' => $l->OrderVendorAccountNumber,
+                    'description' => $l->LineDescription,
+                    'status' => $l->PurchaseOrderStatus,
+                    'due_date' => $l->RequestedDeliveryDate,
                 ];
             }
 
@@ -502,6 +702,43 @@ class SubconProductionService
             }
 
             return $names;
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * Distinct size count per ProductionGroup, batched the same way as
+     * styleNamesForGroups() (one call for a whole list page instead of one
+     * vsm round-trip per row) — for Add Process list rows, which often have
+     * no linked SubconOrder to read a `sizes_count` column from. Same source
+     * `forProductionGroup()`/`summarize()` already use for a single group
+     * (`production_group_lines.Size`), just counted directly for many groups
+     * at once instead of building each group's full line list first.
+     *
+     * @param  array<int, string>  $productionGroups
+     * @return array<string, int> keyed by ProductionGroup
+     */
+    public function sizeCountsForGroups(array $productionGroups): array
+    {
+        $productionGroups = array_values(array_unique(array_filter($productionGroups)));
+        if (empty($productionGroups)) {
+            return [];
+        }
+
+        try {
+            return DB::connection('vsm')->table('production_group_lines')
+                ->whereIn('ProductionGroup', $productionGroups)
+                ->whereNotNull('Size')
+                ->where('Size', '!=', '')
+                ->select('ProductionGroup', 'Size')
+                ->distinct()
+                ->get()
+                ->groupBy('ProductionGroup')
+                ->map(fn ($rows) => $rows->count())
+                ->all();
         } catch (\Throwable $e) {
             report($e);
 

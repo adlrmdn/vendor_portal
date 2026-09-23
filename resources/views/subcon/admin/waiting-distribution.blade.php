@@ -123,15 +123,26 @@
                             <td class="fw-semibold">{{ $order->vendor?->name ?? '—' }}</td>
                             <td>{{ $order->title }}</td>
                             <td>@include('subcon.partials.stage-badge', ['order' => $order])</td>
-                            <td class="text-end" style="min-width: 260px;">
+                            <td class="text-end" style="min-width: 260px;" @if($order->isGeneratingLabels()) data-label-gen-watch="{{ $order->id }}" @endif>
                                 @if($order->isGeneratingLabels())
-                                    {{-- In flight: button locked until it finishes (done) or fails. --}}
+                                    {{-- In flight: button locked until it finishes (done) or fails. The
+                                         page polls labelGenStatus() below and reloads itself once this
+                                         flips, so the admin doesn't have to keep hitting refresh. --}}
                                     <button type="button" class="btn btn-sm btn-secondary rounded-pill px-3 fw-semibold" disabled>
                                         <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Generating…
                                     </button>
-                                    <div class="text-muted small mt-1">Started {{ $order->label_gen_at?->diffForHumans() }} · refresh to check</div>
+                                    <div class="text-muted small mt-1">Started {{ $order->label_gen_at?->diffForHumans() }} · checking automatically…</div>
                                 @else
-                                    @if($order->labelGenFailed())
+                                    @if($order->labelGenBlocked())
+                                        {{-- Known D365 business-rule rejection (closed store, empty Gramasi):
+                                             retrying can't fix this, so it's flagged as a warning to fix in
+                                             D365/the report, not an error inviting another click. --}}
+                                        <div class="alert alert-warning border-0 text-start small mb-2 p-2 rounded-3">
+                                            <div class="fw-semibold mb-1"><i class="fas fa-circle-exclamation me-1"></i>Can't generate — needs a fix in D365</div>
+                                            <div style="word-break: break-word;">{{ $order->label_gen_error ?: 'A D365 business rule is blocking this packing instruction.' }}</div>
+                                            @if($order->label_gen_at)<div class="text-muted mt-1">{{ $order->label_gen_at->diffForHumans() }}</div>@endif
+                                        </div>
+                                    @elseif($order->labelGenFailed())
                                         {{-- Clear, specific reason the RPA/DTT run could not generate the PI. --}}
                                         <div class="alert alert-danger border-0 text-start small mb-2 p-2 rounded-3">
                                             <div class="fw-semibold mb-1"><i class="fas fa-triangle-exclamation me-1"></i>Label generation failed</div>
@@ -141,9 +152,9 @@
                                     @endif
                                     <form action="{{ route('subcon.admin.orders.generate-labels-manual', $order->id) }}" method="POST" class="d-inline" onsubmit="return confirmGenerate(this, '{{ $order->order_number }}');">
                                         @csrf
-                                        <button type="submit" class="btn btn-sm {{ $order->labelGenFailed() ? 'btn-warning' : 'btn-generate' }} rounded-pill px-3 fw-semibold">
-                                            <i class="fas {{ $order->labelGenFailed() ? 'fa-rotate-right' : 'fa-cog' }} me-1"></i>
-                                            {{ $order->labelGenFailed() ? 'Retry Generation' : 'Generate Labels' }}
+                                        <button type="submit" class="btn btn-sm {{ $order->labelGenBlocked() ? 'btn-outline-warning' : ($order->labelGenFailed() ? 'btn-warning' : 'btn-generate') }} rounded-pill px-3 fw-semibold">
+                                            <i class="fas {{ $order->labelGenFailed() || $order->labelGenBlocked() ? 'fa-rotate-right' : 'fa-cog' }} me-1"></i>
+                                            {{ $order->labelGenBlocked() ? 'Retry After D365 Fix' : ($order->labelGenFailed() ? 'Retry Generation' : 'Generate Labels') }}
                                         </button>
                                     </form>
                                 @endif
@@ -188,5 +199,35 @@
         }
         return true;
     }
+
+    // Auto-recover from the "Generating…" lock: poll the status endpoint for
+    // every row currently in flight and reload the page as soon as any of
+    // them finishes (success or failure), instead of leaving the admin to
+    // keep hitting refresh to find out.
+    (function () {
+        var watchedIds = Array.prototype.map.call(
+            document.querySelectorAll('[data-label-gen-watch]'),
+            function (el) { return el.getAttribute('data-label-gen-watch'); }
+        );
+        if (!watchedIds.length) return;
+
+        var statusUrl = "{{ route('subcon.admin.orders.label-gen-status') }}";
+
+        setInterval(function () {
+            fetch(statusUrl + '?ids=' + encodeURIComponent(watchedIds.join(',')), {
+                headers: { 'Accept': 'application/json' }
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var stillGenerating = watchedIds.every(function (id) {
+                        return data.orders && data.orders[id] && data.orders[id].generating;
+                    });
+                    if (!stillGenerating) {
+                        window.location.reload();
+                    }
+                })
+                .catch(function () {});
+        }, 5000);
+    })();
 </script>
 @endsection

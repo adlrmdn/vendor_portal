@@ -72,22 +72,46 @@
     }
 </style>
 
+@php
+    $addProcessMode = $addProcessMode ?? false;
+@endphp
+
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2 class="premium-title mb-0">Work Orders</h2>
+</div>
+
+{{-- View mode: a genuinely different row source (SubconOrder vs vsm's
+     job_transaction_headers), not a narrowing filter — kept as its own
+     segmented control instead of living inside the filter form below, which
+     is idiomatic Bootstrap for "which dataset am I browsing" (as distinct
+     from "how am I narrowing it"). Plain links so the existing search/vendor
+     query params carry across the switch. --}}
+<div class="btn-group mb-3" role="group" aria-label="Work order view mode">
+    <a href="{{ request()->fullUrlWithQuery(['add_process' => null, 'workflow_stage' => null, 'page' => null]) }}"
+       class="btn btn-sm {{ $addProcessMode ? 'btn-outline-primary' : 'btn-primary' }}">
+        All Work Orders
+    </a>
+    <a href="{{ request()->fullUrlWithQuery(['add_process' => 1, 'workflow_stage' => null, 'page' => null]) }}"
+       class="btn btn-sm {{ $addProcessMode ? 'btn-primary' : 'btn-outline-primary' }}">
+        Add Process Only
+    </a>
 </div>
 
 {{-- Filters --}}
 <form method="GET" class="card premium-card filter-card mb-4">
     <div class="card-body p-4">
+        @if($addProcessMode)
+            <input type="hidden" name="add_process" value="1">
+        @endif
         <div class="row g-3">
-            <div class="col-12 col-md-3">
+            <div class="col-12 col-md-{{ $addProcessMode ? 6 : 4 }}">
                 <label class="form-label small fw-semibold text-muted mb-2">Search Orders</label>
                 <div class="input-group">
                     <span class="input-group-text bg-white border-end-0 text-muted"><i class="fas fa-search"></i></span>
                     <input type="text" name="search" class="form-control border-start-0 ps-0" placeholder="Search by style, order, PRG..." value="{{ request('search') }}">
                 </div>
             </div>
-            <div class="col-12 col-md-3">
+            <div class="col-12 col-md-4">
                 <label class="form-label small fw-semibold text-muted mb-2">Vendor</label>
                 <select name="vendor_id" class="form-select searchable" data-no-clear>
                     <option value="">All Vendors</option>
@@ -96,6 +120,7 @@
                     @endforeach
                 </select>
             </div>
+            @unless($addProcessMode)
             <div class="col-12 col-md-2">
                 <label class="form-label small fw-semibold text-muted mb-2">Workflow Stage</label>
                 <select name="workflow_stage" class="form-select searchable" data-no-clear>
@@ -105,15 +130,7 @@
                     @endforeach
                 </select>
             </div>
-            <div class="col-12 col-md-2">
-                <label class="form-label small fw-semibold text-muted mb-2">Add Process</label>
-                <select name="add_process" class="form-select searchable" data-no-clear>
-                    <option value="">All Work Orders</option>
-                    <option value="has" {{ request('add_process') === 'has' ? 'selected' : '' }}>Add Process: Qty Not Yet Reported</option>
-                    <option value="reported" {{ request('add_process') === 'reported' ? 'selected' : '' }}>Add Process: Qty Reported</option>
-                    <option value="po" {{ request('add_process') === 'po' ? 'selected' : '' }}>Add Process: Has Separate Purchase Order</option>
-                </select>
-            </div>
+            @endunless
             <div class="col-12 col-md-2 align-self-end">
                 <button type="submit" class="btn btn-outline-primary w-100 py-2"><i class="fas fa-filter me-2"></i>Filter</button>
             </div>
@@ -146,16 +163,31 @@
                              row can exist with no work order at all (in-house production). --}}
                         @php
                             $linkedOrder = $ordersByGroup->get($order['production_group']);
-                            $addproPo = $order['addpro_pos'][0] ?? null;
+                            // The PO matched to THIS row's own operation (not just any
+                            // PO the group happens to have) — see
+                            // SubconAdminController::addProcessOrdersList(). Every row
+                            // reaching this table already has one: rows without a
+                            // confirmed match are filtered out before pagination.
+                            $addproPo = $order['matched_po'] ?? null;
                             $extraPos = max(0, count($order['addpro_pos'] ?? []) - 1);
                         @endphp
                         <tr>
                             <td>
+                                {{-- Always label what's shown here — a bare unlabeled PO
+                                     pill is indistinguishable from an "Add Process PO"
+                                     pill at a glance, but the two can be genuinely
+                                     different POs, or (for a standalone/non-PLM group
+                                     with only one PO on record) the very same PO number
+                                     showing up two ways: once as the vendor's synced
+                                     work order, once tagged AddPro-pool in D365. --}}
                                 @if($addproPo)
                                     <span class="code-pill" style="background-color: #fff4e6; border-color: #ffe0b3;">{{ $addproPo['po_number'] }}</span>
                                     <div class="text-muted small mt-1">Add Process PO{{ $extraPos > 0 ? ' (+'.$extraPos.' more)' : '' }}</div>
+                                @elseif($linkedOrder)
+                                    <span class="code-pill">{{ $linkedOrder->order_number }}</span>
+                                    <div class="text-muted small mt-1">Work Order</div>
                                 @else
-                                    <span class="code-pill">{{ $linkedOrder?->order_number ?? '—' }}</span>
+                                    <span class="text-muted small">—</span>
                                 @endif
                             </td>
                             <td><span class="code-pill text-primary" style="background-color: #eff6ff; border-color: #dbeafe;">{{ $order['production_group'] }}</span></td>
@@ -167,8 +199,18 @@
                                 @endif
                             </td>
                             <td>{{ $order['style_name'] ?? $linkedOrder?->title ?? '—' }}</td>
-                            <td><span class="text-muted small">—</span></td>
-                            <td><span class="text-muted small">—</span></td>
+                            <td><span class="badge bg-light text-dark border">{{ $order['sizes_count'] ?? 0 }} sizes</span></td>
+                            <td>
+                                @php
+                                    // The matched PO's own D365 RequestedDeliveryDate first
+                                    // (this row's actual Add Process PO) — falls back to the
+                                    // linked CMT work order's due_date when the PO doesn't
+                                    // carry one.
+                                    $addProcessDueDate = $addproPo['due_date'] ?? null;
+                                    $addProcessDueDate = $addProcessDueDate ? \Illuminate\Support\Carbon::parse($addProcessDueDate) : $linkedOrder?->due_date;
+                                @endphp
+                                {{ $addProcessDueDate?->format('d M Y') ?? '—' }}
+                            </td>
                             <td><span class="badge bg-primary-subtle text-primary border">{{ $order['operation'] }}</span></td>
                             <td><span class="badge-workflow bg-{{ $order['reported'] ? 'success' : 'secondary' }}">{{ $order['reported'] ? 'Reported' : 'Not reported' }}</span></td>
                             <td class="text-end">
