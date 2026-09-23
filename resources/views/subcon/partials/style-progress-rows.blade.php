@@ -361,5 +361,25 @@
                 </tbody>
             </table>
         </div>
+
+        @php
+            $styleNote = $group['dayNote'] ?? '';
+        @endphp
+        @if($editable && ! $isClosed)
+            <div class="px-3 py-2 bg-light border-top d-flex align-items-center gap-2">
+                <label for="note-{{ $order->id }}" class="form-label mb-0 text-muted small text-nowrap">
+                    <i class="fas fa-sticky-note text-secondary me-1"></i> Daily Remarks (Optional):
+                </label>
+                <input type="text" id="note-{{ $order->id }}" name="notes[{{ $order->id }}]"
+                       class="form-control form-control-sm bg-white"
+                       placeholder="e.g. Fabric delay, machine issue, overtime, etc."
+                       value="{{ $styleNote }}" maxlength="2000">
+            </div>
+        @elseif(! empty($styleNote))
+            <div class="px-3 py-2 bg-light border-top small text-muted">
+                <i class="fas fa-sticky-note text-secondary me-1"></i>
+                <span class="fw-semibold">Daily Remarks:</span> {{ $styleNote }}
+            </div>
+        @endif
     </div>
 </div>

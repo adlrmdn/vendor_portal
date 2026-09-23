@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\SubconOrder;
 use App\Models\User;
+use App\Models\Vsm\SubconDailyProductionDayNote;
 use App\Models\Vsm\SubconDailyProductionEntry;
 use App\Models\Vsm\SubconDailyProductionStyle;
 use Illuminate\Support\Collection;
@@ -391,4 +392,121 @@ class SubconDailyProductionService
 
         return $sawTarget;
     }
+
+    /**
+     * Fetch optional daily notes for a batch of orders and an entry date.
+     * Best-effort ([] on failure).
+     *
+     * @return array{styles: array<string, string>, general: ?string}
+     */
+    public function dayNotesFor(Collection $orders, string $entryDate, ?string $vendorId = null): array
+    {
+        $orderIds = $orders->pluck('id')->filter()->all();
+
+        try {
+            $query = SubconDailyProductionDayNote::where('entry_date', $entryDate);
+            if ($vendorId && empty($orderIds)) {
+                $query->where('vendor_id', $vendorId);
+            } else {
+                $query->where(function ($q) use ($orderIds, $vendorId) {
+                    if (! empty($orderIds)) {
+                        $q->whereIn('order_id', $orderIds);
+                    }
+                    if ($vendorId) {
+                        $q->orWhere(function ($sub) use ($vendorId) {
+                            $sub->where('vendor_id', $vendorId)->whereNull('order_id');
+                        });
+                    }
+                });
+            }
+
+            $rows = $query->get();
+        } catch (\Throwable $e) {
+            report($e);
+            $rows = collect();
+        }
+
+        $styles = [];
+        $general = null;
+
+        foreach ($rows as $row) {
+            if ($row->order_id) {
+                $styles[$row->order_id] = $row->notes ?? '';
+            } elseif ($vendorId && $row->vendor_id === $vendorId) {
+                $general = $row->notes;
+            }
+        }
+
+        return [
+            'styles' => $styles,
+            'general' => $general,
+        ];
+    }
+
+    /**
+     * Save an optional daily note for a specific style and date.
+     */
+    public function saveStyleDayNote(SubconOrder $order, string $entryDate, ?string $note, User $user): void
+    {
+        $note = trim((string) $note);
+        if ($note === '') {
+            try {
+                SubconDailyProductionDayNote::where('order_id', $order->id)
+                    ->where('entry_date', $entryDate)
+                    ->delete();
+            } catch (\Throwable $e) {
+                report($e);
+            }
+
+            return;
+        }
+
+        SubconDailyProductionDayNote::updateOrCreate(
+            [
+                'order_id' => $order->id,
+                'entry_date' => $entryDate,
+            ],
+            [
+                'vendor_id' => $order->vendor_id,
+                'order_number' => $order->order_number,
+                'notes' => $note,
+                'entered_by_user_id' => $user->id,
+                'entered_by_name' => $user->name,
+            ]
+        );
+    }
+
+    /**
+     * Save an optional overall day note for a vendor and date.
+     */
+    public function saveVendorDayNote(string $vendorId, string $entryDate, ?string $note, User $user): void
+    {
+        $note = trim((string) $note);
+        if ($note === '') {
+            try {
+                SubconDailyProductionDayNote::where('vendor_id', $vendorId)
+                    ->whereNull('order_id')
+                    ->where('entry_date', $entryDate)
+                    ->delete();
+            } catch (\Throwable $e) {
+                report($e);
+            }
+
+            return;
+        }
+
+        SubconDailyProductionDayNote::updateOrCreate(
+            [
+                'vendor_id' => $vendorId,
+                'order_id' => null,
+                'entry_date' => $entryDate,
+            ],
+            [
+                'notes' => $note,
+                'entered_by_user_id' => $user->id,
+                'entered_by_name' => $user->name,
+            ]
+        );
+    }
 }
+

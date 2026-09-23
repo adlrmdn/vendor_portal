@@ -57,13 +57,15 @@ class SubconDailyProductionController extends Controller
 
         $breakdowns = $board->mapWithKeys(fn ($o) => [$o->id => $service->cuttingRatioBreakdown($o)]);
         $collapsedIds = $this->collapsedOrderIds($request);
+        $dayNotes = $service->dayNotesFor($board, $date, $vendorId);
 
-        $groups = $board->map(function ($order) use ($service, $date, $statuses, $breakdowns, $request, $collapsedIds) {
+        $groups = $board->map(function ($order) use ($service, $date, $statuses, $breakdowns, $request, $collapsedIds, $dayNotes) {
             $ratioColumns = $this->resolveRatioColumnsFor($request, $order->id, $breakdowns[$order->id]);
 
             return $this->buildStyleData(
                 $order, $service, $date, $statuses[$order->id]['status'] ?? 'not_started',
-                $breakdowns[$order->id], $ratioColumns, in_array($order->id, $collapsedIds, true)
+                $breakdowns[$order->id], $ratioColumns, in_array($order->id, $collapsedIds, true),
+                $dayNotes['styles'][$order->id] ?? null
             );
         })->all();
 
@@ -73,6 +75,7 @@ class SubconDailyProductionController extends Controller
             'date' => $date,
             'flatStages' => $this->flatStages($service),
             'finishingStages' => $this->finishingStages($service),
+            'dayNote' => $dayNotes['general'] ?? null,
         ]);
     }
 
@@ -192,7 +195,7 @@ class SubconDailyProductionController extends Controller
      * still computed from every ratio's real figures either way — it only
      * tells the view to skip rendering the individual ratio columns.
      */
-    private function buildStyleData(SubconOrder $order, SubconDailyProductionService $service, string $date, ?string $status, array $cuttingBreakdown, array $ratioColumns, bool $cuttingCollapsed = false): array
+    private function buildStyleData(SubconOrder $order, SubconDailyProductionService $service, string $date, ?string $status, array $cuttingBreakdown, array $ratioColumns, bool $cuttingCollapsed = false, ?string $dayNote = null): array
     {
         $data = $service->forOrder($order);
         // Sewing (flat) + Finishing/QC/Packing (grouped) all get the same
@@ -235,6 +238,7 @@ class SubconDailyProductionController extends Controller
             'readyToClose' => $service->isReadyToClose($data),
             'ratioColumns' => $ratioColumns,
             'cuttingCollapsed' => $cuttingCollapsed,
+            'dayNote' => $dayNote,
         ];
     }
 
@@ -274,6 +278,9 @@ class SubconDailyProductionController extends Controller
         $data = $request->validate([
             'entry_date' => ['required', 'date', 'before_or_equal:today'],
             'entries' => ['nullable', 'array'],
+            'notes' => ['nullable', 'array'],
+            'notes.*' => ['nullable', 'string', 'max:2000'],
+            'day_note' => ['nullable', 'string', 'max:2000'],
         ]);
 
         $vendorId = Auth::user()->vendor_id;
@@ -329,11 +336,38 @@ class SubconDailyProductionController extends Controller
             }
         }
 
+        if ($request->has('notes')) {
+            foreach ((array) ($data['notes'] ?? []) as $orderId => $noteText) {
+                $order = SubconOrder::where('vendor_id', $vendorId)->where('id', $orderId)->first();
+                if ($order) {
+                    try {
+                        $service->saveStyleDayNote($order, $entryDate, $noteText, $user);
+                        if (trim((string) $noteText) !== '') {
+                            $saved = true;
+                        }
+                    } catch (\Throwable $e) {
+                        report($e);
+                    }
+                }
+            }
+        }
+
+        if ($request->has('day_note')) {
+            try {
+                $service->saveVendorDayNote($vendorId, $entryDate, $data['day_note'] ?? null, $user);
+                if (trim((string) ($data['day_note'] ?? '')) !== '') {
+                    $saved = true;
+                }
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
         if (! empty($failed)) {
             return back()->with('error', 'Could not save: '.implode('; ', $failed).'.');
         }
 
-        return back()->with('success', $saved ? "Daily production saved for {$entryDate}." : 'Nothing to save — no quantities entered.');
+        return back()->with('success', $saved ? "Daily production saved for {$entryDate}." : 'Nothing to save — no quantities or notes entered.');
     }
 
     /** @return array<int, array{prod_id: string, quantity: mixed}> */
@@ -397,8 +431,9 @@ class SubconDailyProductionController extends Controller
     private function exportGroups(\Illuminate\Support\Collection $board, SubconDailyProductionService $service, array $statuses): array
     {
         $date = now()->toDateString();
+        $dayNotes = $service->dayNotesFor($board, $date);
 
-        return $board->map(function ($order) use ($service, $date, $statuses) {
+        return $board->map(function ($order) use ($service, $date, $statuses, $dayNotes) {
             $breakdown = $service->cuttingRatioBreakdown($order);
             $ratioColumns = collect($breakdown['ratios'] ?? [])
                 ->pluck('raw_label')
@@ -411,7 +446,7 @@ class SubconDailyProductionController extends Controller
 
             return $this->buildStyleData(
                 $order, $service, $date, $statuses[$order->id]['status'] ?? 'not_started',
-                $breakdown, $ratioColumns
+                $breakdown, $ratioColumns, false, $dayNotes['styles'][$order->id] ?? null
             );
         })->all();
     }
@@ -434,6 +469,9 @@ class SubconDailyProductionController extends Controller
             $titleRow = [$order->title ?: $order->order_number, $order->order_number, ucfirst($group['status'])];
             if ($includeVendorColumn) {
                 $titleRow[] = $order->vendor->name ?? '';
+            }
+            if (! empty($group['dayNote'])) {
+                $titleRow[] = 'Note: '.$group['dayNote'];
             }
             $rows[] = $titleRow;
             $boldRows[] = count($rows);
@@ -550,13 +588,16 @@ class SubconDailyProductionController extends Controller
 
         $breakdowns = $board->mapWithKeys(fn ($o) => [$o->id => $service->cuttingRatioBreakdown($o)]);
         $collapsedIds = $this->collapsedOrderIds($request);
+        $vendorFilterId = $request->query('vendor_id');
+        $dayNotes = $service->dayNotesFor($board, $date, $vendorFilterId ?: null);
 
-        $groups = $board->map(function ($order) use ($service, $date, $statuses, $breakdowns, $request, $collapsedIds) {
+        $groups = $board->map(function ($order) use ($service, $date, $statuses, $breakdowns, $request, $collapsedIds, $dayNotes) {
             $ratioColumns = $this->resolveRatioColumnsFor($request, $order->id, $breakdowns[$order->id]);
 
             return $this->buildStyleData(
                 $order, $service, $date, $statuses[$order->id]['status'] ?? 'not_started',
-                $breakdowns[$order->id], $ratioColumns, in_array($order->id, $collapsedIds, true)
+                $breakdowns[$order->id], $ratioColumns, in_array($order->id, $collapsedIds, true),
+                $dayNotes['styles'][$order->id] ?? null
             );
         })->all();
 
@@ -568,6 +609,7 @@ class SubconDailyProductionController extends Controller
             'flatStages' => $this->flatStages($service),
             'finishingStages' => $this->finishingStages($service),
             'vendors' => $vendors,
+            'dayNote' => $dayNotes['general'] ?? null,
         ]);
     }
 

@@ -31,16 +31,20 @@
                  a Coli/Blister-only resync against the current capacity (see
                  GenerateSubconLabels::recalculateColiBlister()) — no DTT re-run. --}}
             @if($order->isGeneratingLabels())
-                <button type="button" class="btn btn-secondary" disabled>
-                    <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Generating…
-                </button>
+                {{-- Polled below via labelGenStatus() so the page reloads itself once
+                     this finishes, instead of staying "stuck" until manually refreshed. --}}
+                <span data-label-gen-watch="{{ $order->id }}">
+                    <button type="button" class="btn btn-secondary" disabled>
+                        <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Generating…
+                    </button>
+                </span>
             @else
                 <form method="POST" action="{{ route('subcon.admin.orders.generate-labels-manual', $order->id) }}" class="d-inline"
                       onsubmit="return confirm('{{ $order->canPrintLabels() ? 'Recalculate Coli/Blister with the current blister/sack capacity?' : 'Trigger label generation? This calls the DTT/RPA service and can take up to a minute.' }}');">
                     @csrf
-                    <button type="submit" class="btn {{ $order->labelGenFailed() ? 'btn-warning' : 'btn-outline-primary' }}">
-                        <i class="fas {{ $order->labelGenFailed() ? 'fa-rotate-right' : ($order->canPrintLabels() ? 'fa-rotate' : 'fa-cog') }} me-1"></i>
-                        {{ $order->labelGenFailed() ? 'Retry Generation' : ($order->canPrintLabels() ? 'Recalculate Labels' : 'Generate Labels') }}
+                    <button type="submit" class="btn {{ $order->labelGenBlocked() ? 'btn-outline-warning' : ($order->labelGenFailed() ? 'btn-warning' : 'btn-outline-primary') }}">
+                        <i class="fas {{ $order->labelGenFailed() || $order->labelGenBlocked() ? 'fa-rotate-right' : ($order->canPrintLabels() ? 'fa-rotate' : 'fa-cog') }} me-1"></i>
+                        {{ $order->labelGenBlocked() ? 'Retry After D365 Fix' : ($order->labelGenFailed() ? 'Retry Generation' : ($order->canPrintLabels() ? 'Recalculate Labels' : 'Generate Labels')) }}
                     </button>
                 </form>
             @endif
@@ -54,7 +58,15 @@
     </div>
 </div>
 
-@if($order->gramasi_approved_at && $order->labelGenFailed())
+@if($order->gramasi_approved_at && $order->labelGenBlocked())
+    {{-- Known D365 business-rule rejection (closed store, empty Gramasi) — retrying
+         can't fix this, so it's a warning to correct in D365/the report, not an error. --}}
+    <div class="alert alert-warning py-2 small mb-4">
+        <i class="fas fa-circle-exclamation me-1"></i>
+        <strong>Can't generate — needs a fix in D365:</strong> {{ $order->label_gen_error ?: 'A D365 business rule is blocking this packing instruction.' }}
+        @if($order->label_gen_at)<span class="text-muted">({{ $order->label_gen_at->diffForHumans() }})</span>@endif
+    </div>
+@elseif($order->gramasi_approved_at && $order->labelGenFailed())
     <div class="alert alert-danger py-2 small mb-4">
         <i class="fas fa-triangle-exclamation me-1"></i>
         <strong>Label generation failed:</strong> {{ $order->label_gen_error ?: 'The RPA service could not generate the packing instruction.' }}
@@ -120,7 +132,7 @@
             </div>
         </div>
 
-        @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'fabricLines' => $fabricLines, 'qcSizeOrderQty' => $qcSizeOrderQty])
+        @include('subcon.partials.production-detail', ['productionGroups' => $productionGroups, 'cuttingReports' => $cuttingReports, 'dailyCuttingTotals' => $dailyCuttingTotals ?? [], 'fabricLines' => $fabricLines, 'qcSizeOrderQty' => $qcSizeOrderQty])
 
         @if($order->workflow_stage === \App\Models\SubconOrder::STAGE_CUTTING_REVIEW)
             {{-- Consumption + approve are one action: this form's inputs are
@@ -490,4 +502,32 @@
         </div>
     </div>
 </div>
+
+@if($order->isGeneratingLabels())
+@push('scripts')
+<script>
+    // Auto-recover from the "Generating…" lock: poll instead of leaving the
+    // admin to keep hitting refresh to find out whether the background run
+    // (DTT call or Coli/Blister resync) has finished.
+    (function () {
+        var orderId = @json($order->id);
+        var statusUrl = "{{ route('subcon.admin.orders.label-gen-status') }}";
+
+        setInterval(function () {
+            fetch(statusUrl + '?ids=' + encodeURIComponent(orderId), {
+                headers: { 'Accept': 'application/json' }
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var order = data.orders && data.orders[orderId];
+                    if (!order || !order.generating) {
+                        window.location.reload();
+                    }
+                })
+                .catch(function () {});
+        }, 5000);
+    })();
+</script>
+@endpush
+@endif
 @endsection

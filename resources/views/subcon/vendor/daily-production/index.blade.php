@@ -103,6 +103,20 @@
             </button>
         </div>
 
+        <div class="card mb-3 border-0 shadow-sm">
+            <div class="card-body p-2 px-3 bg-white rounded border">
+                <div class="d-flex align-items-center gap-2">
+                    <label for="vendor-day-note" class="form-label mb-0 text-muted small fw-semibold text-nowrap">
+                        <i class="fas fa-calendar-day text-primary me-1"></i> Overall Day Remarks (Optional):
+                    </label>
+                    <input type="text" id="vendor-day-note" name="day_note"
+                           class="form-control form-control-sm"
+                           placeholder="General notes for {{ $dateCarbon->format('d M Y') }} (e.g. shift schedule, overall factory conditions, overtime)"
+                           value="{{ $dayNote ?? '' }}" maxlength="2000">
+                </div>
+            </div>
+        </div>
+
         @foreach($groups as $group)
             @include('subcon.partials.style-progress-rows', [
                 'group' => $group,

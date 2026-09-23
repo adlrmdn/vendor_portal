@@ -239,11 +239,19 @@
                                                    onfocus="if(!parseFloat(this.value))this.select()"
                                                    oninput="if(/^0\d/.test(this.value))this.value=this.value.replace(/^0+(?=\d)/,'')"
                                                    inputmode="numeric" placeholder="0">
+                                            @if($cutQty === null && ! empty($dailyCuttingTotals[$line->ProdId]))
+                                                <div class="text-muted text-nowrap mt-1" style="font-size: 0.7rem;" title="Prefilled from Daily Production cutting entries (can be edited/overridden)">
+                                                    <i class="fas fa-magic text-primary me-1"></i>From Daily: {{ number_format($dailyCuttingTotals[$line->ProdId]) }}
+                                                </div>
+                                            @endif
                                         </td>
                                     @else
                                         <td class="text-end fw-semibold text-primary">
                                             @if($cutQty !== null)
                                                 {{ number_format($cutQty) }} <span class="text-muted small fw-normal">pcs</span>
+                                            @elseif(! empty($dailyCuttingTotals[$line->ProdId]))
+                                                <span class="text-muted" title="Not submitted in cutting report yet; recorded in Daily Production">{{ number_format($dailyCuttingTotals[$line->ProdId]) }} <span class="small fw-normal">pcs</span></span>
+                                                <div class="text-muted text-nowrap" style="font-size: 0.68rem;"><i class="fas fa-industry text-secondary me-1"></i>Daily Log</div>
                                             @else
                                                 —
                                             @endif

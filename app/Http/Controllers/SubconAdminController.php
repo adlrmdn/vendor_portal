@@ -656,24 +656,26 @@ class SubconAdminController extends Controller
         // Real commercial Add Process PO(s) — the D365 "AddPro" pool, a
         // genuinely separate PO/vendor from the CMT one (see
         // SubconProductionService::addProcessPurchaseOrdersForGroup()'s
-        // docblock). Distinct from "has an ADD-* job transaction step" above:
-        // a step can exist with no PO synced yet, or vice versa.
+        // docblock), already filtered there to Confirmed POs only. Distinct
+        // from "has an ADD-* job transaction step" above: a step can exist
+        // with no confirmed PO yet, or vice versa.
         $addProcessPosByGroup = $production->addProcessPurchaseOrdersByGroup();
 
-        $rows = $rows->map(function ($r) use ($reportedKeys, $addProcessPosByGroup) {
+        $rows = $rows->map(function ($r) use ($reportedKeys, $addProcessPosByGroup, $production) {
             $r['reported'] = isset($reportedKeys[strtolower($r['production_group']).'|'.strtolower($r['operation'])]);
-            $r['addpro_pos'] = $addProcessPosByGroup[$r['production_group']] ?? [];
+            $groupPos = $addProcessPosByGroup[$r['production_group']] ?? [];
+            $r['addpro_pos'] = $groupPos;
+            // Matched per THIS row's own operation, not just "the group has
+            // some AddPro PO" — a group with two ADD-* steps can have a
+            // confirmed PO for one and not the other.
+            $r['matched_po'] = $production->matchAddProcessPoForOperation($groupPos, $r['operation']);
 
             return $r;
         });
 
-        if ($request->add_process === 'has') {
-            $rows = $rows->where('reported', false);
-        } elseif ($request->add_process === 'reported') {
-            $rows = $rows->where('reported', true);
-        } elseif ($request->add_process === 'po') {
-            $rows = $rows->filter(fn ($r) => ! empty($r['addpro_pos']));
-        }
+        // Nothing to act on until D365 has a confirmed commercial PO for
+        // this specific operation — don't clutter the list with it.
+        $rows = $rows->filter(fn ($r) => $r['matched_po'] !== null);
 
         if ($request->filled('search')) {
             $term = strtolower(trim($request->search));
@@ -694,20 +696,27 @@ class SubconAdminController extends Controller
         $page = LengthAwarePaginator::resolveCurrentPage();
         $pageRows = $rows->forPage($page, $perPage)->values();
 
-        // Style name + Add Process vendor name: resolved only for the current
-        // page's rows (not all matches) since both need a live/vsm round-trip.
-        // Style name comes straight from VSM (PLM ArticleName, falling back to
-        // the PRG line's SearchName) rather than a linked order's title — many
-        // of these rows have no linked SubconOrder at all (in-house, or the
-        // Add Process PO's own vendor is deliberately never registered).
-        $styleNames = $production->styleNamesForGroups($pageRows->pluck('production_group')->unique()->all());
-        $addProVendorCodes = $pageRows->pluck('addpro_pos')->flatten(1)->pluck('vendor_code')->filter()->unique()->values()->all();
+        // Style name, size count, and Add Process vendor name: resolved only
+        // for the current page's rows (not all matches) since each needs a
+        // live/vsm round-trip. Style name and size count come straight from
+        // VSM (production_group_lines) rather than a linked order's own
+        // columns — many of these rows have no linked SubconOrder at all
+        // (in-house, or the Add Process PO's own vendor is deliberately
+        // unregistered).
+        $productionGroupsOnPage = $pageRows->pluck('production_group')->unique()->all();
+        $styleNames = $production->styleNamesForGroups($productionGroupsOnPage);
+        $sizeCounts = $production->sizeCountsForGroups($productionGroupsOnPage);
+        // Vendor name is resolved for the PO actually matched to each row's
+        // own operation (not just "the group's first AddPro PO") — a group
+        // with two ADD-* steps billed on two different POs needs both named.
+        $addProVendorCodes = $pageRows->pluck('matched_po')->filter()->pluck('vendor_code')->filter()->unique()->values()->all();
         $addProVendorNames = app(\App\Services\D365JobTransactionService::class)->fetchVendorNames($addProVendorCodes);
 
-        $pageRows = $pageRows->map(function ($r) use ($styleNames, $addProVendorNames) {
+        $pageRows = $pageRows->map(function ($r) use ($styleNames, $sizeCounts, $addProVendorNames) {
             $r['style_name'] = $styleNames[$r['production_group']] ?? null;
-            if (! empty($r['addpro_pos'])) {
-                $r['addpro_pos'][0]['vendor_name'] = $addProVendorNames[$r['addpro_pos'][0]['vendor_code']] ?? null;
+            $r['sizes_count'] = $sizeCounts[$r['production_group']] ?? 0;
+            if (! empty($r['matched_po'])) {
+                $r['matched_po']['vendor_name'] = $addProVendorNames[$r['matched_po']['vendor_code']] ?? null;
             }
 
             return $r;
@@ -1464,10 +1473,10 @@ class SubconAdminController extends Controller
             });
         }
 
-        // Failed label generations surface first so they don't get buried behind
-        // routine "waiting" rows — everything else falls back to most-recently-updated.
+        // Failed/blocked label generations surface first so they don't get buried
+        // behind routine "waiting" rows — everything else falls back to most-recently-updated.
         $orders = $query
-            ->orderByRaw('CASE WHEN label_gen_status = ? THEN 0 ELSE 1 END', [SubconOrder::LABEL_GEN_FAILED])
+            ->orderByRaw('CASE WHEN label_gen_status IN (?, ?) THEN 0 ELSE 1 END', [SubconOrder::LABEL_GEN_FAILED, SubconOrder::LABEL_GEN_BLOCKED])
             ->orderBy('updated_at', 'desc')
             ->paginate(20)
             ->withQueryString();
@@ -1510,6 +1519,31 @@ class SubconAdminController extends Controller
             : 'Label generation started for work order '.$model->order_number.'. It is running in the background — printing will unlock once the labels are ready.';
 
         return back()->with('success', $message);
+    }
+
+    /**
+     * Poll endpoint for the "Generating…" lock on the waiting-distribution list
+     * and the work-order page: both render that state at page-load time only,
+     * so without this the admin has to keep manually refreshing to see a
+     * background run finish. Accepts one or more order ids (`?ids=a,b,c`).
+     */
+    public function labelGenStatus(Request $request)
+    {
+        $ids = array_values(array_filter(explode(',', (string) $request->query('ids', ''))));
+
+        if (empty($ids)) {
+            return response()->json(['orders' => []]);
+        }
+
+        $orders = SubconOrder::whereIn('id', $ids)->get(['id', 'label_gen_status', 'label_gen_at', 'label_gen_error']);
+
+        return response()->json([
+            'orders' => $orders->mapWithKeys(fn (SubconOrder $o) => [$o->id => [
+                'generating' => $o->isGeneratingLabels(),
+                'failed' => $o->labelGenFailed(),
+                'blocked' => $o->labelGenBlocked(),
+            ]])->all(),
+        ]);
     }
 
     public function viewOrder(string $id, SubconProductionService $production)
@@ -1630,8 +1664,9 @@ class SubconAdminController extends Controller
         // Richer fallback for production-detail.blade.php's per-size table when
         // VSM's PLM chain is broken — see qcSizeOrderQtyFor()'s docblock.
         $qcSizeOrderQty = $this->qcSizeOrderQtyFor($order);
+        $dailyCuttingTotals = app(\App\Services\SubconDailyProductionService::class)->cuttingPlaceholderTotals($order);
 
-        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'addProcessPos', 'cuttingReports', 'fabricLines', 'totalCut', 'accessoryLines', 'accessoryGoodsReceive', 'accessoryIssue', 'accessoryRecon', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcPipeline', 'qcSizeOrderQty'));
+        return view('subcon.admin.orders.show', compact('order', 'productionGroups', 'summary', 'addProcessPos', 'cuttingReports', 'dailyCuttingTotals', 'fabricLines', 'totalCut', 'accessoryLines', 'accessoryGoodsReceive', 'accessoryIssue', 'accessoryRecon', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'qcPipeline', 'qcSizeOrderQty'));
     }
 
     /**

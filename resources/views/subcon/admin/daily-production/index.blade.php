@@ -66,6 +66,15 @@
     </div>
 </div>
 
+@if(! empty($dayNote))
+    <div class="alert alert-info py-2 px-3 mb-3 small d-flex align-items-center gap-2">
+        <i class="fas fa-sticky-note text-info fs-6"></i>
+        <div>
+            <strong>Overall Day Remarks:</strong> {{ $dayNote }}
+        </div>
+    </div>
+@endif
+
 @if(empty($groups))
     <div class="card">
         <div class="card-body text-center text-muted py-5">
