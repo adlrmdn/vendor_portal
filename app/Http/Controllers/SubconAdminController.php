@@ -661,14 +661,14 @@ class SubconAdminController extends Controller
         // with no confirmed PO yet, or vice versa.
         $addProcessPosByGroup = $production->addProcessPurchaseOrdersByGroup();
 
-        $rows = $rows->map(function ($r) use ($reportedKeys, $addProcessPosByGroup) {
+        $rows = $rows->map(function ($r) use ($reportedKeys, $addProcessPosByGroup, $production) {
             $r['reported'] = isset($reportedKeys[strtolower($r['production_group']).'|'.strtolower($r['operation'])]);
             $groupPos = $addProcessPosByGroup[$r['production_group']] ?? [];
             $r['addpro_pos'] = $groupPos;
             // Matched per THIS row's own operation, not just "the group has
             // some AddPro PO" — a group with two ADD-* steps can have a
             // confirmed PO for one and not the other.
-            $r['matched_po'] = $this->matchAddProcessPoForOperation($groupPos, $r['operation']);
+            $r['matched_po'] = $production->matchAddProcessPoForOperation($groupPos, $r['operation']);
 
             return $r;
         });
@@ -740,54 +740,6 @@ class SubconAdminController extends Controller
             'qcPipelineByOrder' => [],
             'addProcessMode' => $addProcessMode,
         ]);
-    }
-
-    /**
-     * Local equivalent of SubconProductionService::matchAddProcessPoForOperation()
-     * — that method exists only in this branch's uncommitted concurrent Add
-     * Process work, not in git history, so this controller can't depend on it
-     * directly (would fatal loading the Add Process work-orders list if this
-     * commit is ever deployed without that work also being committed). Same
-     * keyword-match-then-single-PO-fallback logic, duplicated here for the
-     * same reason App\Services\SubconOfficialReportService::gate() already
-     * inlined an equivalent — reconcile when that work is eventually committed.
-     *
-     * @param  array<int, array{po_number: string, description: ?string, ...}>  $pos
-     */
-    private function matchAddProcessPoForOperation(array $pos, string $operation): ?array
-    {
-        if (empty($pos)) {
-            return null;
-        }
-
-        $keyword = $this->addProcessKeyword($operation);
-
-        if (! empty($keyword)) {
-            foreach ($pos as $po) {
-                if (str_contains(strtolower((string) ($po['description'] ?? '')), strtolower($keyword))) {
-                    return $po;
-                }
-            }
-        }
-
-        return count($pos) === 1 ? $pos[0] : null;
-    }
-
-    /**
-     * Shared with matchAddProcessPoForOperation() — the "ADD-<suffix>" ->
-     * description-keyword derivation. Mirrors SubconProductionService::
-     * addProcessKeyword() exactly.
-     */
-    private function addProcessKeyword(string $operation): ?string
-    {
-        $operation = trim($operation);
-        if (stripos($operation, 'ADD-') !== 0) {
-            return null;
-        }
-
-        $keyword = trim(substr($operation, 4));
-
-        return $keyword !== '' ? $keyword : null;
     }
 
     /** Orders currently awaiting a cutting or gramasi approval decision. */
@@ -2480,6 +2432,14 @@ class SubconAdminController extends Controller
         $materialFlowAutoApprove = app(\App\Services\MaterialReturnService::class)->autoApproveActive();
 
         return view('subcon.admin.workflow', compact('cuttingApproverEmail', 'gramasiApproverEmail', 'labelGeneratorEmail', 'finalApproverEmail', 'qcHeadNotificationEmail', 'directorApproverEmail', 'directorApproverPhone', 'materialFlowAutoApprove'));
+    }
+
+    /**
+     * Interactive illustrated guidebook for subcon admin.
+     */
+    public function guidebook()
+    {
+        return view('subcon.admin.guidebook');
     }
 
     /**
