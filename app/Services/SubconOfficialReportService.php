@@ -104,7 +104,7 @@ class SubconOfficialReportService
         }
 
         $pos = $this->production->addProcessPurchaseOrdersForGroup($productionGroup);
-        $matchedPo = $this->production->matchAddProcessPoForOperation($pos, $operation);
+        $matchedPo = $this->matchAddProcessPoForOperation($pos, $operation);
 
         if (! $matchedPo) {
             return ['ok' => false, 'reason' => "{$operation} has no confirmed purchase order yet.", 'cmt_order' => $cmtOrder, 'matched_po' => null];
@@ -130,6 +130,13 @@ class SubconOfficialReportService
         $gate = $this->gate($productionGroup, $operation);
         if (! $gate['ok']) {
             throw new \RuntimeException($gate['reason']);
+        }
+
+        $existing = SubconOfficialReport::where('production_group', $productionGroup)
+            ->where('operation', $operation)
+            ->first();
+        if ($existing && ! $existing->isPendingHo()) {
+            throw new \RuntimeException("{$operation} already has an Official Report in progress or completed — it can't be re-sent from here.");
         }
 
         $matchedPo = $gate['matched_po'];
@@ -179,6 +186,10 @@ class SubconOfficialReportService
                 'additional_deduction' => $additionalDeduction,
                 'remarks' => $remarks,
                 'director_decline_reason' => null,
+                'ho_approval_signature' => null,
+                'ho_approved_at' => null,
+                'director_approval_signature' => null,
+                'director_approved_at' => null,
             ]
         );
     }
@@ -200,12 +211,24 @@ class SubconOfficialReportService
             $groups = $this->production->forProductionGroup($report->production_group);
             $first = $groups[0] ?? [];
 
+            // forProductionGroup() always hardcodes plm_id to '' — the real
+            // PLM link, when one exists, lives in plm_activity, same
+            // best-effort lookup send() already does (see its $plmId).
+            $plmId = null;
+            try {
+                $plmId = DB::connection('vsm')->table('plm_activity')
+                    ->where('ProductionGroup', $report->production_group)
+                    ->value('PLMId');
+            } catch (\Throwable $e) {
+                report($e);
+            }
+
             $bytes = \Barryvdh\DomPDF\Facade\Pdf::loadView('subcon.pdf.official-report', [
                 'report' => $report,
                 'articleName' => $first['article_name'] ?? null,
                 'deliveryPlan' => null,
                 'season' => $first['season'] ?? null,
-                'plmId' => $first['plm_id'] ?? null,
+                'plmId' => $plmId ?? ($first['plm_id'] ?? null),
             ])->setPaper('a4', 'portrait')->output();
 
             return 'data:application/pdf;base64,'.base64_encode($bytes);
@@ -301,6 +324,54 @@ class SubconOfficialReportService
         });
 
         $this->logResult($report, 'director_declined', "Director declined: {$reason}");
+    }
+
+    /**
+     * Local equivalent of SubconProductionService::matchAddProcessPoForOperation() —
+     * that method exists only in this branch's uncommitted concurrent Add Process
+     * work, not in git history, so gate() can't depend on it directly (would fatal
+     * if this commit range is ever deployed alone). Same keyword-match-then-single-
+     * PO-fallback logic, duplicated here for the same reason Task 2 already inlined
+     * an equivalent for resolveAddProcessLineUnitPrice() — reconcile when that work
+     * is eventually committed.
+     *
+     * @param  array<int, array{po_number: string, vendor_code: ?string, vendor_name?: ?string, description: ?string, status: ?string}>  $pos
+     * @return array{po_number: string, vendor_code: ?string, vendor_name?: ?string, description: ?string, status: ?string}|null
+     */
+    private function matchAddProcessPoForOperation(array $pos, string $operation): ?array
+    {
+        if (empty($pos)) {
+            return null;
+        }
+
+        $keyword = $this->addProcessKeyword($operation);
+
+        if (! empty($keyword)) {
+            foreach ($pos as $po) {
+                if (str_contains(strtolower((string) ($po['description'] ?? '')), strtolower($keyword))) {
+                    return $po;
+                }
+            }
+        }
+
+        return count($pos) === 1 ? $pos[0] : null;
+    }
+
+    /**
+     * Shared with matchAddProcessPoForOperation() — the "ADD-<suffix>" ->
+     * description-keyword derivation. Mirrors
+     * SubconProductionService::addProcessKeyword() exactly.
+     */
+    private function addProcessKeyword(string $operation): ?string
+    {
+        $operation = trim($operation);
+        if (stripos($operation, 'ADD-') !== 0) {
+            return null;
+        }
+
+        $keyword = trim(substr($operation, 4));
+
+        return $keyword !== '' ? $keyword : null;
     }
 
     /** Audit trail via SubconJobLog, spec §3 — job_type "official_report:{operation}". */
