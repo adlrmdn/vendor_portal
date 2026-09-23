@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\SubconAddProcessReport;
+use App\Models\SubconJobLog;
 use App\Models\SubconOfficialReport;
 use App\Models\SubconOrder;
 use Illuminate\Support\Facades\DB;
@@ -213,5 +214,92 @@ class SubconOfficialReportService
 
             return null;
         }
+    }
+
+    /**
+     * MD Production approves — first send or a post-decline resend (same
+     * method either way, spec §6's "no HO-decline route" note). Deduction/
+     * remarks are only overwritten when explicitly passed (the revision
+     * case); recomputes reject_penalty/total off any new additional
+     * deduction so the signed PDF always reflects the figures being signed.
+     */
+    public function applyHoApproval(SubconOfficialReport $report, string $approver, ?float $additionalDeduction = null, ?string $remarks = null): void
+    {
+        DB::transaction(function () use ($report, $approver, $additionalDeduction, $remarks) {
+            if ($additionalDeduction !== null) {
+                $report->additional_deduction = $additionalDeduction;
+            }
+            if ($remarks !== null) {
+                $report->remarks = $remarks;
+            }
+
+            $report->ho_approval_signature = "Digitally Signed: {$approver}";
+            $report->ho_approved_at = now();
+            $report->status = SubconOfficialReport::STATUS_PENDING_DIRECTOR;
+            $report->save();
+        });
+
+        $this->logResult($report, 'ho_approved', "HO approved by {$approver}.");
+    }
+
+    /**
+     * Director approves — terminal. Renders the PDF once (signature is now
+     * complete on the HO side, still pending on the Director side... but the
+     * approval write happens first so the rendered PDF reflects BOTH
+     * signatures), then queues Invoice + Deduction RPA (spec §10). RPA
+     * queueing is best-effort and never blocks the approval itself — a
+     * queueing failure is logged, not thrown.
+     */
+    public function applyDirectorApproval(SubconOfficialReport $report, string $approver): void
+    {
+        DB::transaction(function () use ($report, $approver) {
+            $report->director_approval_signature = "Digitally Signed: {$approver}";
+            $report->director_approved_at = now();
+            $report->status = SubconOfficialReport::STATUS_COMPLETED;
+            $report->save();
+        });
+
+        $signedDoc = $this->renderPdfDataUri($report);
+        if ($signedDoc !== null) {
+            $rpaQueue = app(RpaQueueService::class);
+            $rpaQueue->queueOfficialReportInvoice($report, $signedDoc);
+            $rpaQueue->queueOfficialReportDeduction($report, $signedDoc);
+        } else {
+            \Illuminate\Support\Facades\Log::warning("Official Report {$report->id}: director approved but PDF render failed — RPA not queued.");
+        }
+
+        $this->logResult($report, 'director_approved', "Director approved by {$approver}.");
+    }
+
+    /**
+     * Director declines — back to pending_ho for MD Production to revise,
+     * never back to a QC stage (there isn't one) and never a bare resend
+     * (spec §4). revision_count increments so the UI can tell a first send
+     * from a resend (SubconOfficialReport::needsRevision()).
+     */
+    public function applyDirectorDecline(SubconOfficialReport $report, string $reason): void
+    {
+        DB::transaction(function () use ($report, $reason) {
+            $report->status = SubconOfficialReport::STATUS_PENDING_HO;
+            $report->revision_count = $report->revision_count + 1;
+            $report->director_decline_reason = $reason;
+            $report->save();
+        });
+
+        $this->logResult($report, 'director_declined', "Director declined: {$reason}");
+    }
+
+    /** Audit trail via SubconJobLog, spec §3 — job_type "official_report:{operation}". */
+    private function logResult(SubconOfficialReport $report, string $status, string $message): void
+    {
+        $order = SubconOrder::where('production_group', $report->production_group)->first();
+
+        SubconJobLog::create([
+            'order_id' => $order?->id,
+            'order_number' => $order?->order_number ?? $report->production_group,
+            'job_type' => "official_report:{$report->operation}",
+            'status' => $status,
+            'message' => $message,
+        ]);
     }
 }
