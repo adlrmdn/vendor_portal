@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\SubconAddProcessReport;
+use App\Models\SubconOfficialReport;
+use App\Models\SubconOrder;
 
 /**
  * Business logic for the Official Report (Berita Acara) — the per-Add-Process-
@@ -72,5 +74,96 @@ class SubconOfficialReportService
             'reject_penalty' => $rejectPenalty,
             'total_deduction' => $rejectPenalty + $additionalDeduction,
         ];
+    }
+
+    /**
+     * §5 of the spec: both checks must pass before a send/resend is allowed.
+     * Re-run on every send/resend POST, not just hidden client-side.
+     *
+     * @return array{ok: bool, reason: ?string, cmt_order: ?SubconOrder, matched_po: ?array}
+     */
+    public function gate(string $productionGroup, string $operation): array
+    {
+        $cmtOrder = SubconOrder::where('production_group', $productionGroup)->first();
+
+        if ($cmtOrder) {
+            if (in_array($cmtOrder->workflow_stage, [
+                SubconOrder::STAGE_CUTTING,
+                SubconOrder::STAGE_CUTTING_REVIEW,
+            ], true)) {
+                return ['ok' => false, 'reason' => 'Cutting has not been approved yet for this work order.', 'cmt_order' => $cmtOrder, 'matched_po' => null];
+            }
+        } else {
+            $cutQuantities = $this->production->cutQuantitiesForGroup($productionGroup);
+            $hasCutQty = collect($cutQuantities)->contains(fn ($c) => ($c['good'] ?? 0) > 0);
+            if (! $hasCutQty) {
+                return ['ok' => false, 'reason' => 'The D365 cut qty job sync is still blank for this in-house production group.', 'cmt_order' => null, 'matched_po' => null];
+            }
+        }
+
+        $pos = $this->production->addProcessPurchaseOrdersForGroup($productionGroup);
+        $matchedPo = $this->production->matchAddProcessPoForOperation($pos, $operation);
+
+        if (! $matchedPo) {
+            return ['ok' => false, 'reason' => "{$operation} has no confirmed purchase order yet.", 'cmt_order' => $cmtOrder, 'matched_po' => null];
+        }
+
+        if (strcasecmp($matchedPo['status'] ?? '', 'Invoiced') === 0) {
+            return ['ok' => false, 'reason' => "{$operation}'s purchase order ({$matchedPo['po_number']}) is already invoiced — reporting is closed.", 'cmt_order' => $cmtOrder, 'matched_po' => $matchedPo];
+        }
+
+        return ['ok' => true, 'reason' => null, 'cmt_order' => $cmtOrder, 'matched_po' => $matchedPo];
+    }
+
+    /**
+     * First send (no row exists yet) or resend (existing pending_ho row,
+     * typically after a Director decline — revision_count is NOT
+     * incremented here, only on decline; see applyDirectorDecline()).
+     * Creates/updates the row directly in pending_ho and emails MD
+     * Production. Throws \RuntimeException (message = gate()'s reason) when
+     * blocked — callers turn that into a flash error.
+     */
+    public function send(string $productionGroup, string $operation, float $additionalDeduction, ?string $remarks, ?float $salesPriceOverride = null): SubconOfficialReport
+    {
+        $gate = $this->gate($productionGroup, $operation);
+        if (! $gate['ok']) {
+            throw new \RuntimeException($gate['reason']);
+        }
+
+        $matchedPo = $gate['matched_po'];
+        $yield = $this->computeYield($productionGroup, $operation);
+
+        $salesPrice = $salesPriceOverride;
+        $salesPriceSource = $salesPrice !== null ? 'manual' : null;
+        if ($salesPrice === null) {
+            $groups = $this->production->forProductionGroup($productionGroup);
+            $plmId = collect($groups)->pluck('plm_id')->filter()->first();
+            $salesPrice = $plmId ? $this->d365->fetchSalesPrice((string) $plmId) : null;
+            $salesPriceSource = $salesPrice !== null ? 'd365' : null;
+        }
+
+        $deduction = $this->computeDeduction($yield['cut_qty'], $yield['reject_qty'], (float) ($salesPrice ?? 0), $additionalDeduction);
+
+        return SubconOfficialReport::updateOrCreate(
+            ['production_group' => $productionGroup, 'operation' => $operation],
+            [
+                'status' => SubconOfficialReport::STATUS_PENDING_HO,
+                'matched_po_number' => $matchedPo['po_number'] ?? null,
+                'matched_po_vendor_code' => $matchedPo['vendor_code'] ?? null,
+                'matched_po_vendor_name' => $matchedPo['vendor_name'] ?? null,
+                'order_qty' => $yield['order_qty'],
+                'cut_qty' => $yield['cut_qty'],
+                'good_qty' => $yield['good_qty'],
+                'reject_qty' => $yield['reject_qty'],
+                'sales_price' => $salesPrice,
+                'sales_price_source' => $salesPriceSource,
+                'allowed_limit' => $deduction['allowed_limit'],
+                'exceeding_reject_qty' => $deduction['exceeding_reject_qty'],
+                'penalty_price' => $deduction['penalty_price'],
+                'reject_penalty' => $deduction['reject_penalty'],
+                'additional_deduction' => $additionalDeduction,
+                'remarks' => $remarks,
+            ]
+        );
     }
 }
