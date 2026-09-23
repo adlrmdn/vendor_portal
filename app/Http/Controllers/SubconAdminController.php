@@ -829,7 +829,12 @@ class SubconAdminController extends Controller
                 'material_return_status' => null,
                 'director_rejected' => false,
                 'revision_count' => $r->revision_count,
-                'action_url' => route('subcon.admin.official-reports.ho-approve', $r->id),
+                // Points at the signed GET confirm page (hoApproveSigned),
+                // not the raw POST endpoint — that page is where MD
+                // Production actually edits additional_deduction/remarks
+                // before resending; a bare POST with no fields would just
+                // silently re-send the exact same already-rejected figures.
+                'action_url' => url(\Illuminate\Support\Facades\URL::signedRoute('subcon.official-report.ho-approve', ['report' => $r->id], absolute: false)),
             ])->all();
 
         if ($search !== '') {

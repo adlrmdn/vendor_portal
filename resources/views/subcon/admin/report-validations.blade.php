@@ -115,17 +115,13 @@
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
                                     @if($isOfficialReport)
-                                        {{-- hoApproveInApp is POST-only (no GET form to link to) —
-                                             submits as-is to resend the already-revised figures to
-                                             the Director, same one-click-POST-form pattern as
-                                             subcon/admin/approvals.blade.php's Approve button. --}}
-                                        <form method="POST" action="{{ $p['action_url'] }}" class="m-0"
-                                              onsubmit="return confirm('Resend this Official Report ({{ $p['order_number'] }}) to the Director?');">
-                                            @csrf
-                                            <button type="submit" class="btn btn-sm btn-primary">
-                                                <i class="fas fa-rotate me-1"></i> Revise &amp; Resend
-                                            </button>
-                                        </form>
+                                        {{-- Opens the signed confirm page (hoApproveSigned) where
+                                             MD Production can actually edit additional_deduction/
+                                             remarks before resending — same signed-link pattern as
+                                             the email flow, just generated in-app instead of mailed. --}}
+                                        <a href="{{ $p['action_url'] }}" class="btn btn-sm btn-primary" target="_blank" rel="noopener">
+                                            <i class="fas fa-rotate me-1"></i> Revise &amp; Resend
+                                        </a>
                                     @else
                                         {{-- The inspection report as it currently stands — rendered
                                              fresh from current data on every open. --}}
