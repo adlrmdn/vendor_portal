@@ -78,7 +78,11 @@ class SubconOfficialReportController extends Controller
             'approver' => 'required|string|max:255',
         ]);
 
-        $this->reports->applyHoApproval($model, $data['approver'], isset($data['additional_deduction']) ? (float) $data['additional_deduction'] : null, $data['remarks'] ?? null);
+        try {
+            $this->reports->applyHoApproval($model, $data['approver'], isset($data['additional_deduction']) ? (float) $data['additional_deduction'] : null, $data['remarks'] ?? null);
+        } catch (\RuntimeException $e) {
+            return view('approvals.result', ['success' => false, 'message' => $e->getMessage()]);
+        }
         $this->emailDirector($model->fresh());
 
         return view('approvals.result', ['success' => true, 'message' => 'Approved. Sent to the Director for authorization.']);
@@ -94,7 +98,11 @@ class SubconOfficialReportController extends Controller
         ]);
 
         $approver = Auth::user()->name ?? Auth::user()->email;
-        $this->reports->applyHoApproval($model, $approver, isset($data['additional_deduction']) ? (float) $data['additional_deduction'] : null, $data['remarks'] ?? null);
+        try {
+            $this->reports->applyHoApproval($model, $approver, isset($data['additional_deduction']) ? (float) $data['additional_deduction'] : null, $data['remarks'] ?? null);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
         $this->emailDirector($model->fresh());
 
         return back()->with('success', 'Approved — sent to the Director.');
@@ -122,7 +130,11 @@ class SubconOfficialReportController extends Controller
         $model = SubconOfficialReport::findOrFail($report);
         $data = $request->validate(['approver' => 'required|string|max:255']);
 
-        $this->reports->applyDirectorApproval($model, $data['approver']);
+        try {
+            $this->reports->applyDirectorApproval($model, $data['approver']);
+        } catch (\RuntimeException $e) {
+            return view('approvals.result', ['success' => false, 'message' => $e->getMessage()]);
+        }
 
         return view('approvals.result', ['success' => true, 'message' => 'Authorized. Invoice/Deduction have been queued.']);
     }
@@ -133,7 +145,11 @@ class SubconOfficialReportController extends Controller
         $model = SubconOfficialReport::findOrFail($id);
         $approver = Auth::user()->name ?? Auth::user()->email;
 
-        $this->reports->applyDirectorApproval($model, $approver);
+        try {
+            $this->reports->applyDirectorApproval($model, $approver);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
 
         return back()->with('success', 'Authorized — Invoice/Deduction queued.');
     }
@@ -159,7 +175,11 @@ class SubconOfficialReportController extends Controller
         $model = SubconOfficialReport::findOrFail($report);
         $data = $request->validate(['reason' => 'required|string|max:1000']);
 
-        $this->reports->applyDirectorDecline($model, $data['reason']);
+        try {
+            $this->reports->applyDirectorDecline($model, $data['reason']);
+        } catch (\RuntimeException $e) {
+            return view('approvals.result', ['success' => false, 'message' => $e->getMessage()]);
+        }
         $this->emailHoDeclined($model->fresh());
 
         return view('approvals.result', ['success' => true, 'message' => 'Declined. MD Production has been notified to revise and resend.']);
@@ -171,7 +191,11 @@ class SubconOfficialReportController extends Controller
         $model = SubconOfficialReport::findOrFail($id);
         $data = $request->validate(['reason' => 'required|string|max:1000']);
 
-        $this->reports->applyDirectorDecline($model, $data['reason']);
+        try {
+            $this->reports->applyDirectorDecline($model, $data['reason']);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
         $this->emailHoDeclined($model->fresh());
 
         return back()->with('success', 'Declined — MD Production notified.');

@@ -227,6 +227,10 @@ class SubconOfficialReportService
      */
     public function applyHoApproval(SubconOfficialReport $report, string $approver, ?float $additionalDeduction = null, ?string $remarks = null): void
     {
+        if (! $report->isPendingHo()) {
+            throw new \RuntimeException('This report is no longer awaiting MD Production approval.');
+        }
+
         DB::transaction(function () use ($report, $approver, $additionalDeduction, $remarks) {
             if ($additionalDeduction !== null) {
                 $report->additional_deduction = $additionalDeduction;
@@ -254,6 +258,10 @@ class SubconOfficialReportService
      */
     public function applyDirectorApproval(SubconOfficialReport $report, string $approver): void
     {
+        if (! $report->isPendingDirector()) {
+            throw new \RuntimeException('This report is no longer awaiting Director authorization.');
+        }
+
         DB::transaction(function () use ($report, $approver) {
             $report->director_approval_signature = "Digitally Signed: {$approver}";
             $report->director_approved_at = now();
@@ -281,6 +289,10 @@ class SubconOfficialReportService
      */
     public function applyDirectorDecline(SubconOfficialReport $report, string $reason): void
     {
+        if (! $report->isPendingDirector()) {
+            throw new \RuntimeException('This report is no longer awaiting Director authorization.');
+        }
+
         DB::transaction(function () use ($report, $reason) {
             $report->status = SubconOfficialReport::STATUS_PENDING_HO;
             $report->revision_count = $report->revision_count + 1;

@@ -126,6 +126,84 @@ class SubconOfficialReportFlowTest extends TestCase
         $this->assertSame(10000.0, $report->additional_deduction);
     }
 
+    /**
+     * The actual reported vulnerability: URL::signedRoute() produces a
+     * non-expiring signature, so a stale HO-approve email link stays valid
+     * forever. If clicked after the Director has already approved, it must
+     * not be able to regress status back to pending_director or overwrite
+     * the (now terminal) signature/timestamp — the service's isPendingHo()
+     * guard must reject it.
+     */
+    public function test_replayed_signed_ho_approve_link_after_completion_does_not_regress_status()
+    {
+        Mail::fake();
+        $this->seedSettings();
+        $admin = $this->admin();
+
+        $this->actingAs($admin)->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.official-reports.send'), ['production_group' => 'MPG/PRG/2512/000014', 'operation' => 'ADD-Was']);
+        $report = SubconOfficialReport::where('production_group', 'MPG/PRG/2512/000014')->where('operation', 'ADD-Was')->firstOrFail();
+
+        $this->actingAs($admin)->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.official-reports.ho-approve', $report->id), []);
+        $this->actingAs($admin)->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.official-reports.director-approve', $report->id), []);
+
+        $report->refresh();
+        $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status);
+        $completedHoSignature = $report->ho_approval_signature;
+        $completedHoApprovedAt = $report->ho_approved_at;
+
+        // A NEW signed link generated now (simulating the original stale
+        // email link, which never expires) still targets the same report id.
+        $staleUrl = \Illuminate\Support\Facades\URL::signedRoute('subcon.official-report.ho-approve.submit', ['report' => $report->id], absolute: false);
+
+        $replayResponse = $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post($staleUrl, ['approver' => 'Replay Attacker']);
+
+        $replayResponse->assertOk();
+        $replayResponse->assertViewIs('approvals.result');
+        $replayResponse->assertViewHas('success', false);
+        $replayResponse->assertSee('This report is no longer awaiting MD Production approval.');
+
+        $report->refresh();
+        $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status, 'replay must not regress status');
+        $this->assertSame($completedHoSignature, $report->ho_approval_signature, 'replay must not overwrite the signature');
+        $this->assertEquals($completedHoApprovedAt, $report->ho_approved_at, 'replay must not overwrite the timestamp');
+    }
+
+    /** Same replay-guard class, but for a Director-decline hitting an already-completed report (in-app entry point). */
+    public function test_director_decline_on_completed_report_is_rejected_in_app()
+    {
+        Mail::fake();
+        $this->seedSettings();
+        $admin = $this->admin();
+
+        $this->actingAs($admin)->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.official-reports.send'), ['production_group' => 'MPG/PRG/2512/000014', 'operation' => 'ADD-Was']);
+        $report = SubconOfficialReport::where('production_group', 'MPG/PRG/2512/000014')->where('operation', 'ADD-Was')->firstOrFail();
+
+        $this->actingAs($admin)->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.official-reports.ho-approve', $report->id), []);
+        $this->actingAs($admin)->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.official-reports.director-approve', $report->id), []);
+
+        $report->refresh();
+        $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status);
+
+        $replayResponse = $this->actingAs($admin)
+            ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class)
+            ->post(route('subcon.admin.official-reports.director-decline', $report->id), ['reason' => 'Replayed decline attempt.']);
+
+        $replayResponse->assertSessionHas('error');
+        $replayResponse->assertSessionMissing('success');
+
+        $report->refresh();
+        $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status, 'replay must not regress status');
+        $this->assertSame(0, $report->revision_count, 'replay must not increment revision_count');
+        $this->assertNull($report->director_decline_reason);
+    }
+
     public function test_send_blocked_when_gate_fails()
     {
         $admin = $this->admin();

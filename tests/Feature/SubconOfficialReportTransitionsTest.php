@@ -110,4 +110,76 @@ class SubconOfficialReportTransitionsTest extends TestCase
             'order_number' => 'MPG/PRG/2512/000014',
         ]);
     }
+
+    // --- Replay guards (a stale, non-expiring signed email link clicked after
+    // the report has already moved past the stage it targets must not be able
+    // to regress status or overwrite a later signature) ---
+
+    public function test_ho_approval_rejects_a_report_that_is_not_pending_ho()
+    {
+        $report = $this->makeReport([
+            'status' => SubconOfficialReport::STATUS_COMPLETED,
+            'ho_approval_signature' => 'Digitally Signed: Ika',
+            'director_approval_signature' => 'Digitally Signed: The Director',
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('This report is no longer awaiting MD Production approval.');
+
+        try {
+            $this->service()->applyHoApproval($report, 'Replay Attacker');
+        } finally {
+            $report->refresh();
+            $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status);
+            $this->assertSame('Digitally Signed: Ika', $report->ho_approval_signature);
+        }
+    }
+
+    public function test_director_approval_rejects_a_report_that_is_not_pending_director_and_does_not_double_queue_rpa()
+    {
+        // Seed a REAL completion first (this legitimately queues one
+        // invoice_addprocess row), then simulate a stale signed link being
+        // clicked again on the now-completed report.
+        $report = $this->makeReport(['status' => SubconOfficialReport::STATUS_PENDING_DIRECTOR, 'ho_approval_signature' => 'Digitally Signed: Ika']);
+        $this->service()->applyDirectorApproval($report, 'The Director');
+        $report->refresh();
+        $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('This report is no longer awaiting Director authorization.');
+
+        try {
+            $this->service()->applyDirectorApproval($report, 'Replay Attacker');
+        } finally {
+            $report->refresh();
+            $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status);
+            $this->assertSame('Digitally Signed: The Director', $report->director_approval_signature);
+            $this->assertSame(1, DB::connection('rpa')->table('rpa_queues')
+                ->where('entity_id', 'MPG/PRG/2512/000014:ADD-Was')
+                ->where('rpa_type', 'invoice_addprocess')
+                ->count());
+        }
+    }
+
+    public function test_director_decline_rejects_a_report_that_is_not_pending_director()
+    {
+        $report = $this->makeReport([
+            'status' => SubconOfficialReport::STATUS_COMPLETED,
+            'ho_approval_signature' => 'Digitally Signed: Ika',
+            'director_approval_signature' => 'Digitally Signed: The Director',
+            'revision_count' => 0,
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('This report is no longer awaiting Director authorization.');
+
+        try {
+            $this->service()->applyDirectorDecline($report, 'Replayed decline attempt.');
+        } finally {
+            $report->refresh();
+            $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status);
+            $this->assertSame(0, $report->revision_count);
+            $this->assertNull($report->director_decline_reason);
+        }
+    }
 }
