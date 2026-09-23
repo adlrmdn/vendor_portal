@@ -5,11 +5,13 @@ namespace Tests\Feature;
 use App\Mail\SubconOfficialReportApprovalMailable;
 use App\Mail\SubconOfficialReportDeclinedMailable;
 use App\Models\SubconOfficialReport;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 class SubconOfficialReportMailTest extends TestCase
 {
+    use RefreshDatabase;
     public function test_approval_mailable_renders_for_ho_and_director_stages()
     {
         Mail::fake();
