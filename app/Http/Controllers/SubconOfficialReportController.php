@@ -142,6 +142,7 @@ class SubconOfficialReportController extends Controller
     public function directorApproveInApp(Request $request, string $id)
     {
         $this->authorizeAdmin();
+        $this->authorizeDirector();
         $model = SubconOfficialReport::findOrFail($id);
         $approver = Auth::user()->name ?? Auth::user()->email;
 
@@ -188,6 +189,7 @@ class SubconOfficialReportController extends Controller
     public function directorDeclineInApp(Request $request, string $id)
     {
         $this->authorizeAdmin();
+        $this->authorizeDirector();
         $model = SubconOfficialReport::findOrFail($id);
         $data = $request->validate(['reason' => 'required|string|max:1000']);
 
@@ -207,6 +209,20 @@ class SubconOfficialReportController extends Controller
     {
         if (! in_array(Auth::user()->role ?? '', ['admin', 'subcon_admin'], true)) {
             abort(403, 'Unauthorized access.');
+        }
+    }
+
+    /**
+     * Route-level defense-in-depth matching SubconAdminController's UI-level
+     * gate: the Director Approvals tab only shows Authorize/Reject actions to
+     * a configured Director (SubconAdminController::isDirectorUser()), but
+     * without this check any subcon admin could still POST directly to these
+     * in-app routes and sign as Director. See final-review Fix 4.
+     */
+    private function authorizeDirector(): void
+    {
+        if (! SubconAdminController::isDirectorUser(Auth::user())) {
+            abort(403, 'Only the Director can authorize/reject this report.');
         }
     }
 
