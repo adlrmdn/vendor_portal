@@ -155,6 +155,15 @@ Route::post('/tolerance/approve-submit/{request}', [App\Http\Controllers\Approva
 Route::get('/tolerance/decline/{request}', [App\Http\Controllers\ApprovalController::class, 'declineAmendment'])->name('tolerance.decline')->middleware('signed:relative');
 Route::post('/tolerance/decline-submit/{request}', [App\Http\Controllers\ApprovalController::class, 'declineAmendmentSubmit'])->name('tolerance.decline.submit')->middleware('signed:relative');
 
+// Official Report (Berita Acara) approval links (Signed URLs from approval emails)
+// Relative signature, same reasoning as the tolerance/subcon links above.
+Route::get('/subcon/official-report/{report}/ho-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'hoApproveSigned'])->name('subcon.official-report.ho-approve')->middleware('signed:relative');
+Route::post('/subcon/official-report/{report}/ho-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'hoApproveSubmit'])->name('subcon.official-report.ho-approve.submit')->middleware('signed:relative');
+Route::get('/subcon/official-report/{report}/director-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'directorApproveSigned'])->name('subcon.official-report.director-approve')->middleware('signed:relative');
+Route::post('/subcon/official-report/{report}/director-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'directorApproveSubmit'])->name('subcon.official-report.director-approve.submit')->middleware('signed:relative');
+Route::get('/subcon/official-report/{report}/director-decline', [App\Http\Controllers\SubconOfficialReportController::class, 'directorDeclineSigned'])->name('subcon.official-report.director-decline')->middleware('signed:relative');
+Route::post('/subcon/official-report/{report}/director-decline', [App\Http\Controllers\SubconOfficialReportController::class, 'directorDeclineSubmit'])->name('subcon.official-report.director-decline.submit')->middleware('signed:relative');
+
 // Subcon Admin Routes
 Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->name('subcon.admin.')->group(function () {
     Route::get('/dashboard', [SubconAdminController::class, 'dashboard'])->name('dashboard');
@@ -207,6 +216,12 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     // production groups too (they have no SubconOrder at all).
     Route::get('/add-process', [SubconAddProcessController::class, 'index'])->name('add-process.index');
     Route::post('/add-process', [SubconAddProcessController::class, 'submit'])->name('add-process.submit');
+
+    // Official Report (Berita Acara) — in-app send/HO-approve/Director-approve/decline.
+    Route::post('/official-reports/send', [App\Http\Controllers\SubconOfficialReportController::class, 'send'])->name('official-reports.send');
+    Route::post('/official-reports/{id}/ho-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'hoApproveInApp'])->name('official-reports.ho-approve');
+    Route::post('/official-reports/{id}/director-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'directorApproveInApp'])->name('official-reports.director-approve');
+    Route::post('/official-reports/{id}/director-decline', [App\Http\Controllers\SubconOfficialReportController::class, 'directorDeclineInApp'])->name('official-reports.director-decline');
 });
 
 // Subcon Approval Routes (Signed URLs from approval emails)
