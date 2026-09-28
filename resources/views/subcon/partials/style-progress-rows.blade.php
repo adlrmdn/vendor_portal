@@ -263,11 +263,7 @@
                                         <div class="fw-semibold">{{ $cd['day_value'] !== null ? number_format($cd['day_value']) : '—' }}</div>
                                     @endif
                                     <div class="dp-sofar">
-                                        @if($size['target_qty'] > 0)
-                                            {{ number_format($cd['cumulative']) }} of {{ number_format($size['target_qty']) }} made
-                                        @else
-                                            {{ number_format($cd['cumulative']) }} made
-                                        @endif
+                                        {{ number_format($cd['cumulative']) }} cut
                                     </div>
                                 </td>
                             @endforeach
@@ -277,16 +273,23 @@
                             <td class="text-end dp-cutting-total">
                                 <div class="fw-semibold">{{ $rowCuttingDaySum !== null ? number_format($rowCuttingDaySum) : '—' }}</div>
                                 <div class="dp-sofar">
-                                    @if($size['target_qty'] > 0)
-                                        {{ number_format($rowCuttingCum) }} of {{ number_format($size['target_qty']) }} made
-                                    @else
-                                        {{ number_format($rowCuttingCum) }} made
-                                    @endif
+                                    {{ number_format($rowCuttingCum) }} cut
                                 </div>
                             </td>
 
+                            @php
+                                $stagePrevTargets = [
+                                    'sewing' => $rowCuttingCum,
+                                    'finishing' => (int) ($size['stages']['sewing']['cumulative'] ?? 0),
+                                    'qc' => (int) ($size['stages']['finishing']['cumulative'] ?? 0),
+                                    'packing' => (int) ($size['stages']['qc']['cumulative'] ?? 0),
+                                ];
+                            @endphp
                             @foreach($flatStages + $finishingStages as $key => $label)
-                                @php $sd = $size['stages'][$key]; @endphp
+                                @php
+                                    $sd = $size['stages'][$key];
+                                    $stageTarget = $stagePrevTargets[$key] ?? 0;
+                                @endphp
                                 <td class="text-end {{ array_key_exists($key, $finishingStages) ? 'dp-finishing-cell' : '' }}">
                                     @if($editable)
                                         <input type="number" min="0" step="1" inputmode="numeric" autocomplete="off" placeholder="0"
@@ -298,8 +301,8 @@
                                         <div class="fw-semibold">{{ $sd['day_value'] !== null ? number_format($sd['day_value']) : '—' }}</div>
                                     @endif
                                     <div class="dp-sofar">
-                                        @if($size['target_qty'] > 0)
-                                            {{ number_format($sd['cumulative']) }} of {{ number_format($size['target_qty']) }} made
+                                        @if($stageTarget > 0)
+                                            {{ number_format($sd['cumulative']) }} of {{ number_format($stageTarget) }} made
                                         @else
                                             {{ number_format($sd['cumulative']) }} made
                                         @endif
@@ -323,11 +326,7 @@
                                 <td class="text-end dp-ratio-cell">
                                     {{ $ratioSums[$r]['day'] !== null ? number_format($ratioSums[$r]['day']) : '—' }}
                                     <div class="dp-sofar">
-                                        @if($targetSum > 0)
-                                            {{ number_format($ratioSums[$r]['cum']) }} of {{ number_format($targetSum) }} made
-                                        @else
-                                            {{ number_format($ratioSums[$r]['cum']) }} made
-                                        @endif
+                                        {{ number_format($ratioSums[$r]['cum']) }} cut
                                     </div>
                                 </td>
                             @endforeach
@@ -337,19 +336,26 @@
                             <td class="text-end dp-cutting-total">
                                 {{ $cuttingTotalDaySum !== null ? number_format($cuttingTotalDaySum) : '—' }}
                                 <div class="dp-sofar">
-                                    @if($targetSum > 0)
-                                        {{ number_format($cuttingTotalCum) }} of {{ number_format($targetSum) }} made
-                                    @else
-                                        {{ number_format($cuttingTotalCum) }} made
-                                    @endif
+                                    {{ number_format($cuttingTotalCum) }} cut
                                 </div>
                             </td>
+                            @php
+                                $totalStagePrevTargets = [
+                                    'sewing' => $cuttingTotalCum,
+                                    'finishing' => (int) ($stageSums['sewing']['cum'] ?? 0),
+                                    'qc' => (int) ($stageSums['finishing']['cum'] ?? 0),
+                                    'packing' => (int) ($stageSums['qc']['cum'] ?? 0),
+                                ];
+                            @endphp
                             @foreach($flatStages + $finishingStages as $key => $label)
+                                @php
+                                    $totalTarget = $totalStagePrevTargets[$key] ?? 0;
+                                @endphp
                                 <td class="text-end {{ array_key_exists($key, $finishingStages) ? 'dp-finishing-cell' : '' }}">
                                     {{ $stageSums[$key]['day'] !== null ? number_format($stageSums[$key]['day']) : '—' }}
                                     <div class="dp-sofar">
-                                        @if($targetSum > 0)
-                                            {{ number_format($stageSums[$key]['cum']) }} of {{ number_format($targetSum) }} made
+                                        @if($totalTarget > 0)
+                                            {{ number_format($stageSums[$key]['cum']) }} of {{ number_format($totalTarget) }} made
                                         @else
                                             {{ number_format($stageSums[$key]['cum']) }} made
                                         @endif

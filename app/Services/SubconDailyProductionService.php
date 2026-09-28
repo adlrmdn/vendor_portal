@@ -363,11 +363,10 @@ class SubconDailyProductionService
     }
 
     /**
-     * True once every sized line's Packing cumulative — the last of the
-     * three real steps Finishing & Packing now breaks down into (Finishing
-     * → QC → Packing) — has reached its production_group_lines target qty.
-     * Sizes with no resolvable target (0) are skipped rather than blocking
-     * forever.
+     * True once every sized line's Packing cumulative — the terminal step of the
+     * sequential flow (Cutting → Sewing → Finishing → QC → Packing) — has reached
+     * the actual production cut quantity (or the PO target qty if cutting wasn't logged).
+     * Sizes with no resolvable target (0) are skipped rather than blocking forever.
      */
     public function isReadyToClose(array $forOrderResult): bool
     {
@@ -377,9 +376,11 @@ class SubconDailyProductionService
         }
 
         $finishingTotals = $forOrderResult['totals'][SubconDailyProductionEntry::STAGE_PACKING] ?? [];
+        $cuttingTotals = $forOrderResult['totals'][SubconDailyProductionEntry::STAGE_CUTTING] ?? [];
         $sawTarget = false;
         foreach ($sizes as $s) {
-            $target = (float) $s['target_qty'];
+            $cutQty = (float) ($cuttingTotals[$s['prod_id']] ?? 0);
+            $target = $cutQty > 0 ? $cutQty : (float) $s['target_qty'];
             if ($target <= 0) {
                 continue;
             }

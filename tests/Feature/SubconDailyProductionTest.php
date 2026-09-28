@@ -379,4 +379,119 @@ class SubconDailyProductionTest extends TestCase
             'cutting_qty' => 60,
         ]);
     }
+
+    public function test_tiered_flow_progress_display_for_stages()
+    {
+        $today = now()->toDateString();
+
+        // 1. Cutting: 50 for PROD-S, 60 for PROD-M (Total Cutting = 110)
+        SubconDailyProductionEntry::create([
+            'order_id' => $this->order->id,
+            'order_number' => $this->order->order_number,
+            'vendor_name' => $this->vendor->name,
+            'stage' => SubconDailyProductionEntry::STAGE_CUTTING,
+            'ratio_label' => 'Ratio 1',
+            'prod_id' => 'PROD-S',
+            'size' => 'S',
+            'entry_date' => $today,
+            'quantity' => 50,
+        ]);
+        SubconDailyProductionEntry::create([
+            'order_id' => $this->order->id,
+            'order_number' => $this->order->order_number,
+            'vendor_name' => $this->vendor->name,
+            'stage' => SubconDailyProductionEntry::STAGE_CUTTING,
+            'ratio_label' => 'Ratio 1',
+            'prod_id' => 'PROD-M',
+            'size' => 'M',
+            'entry_date' => $today,
+            'quantity' => 60,
+        ]);
+
+        // 2. Sewing: 30 for PROD-S (Preceding stage is Cutting: 50)
+        SubconDailyProductionEntry::create([
+            'order_id' => $this->order->id,
+            'order_number' => $this->order->order_number,
+            'vendor_name' => $this->vendor->name,
+            'stage' => SubconDailyProductionEntry::STAGE_SEWING,
+            'prod_id' => 'PROD-S',
+            'size' => 'S',
+            'entry_date' => $today,
+            'quantity' => 30,
+        ]);
+
+        // 3. Finishing: 20 for PROD-S (Preceding stage is Sewing: 30)
+        SubconDailyProductionEntry::create([
+            'order_id' => $this->order->id,
+            'order_number' => $this->order->order_number,
+            'vendor_name' => $this->vendor->name,
+            'stage' => SubconDailyProductionEntry::STAGE_FINISHING,
+            'prod_id' => 'PROD-S',
+            'size' => 'S',
+            'entry_date' => $today,
+            'quantity' => 20,
+        ]);
+
+        // 4. QC: 15 for PROD-S (Preceding stage is Finishing: 20)
+        SubconDailyProductionEntry::create([
+            'order_id' => $this->order->id,
+            'order_number' => $this->order->order_number,
+            'vendor_name' => $this->vendor->name,
+            'stage' => SubconDailyProductionEntry::STAGE_QC,
+            'prod_id' => 'PROD-S',
+            'size' => 'S',
+            'entry_date' => $today,
+            'quantity' => 15,
+        ]);
+
+        // 5. Packing: 10 for PROD-S (Preceding stage is QC: 15)
+        SubconDailyProductionEntry::create([
+            'order_id' => $this->order->id,
+            'order_number' => $this->order->order_number,
+            'vendor_name' => $this->vendor->name,
+            'stage' => SubconDailyProductionEntry::STAGE_PACKING,
+            'prod_id' => 'PROD-S',
+            'size' => 'S',
+            'entry_date' => $today,
+            'quantity' => 10,
+        ]);
+
+        $response = $this->actingAs($this->vendorUser)
+            ->get(route('subcon.vendor.daily-production.index'));
+
+        $response->assertOk();
+
+        // Cutting does not compare against PO order qty (100) — it simply states cumulative cut quantity
+        $response->assertSee('50 cut');
+        $response->assertSee('60 cut');
+        $response->assertSee('110 cut');
+        $response->assertDontSee('50 of 100 made');
+
+        // Sewing tracks against Cutting (50)
+        $response->assertSee('30 of 50 made');
+
+        // Finishing tracks against Sewing (30)
+        $response->assertSee('20 of 30 made');
+
+        // QC tracks against Finishing (20)
+        $response->assertSee('15 of 20 made');
+
+        // Packing tracks against QC (15)
+        $response->assertSee('10 of 15 made');
+
+        // PROD-M has 0 sewing, but 60 cut => should show 0 of 60 made
+        $response->assertSee('0 of 60 made');
+
+        // Admin board also renders the same tiered flow correctly
+        $adminResponse = $this->actingAs($this->admin)
+            ->get(route('subcon.admin.daily-production.index'));
+
+        $adminResponse->assertOk();
+        $adminResponse->assertSee('50 cut');
+        $adminResponse->assertSee('30 of 50 made');
+        $adminResponse->assertSee('20 of 30 made');
+        $adminResponse->assertSee('15 of 20 made');
+        $adminResponse->assertSee('10 of 15 made');
+    }
 }
+
