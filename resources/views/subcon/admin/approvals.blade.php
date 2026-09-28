@@ -5,15 +5,15 @@
 @section('content')
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
-        <h2 class="mb-0">Requested Approvals</h2>
-        <small class="text-muted">Cutting reports, gramasi &amp; final submissions awaiting your decision</small>
+        <h2 class="mb-0">{{ __('Requested Approvals') }}</h2>
+        <small class="text-muted">{{ __('Cutting reports, gramasi & final submissions awaiting your decision') }}</small>
     </div>
     <div class="d-flex gap-2">
         <a href="{{ route('subcon.admin.approval-logs') }}" class="btn btn-outline-secondary">
-            <i class="fas fa-clock-rotate-left me-1"></i> Approval Log
+            <i class="fas fa-clock-rotate-left me-1"></i> {{ __('Approval Log') }}
         </a>
         <a href="{{ route('subcon.admin.orders') }}" class="btn btn-outline-secondary">
-            <i class="fas fa-clipboard-list me-1"></i> All Work Orders
+            <i class="fas fa-clipboard-list me-1"></i> {{ __('All Work Orders') }}
         </a>
     </div>
 </div>
@@ -21,7 +21,7 @@
 @include('subcon.partials.table-search', [
     'route' => route('subcon.admin.approvals'),
     'search' => $search,
-    'placeholder' => 'Search work order, vendor, style, production group…',
+    'placeholder' => __('Search work order, vendor, style, production group…'),
 ])
 
 <div class="card">
@@ -30,11 +30,14 @@
             <table class="table align-middle mb-0">
                 <thead class="table-light">
                     <tr>
-                        <th>Work Order</th>
-                        <th>Vendor</th>
-                        <th>Awaiting</th>
-                        <th>Submitted</th>
-                        <th class="text-end pe-4" style="width: 260px;">Action</th>
+                        <th>{{ __('Work Order') }}</th>
+                        <th>{{ __('Vendor') }}</th>
+                        <th>
+                            {{ __('Awaiting') }}
+                            <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Cutting Gate verifies cut vs Cutt Plan; Gramasi Gate verifies garment weight & blister/sack capacity.') }}"></i>
+                        </th>
+                        <th>{{ __('Submitted') }}</th>
+                        <th class="text-end pe-4" style="width: 260px;">{{ __('Action') }}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -53,10 +56,10 @@
                             <td>{{ $order->vendor?->name ?? '—' }}</td>
                             <td>
                                 <span class="badge bg-{{ $gate === 'gramasi' ? 'info' : 'warning' }}-subtle text-{{ $gate === 'gramasi' ? 'info' : 'warning' }} border border-{{ $gate === 'gramasi' ? 'info' : 'warning' }} border-opacity-25">
-                                    {{ $gate === 'gramasi' ? 'Gramasi & Blister' : 'Cutting Report' }}
+                                    {{ $gate === 'gramasi' ? __('Gramasi & Blister') : __('Cutting Report') }}
                                 </span>
                                 @if($gate === 'cutting' && $order->cutting_partial)
-                                    <span class="badge text-bg-danger">Partial</span>
+                                    <span class="badge text-bg-danger" title="{{ __('Partial report: cutting will remain open after approval.') }}">{{ __('Partial') }}</span>
                                 @endif
                             </td>
                             <td class="small text-muted">{{ $order->updated_at?->diffForHumans() }}</td>
@@ -66,22 +69,22 @@
                                         {{-- Cutting approval needs fabric-consumption entry, so route to the
                                              order page (or use the no-login email link) rather than one-click. --}}
                                         <a href="{{ route('subcon.admin.orders.view', $order->id) }}" class="btn btn-sm btn-success">
-                                            <i class="fas fa-check me-1"></i> Review &amp; Approve
+                                            <i class="fas fa-check me-1"></i> {{ __('Review & Approve') }}
                                         </a>
                                     @else
                                         <form method="POST" action="{{ route('subcon.admin.orders.approve', $order->id) }}" class="m-0"
-                                              onsubmit="return confirm('Approve the gramasi & blister capacity for {{ $order->order_number }}?');">
+                                              onsubmit="return confirm('{{ __('Approve the gramasi & blister capacity for :order?', ['order' => $order->order_number]) }}');">
                                             @csrf
                                             <input type="hidden" name="gate" value="{{ $gate }}">
-                                            <button type="submit" class="btn btn-sm btn-success"><i class="fas fa-check me-1"></i> Approve</button>
+                                            <button type="submit" class="btn btn-sm btn-success"><i class="fas fa-check me-1"></i> {{ __('Approve') }}</button>
                                         </form>
                                     @endif
                                     <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#rejectReasonModal"
                                             data-action="{{ route('subcon.admin.orders.decline', $order->id) }}"
                                             data-gate="{{ $gate }}"
                                             data-order-number="{{ $order->order_number }}"
-                                            data-gate-label="{{ $gate === 'gramasi' ? 'gramasi & blister capacity' : 'cutting report' }}">
-                                        <i class="fas fa-times me-1"></i> Reject
+                                            data-gate-label="{{ $gate === 'gramasi' ? __('gramasi & blister capacity') : __('cutting report') }}">
+                                        <i class="fas fa-times me-1"></i> {{ __('Reject') }}
                                     </button>
                                 </div>
                             </td>

@@ -8,37 +8,37 @@
                 </div>
                 <div class="mb-3 text-center">
                     <span class="badge bg-warning text-dark">
-                        <i class="fas fa-hard-hat me-1"></i> <span>Subcon Admin</span>
+                        <i class="fas fa-hard-hat me-1"></i> <span>{{ __('Subcon Admin') }}</span>
                     </span>
                 </div>
                 <ul class="nav nav-pills flex-column mb-auto">
                     <li class="nav-item">
                         <a href="{{ route('subcon.admin.dashboard') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.dashboard') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Dashboard">
-                            <i class="fas fa-tachometer-alt me-2"></i> <span>Dashboard</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Dashboard') }}">
+                            <i class="fas fa-tachometer-alt me-2"></i> <span>{{ __('Dashboard') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.admin.orders') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.orders*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Work Orders">
-                            <i class="fas fa-clipboard-list me-2"></i> <span>Work Orders</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Work Orders') }}">
+                            <i class="fas fa-clipboard-list me-2"></i> <span>{{ __('Work Orders') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.admin.daily-production.index') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.daily-production*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Daily Production">
-                            <i class="fas fa-industry me-2"></i> <span>Daily Production</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Daily Production') }}">
+                            <i class="fas fa-calendar-day me-2"></i> <span>{{ __('Daily Production') }}</span>
                         </a>
                     </li>
                     <li>
                         @php($pendingApprovals = \App\Models\SubconOrder::whereIn('workflow_stage', ['cutting_review', 'gramasi_review'])->count() + \App\Models\SubconOrder::pendingFinalApprovalCount())
                         <a href="{{ route('subcon.admin.approvals') }}"
                             class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.approvals') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Requested Approvals">
-                            <i class="fas fa-gavel me-2"></i> <span>Approvals</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Requested Approvals') }}">
+                            <i class="fas fa-gavel me-2"></i> <span>{{ __('Approvals') }}</span>
                             @if($pendingApprovals > 0)
                                 <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingApprovals }}</span>
                             @endif
@@ -48,8 +48,8 @@
                         @php($waitingDistCount = \App\Models\SubconOrder::where('workflow_stage', \App\Models\SubconOrder::STAGE_WAITING_DISTRIBUTION)->count())
                         <a href="{{ route('subcon.admin.orders-waiting-distribution') }}"
                             class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.orders-waiting-distribution*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Generate Labels">
-                            <i class="fas fa-print me-2"></i> <span>Generate Labels</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Generate Labels') }}">
+                            <i class="fas fa-print me-2"></i> <span>{{ __('Generate Labels') }}</span>
                             @if($waitingDistCount > 0)
                                 <span class="badge bg-info rounded-pill text-dark ms-auto">{{ $waitingDistCount }}</span>
                             @endif
@@ -59,8 +59,8 @@
                         @php($pendingValidateSend = \App\Models\SubconOrder::pendingValidateSendCount())
                         <a href="{{ route('subcon.admin.report-validations') }}"
                             class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.report-validations') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Report Validations">
-                            <i class="fas fa-file-circle-check me-2"></i> <span>Report Validation</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Report Validation') }}">
+                            <i class="fas fa-file-circle-check me-2"></i> <span>{{ __('Report Validation') }}</span>
                             @if($pendingValidateSend > 0)
                                 <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingValidateSend }}</span>
                             @endif
@@ -71,8 +71,8 @@
                             @php($pendingDirector = \App\Models\SubconOrder::pendingDirectorApprovalCount())
                             <a href="{{ route('subcon.admin.director-approvals') }}"
                                 class="nav-link d-flex align-items-center {{ request()->routeIs('subcon.admin.director-approvals') ? 'active' : '' }}"
-                                data-bs-toggle="tooltip" data-bs-placement="right" title="Director Authorizations">
-                                <i class="fas fa-stamp me-2"></i> <span>Director</span>
+                                data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Director Authorizations') }}">
+                                <i class="fas fa-stamp me-2"></i> <span>{{ __('Director') }}</span>
                                 @if($pendingDirector > 0)
                                     <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingDirector }}</span>
                                 @endif
@@ -82,51 +82,58 @@
                     <li>
                         <a href="{{ route('subcon.admin.invoices') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.invoices*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Invoices">
-                            <i class="fas fa-file-invoice me-2"></i> <span>Invoices</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Invoices') }}">
+                            <i class="fas fa-file-invoice me-2"></i> <span>{{ __('Invoices') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.admin.debit-notes') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.debit-notes*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Debit Notes">
-                            <i class="fas fa-file-circle-minus me-2"></i> <span>Debit Notes</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Debit Notes') }}">
+                            <i class="fas fa-file-circle-minus me-2"></i> <span>{{ __('Debit Notes') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.admin.workflow') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.workflow*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Workflow Settings">
-                            <i class="fas fa-sitemap me-2"></i> <span>Workflow</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Workflow Settings') }}">
+                            <i class="fas fa-sitemap me-2"></i> <span>{{ __('Workflow') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.admin.vendors') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.vendors*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Subcon Vendors">
-                            <i class="fas fa-users me-2"></i> <span>Vendors</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Subcon Vendors') }}">
+                            <i class="fas fa-users me-2"></i> <span>{{ __('Vendors') }}</span>
                         </a>
                     </li>
                     <li>
                         <a href="{{ route('subcon.admin.logs') }}"
                             class="nav-link {{ request()->routeIs('subcon.admin.logs*') ? 'active' : '' }}"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Logs">
-                            <i class="fas fa-cog me-2"></i> <span>Logs</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Logs') }}">
+                            <i class="fas fa-cog me-2"></i> <span>{{ __('Logs') }}</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('subcon.admin.guidebook') }}"
+                            class="nav-link {{ request()->routeIs('subcon.admin.guidebook*') ? 'active' : '' }}"
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Admin Guidebook') }}">
+                            <i class="fas fa-book-open me-2"></i> <span>{{ __('Guidebook') }}</span>
                         </a>
                     </li>
                     @if(auth()->user()->isAdmin())
                     <li><hr class="border-secondary my-1"></li>
                     <li>
                         <a href="{{ route('admin.dashboard') }}" class="nav-link text-secondary"
-                            data-bs-toggle="tooltip" data-bs-placement="right" title="Fabric Admin">
-                            <i class="fas fa-exchange-alt me-2"></i> <span>Fabric Panel</span>
+                            data-bs-toggle="tooltip" data-bs-placement="right" title="{{ __('Fabric Admin') }}">
+                            <i class="fas fa-exchange-alt me-2"></i> <span>{{ __('Fabric Panel') }}</span>
                         </a>
                     </li>
                     @endif
                 </ul>
                 <hr>
                 <div class="text-white small text-center text-md-start">
-                    <i class="fas fa-hard-hat me-1"></i> <span>Subcon Panel</span>
+                    <i class="fas fa-hard-hat me-1"></i> <span>{{ __('Subcon Panel') }}</span>
                 </div>
             </div>
         </div>

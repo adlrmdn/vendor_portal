@@ -11,11 +11,11 @@
         font-family: 'Inter', sans-serif;
     }
     .premium-header {
-        background: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
-        border-radius: 20px;
-        padding: 30px;
+        background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #2563eb 100%);
+        border-radius: 18px;
+        padding: 28px 32px;
         color: #ffffff;
-        box-shadow: 0 10px 25px rgba(79, 70, 229, 0.15);
+        box-shadow: 0 10px 25px rgba(30, 58, 138, 0.12);
         position: relative;
         overflow: hidden;
     }
@@ -172,28 +172,43 @@
     <!-- Header banner -->
     <div class="premium-header mb-4 d-flex justify-content-between align-items-center">
         <div>
-            <h1 class="premium-header-title mb-1">Welcome back,</h1>
-            <p class="mb-0 text-white text-opacity-75"><i class="fas fa-user-shield me-2"></i>{{ auth()->user()->name }} (Subcon Admin)</p>
+            <h1 class="premium-header-title mb-1">{{ __('Welcome back') }}, {{ auth()->user()->name }}</h1>
+            @if(auth()->user()->email)
+                <p class="mb-0 text-white text-opacity-75 small">
+                    <i class="far fa-envelope me-1.5 opacity-75"></i>{{ auth()->user()->email }}
+                </p>
+            @endif
         </div>
         <div class="text-end d-flex flex-column align-items-end gap-2">
-            <span class="premium-date-badge d-none d-md-inline-flex"><i class="far fa-calendar-alt me-2"></i>{{ date('d M Y') }}</span>
-            <button type="button" id="syncPosBtn" class="btn btn-light btn-sm rounded-pill px-3 fw-semibold">
-                <i class="fas fa-rotate me-1"></i> <span class="sync-label">Sync POs</span>
-            </button>
+            <div class="d-flex align-items-center gap-2">
+                <span class="premium-date-badge d-none d-md-inline-flex"><i class="far fa-calendar-alt me-2"></i>{{ date('d M Y') }}</span>
+                <button type="button" id="syncPosBtn" class="btn btn-light btn-sm rounded-pill px-3 fw-semibold text-dark shadow-sm"
+                        data-bs-toggle="tooltip" data-bs-placement="left" title="{{ __('Synchronizes active CMT purchase orders and items from Dynamics 365.') }}">
+                    <i class="fas fa-rotate me-1 text-primary"></i> <span class="sync-label">{{ __('Sync POs') }}</span>
+                </button>
+            </div>
             <small id="syncStatusText" class="text-white text-opacity-75" style="max-width: 320px;"></small>
         </div>
     </div>
 
     <!-- Stats Grid -->
-    <div class="row g-4 mb-5">
+    <div class="row g-4 mb-4">
         <!-- Pending Approvals -->
         <div class="col-12 col-sm-6 col-lg-3">
             <a href="{{ route('subcon.admin.approvals') }}" class="text-decoration-none">
-                <div class="card premium-card {{ ($stats['pending_approvals'] ?? 0) > 0 ? 'pulse-danger border-danger-subtle' : '' }}" style="height: 100%;">
+                <div class="card premium-card" style="height: 100%;">
                     <div class="card-body p-4 d-flex align-items-center justify-content-between">
                         <div>
-                            <div class="stat-label">Pending Approvals</div>
-                            <div class="stat-number mt-1 text-danger">{{ $stats['pending_approvals'] ?? 0 }}</div>
+                            <div class="stat-label d-flex align-items-center gap-1">
+                                <span>{{ __('Pending Approvals') }}</span>
+                                <i class="fas fa-info-circle text-primary opacity-50 ms-1" style="font-size: 0.8rem; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Orders currently waiting at Cutting Review, Gramasi Review, or Final Approval gates.') }}"></i>
+                            </div>
+                            <div class="d-flex align-items-baseline gap-2 mt-1">
+                                <div class="stat-number {{ ($stats['pending_approvals'] ?? 0) > 0 ? 'text-danger' : 'text-dark' }}">{{ $stats['pending_approvals'] ?? 0 }}</div>
+                                @if(($stats['pending_approvals'] ?? 0) > 0)
+                                    <span class="badge bg-danger-subtle text-danger rounded-pill px-2 py-0.5 small fw-semibold" style="font-size: 0.72rem;">{{ __('Action Required') }}</span>
+                                @endif
+                            </div>
                         </div>
                         <div class="icon-box icon-box-danger">
                             <i class="fas fa-gavel fa-lg"></i>
@@ -207,8 +222,11 @@
             <div class="card premium-card" style="height: 100%;">
                 <div class="card-body p-4 d-flex align-items-center justify-content-between">
                     <div>
-                        <div class="stat-label">Active Orders</div>
-                        <div class="stat-number mt-1">{{ $stats['active_orders'] }}</div>
+                        <div class="stat-label d-flex align-items-center gap-1">
+                            <span>{{ __('Active Orders') }}</span>
+                            <i class="fas fa-info-circle text-primary opacity-50 ms-1" style="font-size: 0.8rem; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('All CMT work orders currently in production across assigned subcontractors.') }}"></i>
+                        </div>
+                        <div class="stat-number mt-1 text-dark">{{ $stats['active_orders'] }}</div>
                     </div>
                     <div class="icon-box icon-box-warning">
                         <i class="fas fa-spinner fa-lg fa-spin-pulse"></i>
@@ -221,8 +239,11 @@
             <div class="card premium-card" style="height: 100%;">
                 <div class="card-body p-4 d-flex align-items-center justify-content-between">
                     <div>
-                        <div class="stat-label">Completed Orders</div>
-                        <div class="stat-number mt-1">{{ $stats['completed'] }}</div>
+                        <div class="stat-label d-flex align-items-center gap-1">
+                            <span>{{ __('Completed Orders') }}</span>
+                            <i class="fas fa-info-circle text-primary opacity-50 ms-1" style="font-size: 0.8rem; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Work orders that have completed label generation and packaging sign-off.') }}"></i>
+                        </div>
+                        <div class="stat-number mt-1 text-dark">{{ $stats['completed'] }}</div>
                     </div>
                     <div class="icon-box icon-box-success">
                         <i class="fas fa-check-circle fa-lg"></i>
@@ -235,8 +256,11 @@
             <div class="card premium-card" style="height: 100%;">
                 <div class="card-body p-4 d-flex align-items-center justify-content-between">
                     <div>
-                        <div class="stat-label">Active Vendors</div>
-                        <div class="stat-number mt-1">{{ $stats['total_vendors'] }}</div>
+                        <div class="stat-label d-flex align-items-center gap-1">
+                            <span>{{ __('Active Vendors') }}</span>
+                            <i class="fas fa-info-circle text-primary opacity-50 ms-1" style="font-size: 0.8rem; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Subcontractor vendors with active portal access accounts.') }}"></i>
+                        </div>
+                        <div class="stat-number mt-1 text-dark">{{ $stats['total_vendors'] }}</div>
                     </div>
                     <div class="icon-box icon-box-info">
                         <i class="fas fa-users fa-lg"></i>
@@ -246,24 +270,54 @@
         </div>
     </div>
 
+    <!-- Guidebook Spotlight Card -->
+    <div class="card premium-card mb-4" style="background: #ffffff; border: 1px solid #e2e8f0; border-left: 5px solid #2563eb;">
+        <div class="card-body p-3 p-md-4 d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
+            <div class="d-flex align-items-center gap-3">
+                <div class="rounded-3 d-flex align-items-center justify-content-center flex-shrink-0" style="width: 48px; height: 48px; background: #eff6ff; color: #2563eb; font-size: 1.35rem;">
+                    <i class="fas fa-book-open"></i>
+                </div>
+                <div>
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <h6 class="fw-bold mb-0 text-dark" style="font-size: 1.05rem;">{{ __('Admin Guidebook & SOP Workflow') }}</h6>
+                        <span class="badge bg-primary-subtle text-primary rounded-pill small fw-normal">{{ __('SOP') }}</span>
+                    </div>
+                    <p class="mb-0 text-muted small">
+                        {{ app()->getLocale() === 'id' 
+                            ? 'Panduan terstruktur verifikasi Cutting, persetujuan Gramasi, formula Cutt Plan, integrasi D365 RPA label, dan Add Process.' 
+                            : 'Standard operating manual for cutting reviews, gramasi approvals, D365 RPA labels, and Add Process reconciliation.' }}
+                    </p>
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                <a href="{{ route('subcon.admin.guidebook') }}" class="btn btn-primary rounded-pill px-3.5 btn-sm fw-semibold shadow-sm">
+                    <i class="fas fa-book-open me-1"></i> {{ __('Admin Guidebook') }}
+                </a>
+                <a href="{{ route('subcon.admin.user-guide') }}" target="_blank" class="btn btn-outline-secondary rounded-pill px-3 btn-sm fw-semibold">
+                    <i class="fas fa-file-pdf me-1 text-danger"></i> PDF
+                </a>
+            </div>
+        </div>
+    </div>
+
     <!-- Recent Work Orders Table -->
     <div class="card premium-card mb-4">
         <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
-            <h5 class="premium-title mb-0" style="font-size: 1.1rem;"><i class="fas fa-history text-muted me-2"></i>Recent Work Orders</h5>
-            <a href="{{ route('subcon.admin.orders') }}" class="btn btn-sm btn-outline-primary rounded-pill px-3">View All</a>
+            <h5 class="premium-title mb-0" style="font-size: 1.1rem;"><i class="fas fa-history text-muted me-2"></i>{{ __('Recent Work Orders') }}</h5>
+            <a href="{{ route('subcon.admin.orders') }}" class="btn btn-sm btn-outline-primary rounded-pill px-3">{{ __('View All') }}</a>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
                 <table class="table premium-table mb-0">
                     <thead>
                         <tr>
-                            <th>Order #</th>
-                            <th>Production Group</th>
-                            <th>Vendor</th>
-                            <th>Style Name</th>
-                            <th>Due Date</th>
-                            <th>Workflow Stage</th>
-                            <th>Status</th>
+                            <th>{{ __('Order #') }}</th>
+                            <th>{{ __('Production Group') }}</th>
+                            <th>{{ __('Vendor') }}</th>
+                            <th>{{ __('Style Name') }}</th>
+                            <th>{{ __('Due Date') }}</th>
+                            <th>{{ __('Workflow Stage') }}</th>
+                            <th>{{ __('Status') }}</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -296,7 +350,7 @@
                             </td>
                             <td class="text-end">
                                 <a href="{{ route('subcon.admin.orders.view', $order->id) }}" class="btn btn-sm btn-outline-primary rounded-pill px-3">
-                                    <i class="fas fa-eye me-1"></i> View
+                                    <i class="fas fa-eye me-1"></i> {{ __('View') }}
                                 </a>
                             </td>
                         </tr>
@@ -304,7 +358,7 @@
                         <tr>
                             <td colspan="8" class="text-center text-muted py-5">
                                 <i class="fas fa-folder-open fa-2x mb-3 text-muted opacity-50"></i>
-                                <p class="mb-0">No work orders assigned yet.</p>
+                                <p class="mb-0">{{ __('No work orders assigned yet.') }}</p>
                             </td>
                         </tr>
                         @endforelse

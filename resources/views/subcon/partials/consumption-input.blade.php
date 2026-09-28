@@ -129,18 +129,54 @@
                 <table class="table table-sm align-middle mb-0 consumption-table">
                     <thead class="table-light">
                         <tr>
-                            <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">Short Roll</th>
-                            <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">Sisa Kain (Utuh)</th>
-                            <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">Kepala Kain</th>
-                            <th class="text-end" style="width:90px; font-size:.75rem; white-space:nowrap;">Retur Kain</th>
-                            <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">Goods Receive</th>
-                            <th class="text-end" style="width:120px; font-size:.75rem; white-space:nowrap;{{ $editable ? 'background:#fff3cd;color:#7a5a00;' : '' }}">Fabric Sent @if($editable)<i class="fas fa-pen ms-1" style="font-size:.6rem;"></i>@endif</th>
-                            <th class="text-end" style="width:130px; font-size:.75rem; white-space:nowrap;{{ $editable ? 'background:#fff3cd;color:#7a5a00;' : '' }}">Cons. Plan @if($editable)<i class="fas fa-pen ms-1" style="font-size:.6rem;"></i>@endif</th>
-                            <th class="text-end" style="width:90px; font-size:.75rem; white-space:nowrap;">Cutt Plan</th>
-                            <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">Actual Cons.</th>
-                            <th class="text-end" style="width:120px; font-size:.75rem; white-space:nowrap;">Overconsumption</th>
-                            <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">Fabric Price (IDR)</th>
-                            <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">Deduction</th>
+                            <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Short Roll') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Short Roll: fabric roll shortage or defect roll deducted from raw issues.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Sisa Kain (Utuh)') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Sisa Kain: intact, unused fabric rolls returned to warehouse.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:96px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Kepala Kain') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Kepala Kain: end remnants and edge pieces generated during cutting.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:90px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Retur Kain') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Retur Kain: total physical fabric returned. Formula: Net Fabric = Fabric Sent - Retur Kain.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Goods Receive') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Goods Receive: raw fabric quantity officially received and confirmed by warehouse.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:120px; font-size:.75rem; white-space:nowrap;{{ $editable ? 'background:#fff3cd;color:#7a5a00;' : '' }}">
+                                {{ __('Fabric Sent') }} @if($editable)<i class="fas fa-pen ms-1" style="font-size:.6rem;"></i>@endif
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Fabric Sent: total fabric issued to subcontractor for this production group.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:130px; font-size:.75rem; white-space:nowrap;{{ $editable ? 'background:#fff3cd;color:#7a5a00;' : '' }}">
+                                {{ __('Cons. Plan') }} @if($editable)<i class="fas fa-pen ms-1" style="font-size:.6rem;"></i>@endif
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Cons. Plan: budgeted consumption per garment piece engineered by Pattern & Marker team.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:90px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Cutt Plan') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Cutt Plan = (Fabric Sent - Retur Kain) / Cons. Plan. Expected garment yield based on net fabric used.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:110px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Actual Cons.') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Actual Cons. = (Fabric Sent - Retur Kain) / Total Qty Cut. Measured consumption per garment piece.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:120px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Overconsumption') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Overconsumption: variance percentage exceeding standard consumption plan threshold.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Fabric Price (IDR)') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Fabric Price: unit cost per meter/yard retrieved from Dynamics 365 purchase agreement.') }}"></i>
+                            </th>
+                            <th class="text-end" style="width:150px; font-size:.75rem; white-space:nowrap;">
+                                {{ __('Deduction') }}
+                                <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Deduction: penalty cost charged via Debit Note when actual consumption exceeds allowance.') }}"></i>
+                            </th>
                         </tr>
                     </thead>
                     <tbody id="cons-rows">

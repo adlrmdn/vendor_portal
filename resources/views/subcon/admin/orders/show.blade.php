@@ -13,11 +13,11 @@
             <i class="fas fa-arrow-left me-1"></i> Back
         </a>
         <a href="{{ route('subcon.admin.orders.export-cutting', $order->id) }}" class="btn btn-outline-success">
-            <i class="fas fa-file-excel me-1"></i> Export Cutting Report
+            <i class="fas fa-file-excel me-1"></i> {{ __('Export Cutting Report') }}
         </a>
         @if($order->production_group)
             <a href="{{ route('subcon.admin.add-process.index', ['prg' => $order->production_group]) }}" class="btn btn-outline-primary">
-                <i class="fas fa-industry me-1"></i> Add Process Report
+                <i class="fas fa-industry me-1"></i> {{ __('Add Process Report') }}
             </a>
         @endif
         {{-- Cutting Plan temporarily dormant — routes/controller/service kept intact for re-enable
@@ -40,20 +40,21 @@
                 </span>
             @else
                 <form method="POST" action="{{ route('subcon.admin.orders.generate-labels-manual', $order->id) }}" class="d-inline"
-                      onsubmit="return confirm('{{ $order->canPrintLabels() ? 'Recalculate Coli/Blister with the current blister/sack capacity?' : 'Trigger label generation? This calls the DTT/RPA service and can take up to a minute.' }}');">
+                      onsubmit="return confirm('{{ $order->canPrintLabels() ? __('Recalculate Coli/Blister with the current blister/sack capacity?') : __('Trigger label generation? This calls the DTT/RPA service and can take up to a minute.') }}');">
                     @csrf
-                    <button type="submit" class="btn {{ $order->labelGenBlocked() ? 'btn-outline-warning' : ($order->labelGenFailed() ? 'btn-warning' : 'btn-outline-primary') }}">
+                    <button type="submit" class="btn {{ $order->labelGenBlocked() ? 'btn-outline-warning' : ($order->labelGenFailed() ? 'btn-warning' : 'btn-outline-primary') }}"
+                            data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ $order->canPrintLabels() ? __('Updates carton/sack totals without re-triggering D365.') : __('Calls RPA to create Packing Instruction (PI) in D365.') }}">
                         <i class="fas {{ $order->labelGenFailed() || $order->labelGenBlocked() ? 'fa-rotate-right' : ($order->canPrintLabels() ? 'fa-rotate' : 'fa-cog') }} me-1"></i>
-                        {{ $order->labelGenBlocked() ? 'Retry After D365 Fix' : ($order->labelGenFailed() ? 'Retry Generation' : ($order->canPrintLabels() ? 'Recalculate Labels' : 'Generate Labels')) }}
+                        {{ $order->labelGenBlocked() ? __('Retry After D365 Fix') : ($order->labelGenFailed() ? __('Retry Generation') : ($order->canPrintLabels() ? __('Recalculate Labels') : __('Generate Labels'))) }}
                     </button>
                 </form>
             @endif
         @endif
         <a href="{{ route('subcon.admin.orders.print-labels', ['id' => $order->id, 'scope' => 'store']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm" style="min-width: 210px;">
-            <i class="fas fa-print"></i> <span class="text-center">Print Store Labels</span>
+            <i class="fas fa-print"></i> <span class="text-center">{{ __('Print Store Labels') }}</span>
         </a>
         <a href="{{ route('subcon.admin.orders.print-labels', ['id' => $order->id, 'scope' => 'warehouse']) }}" target="_blank" class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center gap-2 lh-sm" style="min-width: 210px;">
-            <i class="fas fa-warehouse"></i> <span class="text-center">Print WH Labels</span>
+            <i class="fas fa-warehouse"></i> <span class="text-center">{{ __('Print WH Labels') }}</span>
         </a>
     </div>
 </div>

@@ -115,14 +115,17 @@
 
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
     <div>
-        <h2 class="mb-0">{{ $prg !== '' ? ($summary['style'] ?? 'Add Process') : 'Add Process' }}</h2>
+        <h2 class="mb-0">
+            {{ $prg !== '' ? ($summary['style'] ?? __('Add Process')) : __('Add Process') }}
+            <i class="fas fa-info-circle text-muted fs-6 ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Add Process covers secondary outsourced operations (ADD-Was, ADD-Embro, ADD-Sab, ADD-Pleat). Synchronizes finish quantities to D365 and computes 70% penalty deductions on rejected items.') }}"></i>
+        </h2>
         @if($prg !== '')
-            <small class="text-muted">PRG: <code>{{ $prg }}</code></small>
+            <small class="text-muted">{{ __('Production Group') }}: <code>{{ $prg }}</code></small>
         @endif
     </div>
     <div class="d-flex gap-2">
         <a href="{{ route('subcon.admin.orders', ['add_process' => 1]) }}" class="btn btn-outline-secondary">
-            <i class="fas fa-arrow-left me-1"></i> Back to Work Orders
+            <i class="fas fa-arrow-left me-1"></i> {{ __('Back to Work Orders') }}
         </a>
     </div>
 </div>

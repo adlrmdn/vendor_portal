@@ -72,13 +72,16 @@
         <div>
             <nav aria-label="breadcrumb">
                 <ol class="breadcrumb mb-1">
-                    <li class="breadcrumb-item"><a href="{{ route('subcon.admin.dashboard') }}" class="text-decoration-none">Dashboard</a></li>
-                    <li class="breadcrumb-item active" aria-current="page">Label Generation</li>
+                    <li class="breadcrumb-item"><a href="{{ route('subcon.admin.dashboard') }}" class="text-decoration-none">{{ __('Dashboard') }}</a></li>
+                    <li class="breadcrumb-item active" aria-current="page">{{ __('Label Generation') }}</li>
                 </ol>
             </nav>
-            <h2 class="premium-title mb-0">Manual Label Generation</h2>
+            <h2 class="premium-title mb-0">{{ __('Manual Label Generation') }}</h2>
         </div>
-        <span class="text-muted small"><i class="fas fa-print me-1"></i>Waiting Distribution Details</span>
+        <span class="text-muted small">
+            <i class="fas fa-print me-1"></i>{{ __('Waiting Distribution Details') }}
+            <i class="fas fa-info-circle text-muted ms-1" style="cursor:help;" data-bs-toggle="tooltip" data-bs-placement="top" title="{{ __('Orders that have passed Gramasi Approval and are awaiting Packing Instruction (PI) label generation via RPA.') }}"></i>
+        </span>
     </div>
 
     <!-- Search -->
@@ -86,11 +89,11 @@
         <div class="input-group" style="max-width: 420px;">
             <span class="input-group-text bg-white border-end-0"><i class="fas fa-search text-muted"></i></span>
             <input type="text" name="q" value="{{ $search }}" class="form-control border-start-0"
-                   placeholder="Search order #, vendor, style, production group…">
+                   placeholder="{{ __('Search order #, vendor, style, production group…') }}">
             @if($search !== '')
-                <a href="{{ route('subcon.admin.orders-waiting-distribution') }}" class="btn btn-outline-secondary" title="Clear"><i class="fas fa-times"></i></a>
+                <a href="{{ route('subcon.admin.orders-waiting-distribution') }}" class="btn btn-outline-secondary" title="{{ __('Clear') }}"><i class="fas fa-times"></i></a>
             @endif
-            <button type="submit" class="btn btn-outline-secondary">Search</button>
+            <button type="submit" class="btn btn-outline-secondary">{{ __('Search') }}</button>
         </div>
     </form>
 
@@ -101,12 +104,12 @@
                 <table class="table premium-table mb-0">
                     <thead>
                         <tr>
-                            <th>Order #</th>
-                            <th>Production Group</th>
-                            <th>Vendor</th>
-                            <th>Style Name</th>
-                            <th>Current Stage</th>
-                            <th class="text-end">Actions</th>
+                            <th>{{ __('Order #') }}</th>
+                            <th>{{ __('Production Group') }}</th>
+                            <th>{{ __('Vendor') }}</th>
+                            <th>{{ __('Style Name') }}</th>
+                            <th>{{ __('Current Stage') }}</th>
+                            <th class="text-end">{{ __('Actions') }}</th>
                         </tr>
                     </thead>
                     <tbody>

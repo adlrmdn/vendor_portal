@@ -472,21 +472,72 @@
     <img src="{{ public_path('images/subcon-guide/admin-workflow.jpg') }}" class="screenshot">
     <div class="caption">Halaman Workflow Mail Settings (nilai email/nomor pada contoh ini disamarkan).</div>
 
-    <h1 class="section">12. Log &amp; Riwayat Persetujuan</h1>
-    <p>Beberapa halaman tambahan membantu penelusuran &amp; audit:</p>
+    <h1 class="section">12. Integrasi Sistem Ekosistem (QC Console, VSM, D365 &amp; RPA)</h1>
+    <p>Portal Admin Subkontraktor terhubung langsung dengan tiga sistem utama lainnya:</p>
     <ul>
-        <li><strong>Logs</strong> — log sinkronisasi D365 dan proses latar belakang lainnya.</li>
-        <li><strong>Approval Logs</strong> — riwayat setiap keputusan persetujuan/penolakan yang
-            pernah dibuat, per order.</li>
-        <li><strong>Report Validations</strong> &amp; <strong>Director Approvals</strong> — halaman
-            terkait alur validasi laporan QC/Director untuk proyek yang terhubung dengan QC Console.</li>
+        <li><strong>QC Console (Tauri Desktop App)</strong> — Digunakan oleh tim QC di pabrik untuk memeriksa fisik pakaian jadi. Saat inspeksi selesai, QC Console menerbitkan token persetujuan (Stage 1) dan menarik data konsumsi kain (packaging_project_fabric_lines) dari database bersama <code>qms</code>.</li>
+        <li><strong>VSM Material Flow (value_stream_ops)</strong> — Digunakan oleh staf gudang untuk memeriksa fisik retur kain dan aksesoris yang dikembalikan vendor. Terhubung via database bersama <code>wms</code>.</li>
+        <li><strong>Microsoft Dynamics 365 ERP &amp; RPA Engine</strong> — Menghasilkan PO CMT dan PO AddPro. Bot RPA membaca antrean untuk membuat instruksi pengepakan (PI) dan menerbitkan Debit Note pemotongan biaya secara otomatis.</li>
     </ul>
 
-    <h1 class="section">13. Mendapatkan Bantuan</h1>
+    <h1 class="section">13. Laporan Resmi Utama (Main Official Report), Analisis Laporan &amp; Gerbang Direktur</h1>
     <p>
-        Jika sinkronisasi D365 gagal, email persetujuan tidak terkirim, atau ditemukan kejanggalan
-        pada perhitungan konsumsi/deduction, hubungi tim teknis dengan menyertakan nomor order
-        (Order #) dan production group (PRG) terkait agar dapat ditelusuri dengan cepat.
+        Laporan Resmi Utama (Berita Acara Rekonsiliasi) adalah dokumen hukum dan finansial resmi yang menutup surat perintah kerja (PO CMT). Dokumen ini berakar dari aplikasi QC Console di pabrik dan melalui alur audit ketat hingga persetujuan Direktur Komersial:
+    </p>
+    <ul>
+        <li><strong>Tahap 1: Inspeksi QC &amp; Tanda Tangan Pabrik</strong> — Diinisiasi oleh inspektur di QC Console. Perwakilan pabrik/vendor menandatangani hasil inspeksi fisik pakaian jadi. Menghasilkan token unik UUID.</li>
+        <li><strong>Tahap 2: Validasi Laporan &amp; Tanda Tangan Dua Fase (MD Production)</strong>:
+            <ul>
+                <li><em>Fase A (Review &amp; Approve)</em>: Admin memeriksa formula konsumsi kain, memasukkan patokan harga kain, menandatangani <code>ho_approval_signature</code>, dan memicu antrean robot RAF. Halaman beralih ke Mode Validasi.</li>
+                <li><em>Fase B (Validate &amp; Send Approval)</em>: Admin memeriksa status RAF (Completed), mengaudit verifikasi retur fisik di VSM, mengisi catatan wajib Head Office Remarks, menandatangani <code>ho_validation_signature</code>, dan meneruskan ke Direktur.</li>
+            </ul>
+        </li>
+        <li><strong>Panduan Analisis Laporan bagi Admin:</strong>
+            <ul>
+                <li><em>Analisis Yield &amp; Cacat</em>: Bandingkan Total Potong terhadap barang jadi lolos QC. Bila selisih &gt; 1%, telaah catatan QC atas reject jahit atau noda.</li>
+                <li><em>Analisis Konsumsi Kain Bersih</em>: Pastikan <code>Net Fabric = Fabric Sent - Retur Kain</code>. Periksa apakah Retur Kain sudah diinput agar konsumsi aktual tidak melonjak semu.</li>
+                <li><em>Analisis Denda Finansial</em>: Denda kelebihan kain dihitung otomatis: <code>Overconsumption &times; Harga Kain (D365 Hint)</code>. Admin dapat menambahkan potongan manual untuk keterlambatan atau kerusakan aksesoris.</li>
+                <li><em>Audit Fisik VSM &amp; Aksesoris</em>: Buka scan Surat Jalan Retur dan pastikan staf gudang sudah menimbang fisik dan memasukkan <code>qty_actual</code> di VSM.</li>
+                <li><em>Pemeriksaan Tab PDF</em>: Klik tab PDF Document untuk memeriksa draf laporan resmi sebelum menandatangani secara digital.</li>
+            </ul>
+        </li>
+        <li><strong>Gerbang Kunci Material Flow (VSM):</strong> Bila ada retur bahan, admin wajib mengirim tugas retur ke VSM ("Send to Material Flow"). Staf gudang di VSM harus menandai "Checked". Tombol kirim ke Direktur akan terkunci otomatis bila retur belum diverifikasi gudang!</li>
+        <li><strong>Katup Pengaman Darurat (Tombol "Recall"):</strong> Bila admin terlanjur mengirim laporan ke Direktur namun ada angka yang keliru, admin dapat membuka menu <em>Director Authorizations</em> dan menekan tombol kuning <strong>Recall</strong>. Laporan seketika ditarik kembali ke Report Validation tanpa perlu mengirim email penolakan ke Direktur.</li>
+        <li><strong>Tahap 3: Otorisasi Direktur Komersial &amp; Debit Note D365:</strong> Direktur memeriksa ringkasan finansial dan menandatangani secara digital. Sistem langsung memicu RPA untuk mencatatkan Debit Note pemotongan tagihan ke D365 Accounts Payable. Bila Direktur menolak (Reject), laporan berbalik ke antrean Report Validation dengan nomor revisi bertambah untuk diperbaiki admin.</li>
+    </ul>
+
+    <h1 class="section">14. Proses Tambahan (Add Process), Penalti 70% &amp; Berita Acara</h1>
+    <p>
+        Menu <strong>Add Process</strong> mengelola operasi sekunder (ADD-Was, ADD-Embro, ADD-Sab, ADD-Pleat):
+    </p>
+    <ul>
+        <li><strong>Pencocokan PO Komersial</strong> — Sistem mencocokkan PO komersial dengan PurchPoolId <code>AddPro</code> berdasarkan kode Production Group.</li>
+        <li><strong>Formula Penalti Reject 70%</strong> — Toleransi kerusakan standar adalah 1% dari kuantitas potong. Setiap potong reject di atas 1% dikenakan penalti sebesar <code>Reject Berlebih &times; (Harga Patokan Baju &times; 70%)</code> untuk mengganti biaya kain dan jasa potong.</li>
+        <li><strong>Berita Acara Resmi</strong> — Otorisasi bertingkat (MD Production &rarr; Direktur) untuk mengesahkan pemotongan denda reject ke vendor Add Process.</li>
+    </ul>
+
+    <h1 class="section">15. Alur Revisi Laporan Cutting &amp; Rekonsiliasi Aksesoris</h1>
+    <p>
+        Bila mitra vendor salah memasukkan data potong setelah cutting disetujui, vendor dapat mengajukan <strong>Revisi Cutting</strong>:
+    </p>
+    <ul>
+        <li>Pengajuan revisi mengembalikan pesanan ke tahap <strong>Cutting Review</strong> pada panel admin.</li>
+        <li>Admin memeriksa kembali perbandingan hasil potong revisi terhadap Cutt Plan sebelum memberikan persetujuan ulang.</li>
+        <li>Mitra vendor dan admin dapat menambahkan item aksesoris mandiri pada tabel Rekonsiliasi Aksesoris.</li>
+    </ul>
+
+    <h1 class="section">16. Panduan Diagnostik &amp; Solusi Cepat Masalah Admin</h1>
+    <ul>
+        <li><strong>Tidak Bisa Kirim Laporan ke Direktur:</strong> Pastikan tugas retur di VSM (value_stream_ops) sudah diperiksa dan berstatus <em>Checked</em> oleh tim gudang.</li>
+        <li><strong>QC Console Tidak Menampilkan Data Kain:</strong> Pastikan Gate 1 (Cutting) sudah disetujui oleh admin. Konsumsi kain hanya dipublikasikan ke database QMS setelah cutting disetujui.</li>
+        <li><strong>Status Label Tertahan "Generating…":</strong> Cek banner peringatan. Bila ada toko yang tidak aktif di D365, minta tim IT memperbarui toko di D365 lalu klik <em>Retry After D365 Fix</em>. Jika hanya mengubah kapasitas blister/karung, gunakan tombol <em>Recalculate Labels</em>.</li>
+        <li><strong>Denda Kain Terlalu Besar:</strong> Periksa kolom Retur Kain. Jika kain sisa belum diinput atau belum disetujui di VSM, konsumsi bersih akan terbaca membengkak.</li>
+        <li><strong>Vendor Lupa Password:</strong> Masuk ke menu Vendors dan klik <em>Reset Password</em> untuk mengembalikan kata sandi ke <code>password</code>.</li>
+    </ul>
+
+    <h1 class="section">17. Mendapatkan Bantuan</h1>
+    <p>
+        Jika sinkronisasi D365 gagal atau terjadi kendala sistem, hubungi tim teknis dengan menyertakan nomor order (Order #) dan production group (PRG) terkait.
     </p>
 
     <div class="footer-note">

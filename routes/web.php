@@ -206,6 +206,7 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     Route::get('/orders/{id}/print-labels', [SubconAdminController::class, 'printPackagingLabels'])->name('orders.print-labels');
     Route::get('/workflow', [SubconAdminController::class, 'workflow'])->name('workflow');
     Route::post('/workflow', [SubconAdminController::class, 'updateWorkflow'])->name('workflow.update');
+    Route::get('/guidebook', [SubconAdminController::class, 'guidebook'])->name('guidebook');
     Route::get('/user-guide', [SubconAdminController::class, 'userGuide'])->name('user-guide');
 
     // Daily production tracking — read-only cross-vendor view.
