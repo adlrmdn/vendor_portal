@@ -84,7 +84,19 @@ class QcApprovalController extends Controller
             ]);
         }
 
-        return view('qc.approve-confirm', ['token' => $token, 'row' => $row]);
+        // Style name for display only — best-effort, never blocks the confirm page.
+        $styleName = null;
+        try {
+            if (Schema::connection('qms')->hasTable('packaging_projects')) {
+                $styleName = DB::connection('qms')->table('packaging_projects')
+                    ->where('project_id', (string) ($row->project_id ?? ''))
+                    ->value('article_name');
+            }
+        } catch (\Throwable $e) {
+            // Unreadable — the page still works without it.
+        }
+
+        return view('qc.approve-confirm', ['token' => $token, 'row' => $row, 'styleName' => $styleName]);
     }
 
     /**
