@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Setting;
 use App\Models\SubconOrder;
+use App\Services\QcProjectValidator;
 use App\Services\QcReportPdfService;
 use App\Services\RpaQueueService;
 use App\Services\SubconConsumptionService;
@@ -1493,8 +1494,12 @@ class QcApprovalController extends Controller
      *
      * GET /qc/print/{projectId}/{sessionId}
      */
-    public function printDraft(Request $request, string $projectId, string $sessionId, QcReportPdfService $reportPdf)
+    public function printDraft(Request $request, string $projectId, string $sessionId, QcReportPdfService $reportPdf, QcProjectValidator $validator)
     {
+        // Verify → Send fetches this PDF for the verification email. Correct a stale PO/vendor
+        // snapshot first so the report (and the email built from it) carries the right data.
+        $validation = $validator->validateAndHeal($projectId, $sessionId);
+
         $fresh = $reportPdf->renderDataUri($projectId, $sessionId);
 
         if (! $fresh) {
@@ -1509,10 +1514,18 @@ class QcApprovalController extends Controller
 
         $name = str_replace(['/', '\\'], '-', $projectId.'-'.$sessionId);
 
-        return response($bytes, 200, [
+        $headers = [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'inline; filename="inspection-report-'.$name.'.pdf"',
-        ]);
+        ];
+        if ($validation['healed']) {
+            $headers['X-QC-Healed'] = implode(',', array_keys($validation['healed']));
+        }
+        if ($validation['warnings']) {
+            $headers['X-QC-Warnings'] = rawurlencode(mb_substr(implode(' | ', $validation['warnings']), 0, 400));
+        }
+
+        return response($bytes, 200, $headers);
     }
 
     /** Decode a `data:application/pdf;base64,…` URI to raw PDF bytes, or null. */
