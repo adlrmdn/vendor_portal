@@ -853,6 +853,26 @@ class SubconAdminController extends Controller
             usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
         }
 
+        // Paginated for the same reason addProcessRows() (further down this
+        // file) pages before its own per-row enrichment: only a rendered
+        // row's token ever reaches reportValidationDeductions() (see
+        // report-validations.blade.php's fetch()), so capping the page size
+        // caps the lazy-load fetch's cost too — with the full backlog
+        // rendered at once, that request alone scaled with however many rows
+        // were pending (21 rows ~= 3.4s, confirmed live), not with a fixed
+        // page size. deduction_only still evaluates the whole backlog above
+        // (it has to, to know which rows even qualify) — only the render/
+        // lazy-load side is now bounded.
+        $perPage = 15;
+        $page = LengthAwarePaginator::resolveCurrentPage();
+        $pending = new LengthAwarePaginator(
+            array_slice($pending, ($page - 1) * $perPage, $perPage),
+            count($pending),
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
         return view('subcon.admin.report-validations', compact('pending', 'search', 'deductionOnly'));
     }
 
@@ -1214,6 +1234,20 @@ class SubconAdminController extends Controller
             // comment in reportValidations().
             usort($pending, fn ($a, $b) => ($b['deduction_total'] ?? 0) <=> ($a['deduction_total'] ?? 0));
         }
+
+        // Paginated — same reasoning as reportValidations(): only a rendered
+        // row's token reaches reportValidationDeductions(), so bounding the
+        // page size bounds that lazy-load fetch's cost instead of it scaling
+        // with the whole backlog (18 rows ~= 2.9s, confirmed live).
+        $perPage = 15;
+        $page = LengthAwarePaginator::resolveCurrentPage();
+        $pending = new LengthAwarePaginator(
+            array_slice($pending, ($page - 1) * $perPage, $perPage),
+            count($pending),
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
 
         $recentDecisions = \App\Models\SubconApprovalLog::query()
             ->where('gate', 'director')

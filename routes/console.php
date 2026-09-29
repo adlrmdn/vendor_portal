@@ -25,3 +25,10 @@ Schedule::command('d365:sync-subcon-orders --company=mpg --days=180')->hourlyAt(
 // rebuilt/redistributed, so this catches and self-heals any recurrence until
 // it is.
 Schedule::command('subcon:reconcile-project-completion --fix')->everyFifteenMinutes();
+
+// Keeps the Report Validation / Director Approval backlog's D365 response
+// cache warm (see WarmQcApprovalCaches docblock) — WarmQcHoApprovalCache
+// already fires once when the approval email goes out, but its 1h TTL
+// routinely lapses before an admin works through a multi-item backlog.
+// Every 30 minutes stays comfortably inside that TTL.
+Schedule::command('qc:warm-approval-caches')->everyThirtyMinutes();

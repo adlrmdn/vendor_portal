@@ -139,7 +139,7 @@
                         </tr>
                     @endforeach
 
-                    @if(empty($pending))
+                    @if($pending->isEmpty())
                         <tr>
                             <td colspan="5" class="text-center text-muted py-5">
                                 <i class="fas fa-check-double fa-2x mb-3 text-success opacity-50 d-block"></i>
@@ -158,6 +158,8 @@
         </div>
     </div>
 </div>
+
+<div class="mt-3">{{ $pending->links() }}</div>
 
 @unless($deductionOnly)
     {{-- Deduction cells were left as placeholders above (see
