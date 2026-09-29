@@ -1,12 +1,24 @@
 version: '3.8'
 
 services:
+  # Backs SESSION_DRIVER/CACHE_STORE/QUEUE_CONNECTION=redis (see .env) — the
+  # idiomatic Laravel production setup, replacing all three previously
+  # sharing the app's own Postgres connection (extra load on every request
+  # for session/cache reads+writes, plus the queue worker polling the `jobs`
+  # table every 3s). No auth needed: only reachable on the compose network.
+  redis:
+    image: redis:7-alpine
+    container_name: vendor_portal_redis
+    restart: unless-stopped
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
     image: vendor-portal
     container_name: vendor_portal_app
+    depends_on:
+      - redis
     ports:
       - "8082:80"
     environment:
@@ -27,6 +39,7 @@ services:
     image: vendor-portal
     depends_on:
       - app
+      - redis
     command: php artisan queue:work --sleep=3 --tries=3 --max-time=3600
     environment:
       - APP_ENV=production

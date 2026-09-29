@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\SubconOrder;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -464,7 +465,7 @@ class QcReportPdfService
                             try {
                                 $bytes = Storage::disk($att->s3_disk)->get($att->s3_path);
                                 if ($bytes !== null && $bytes !== '') {
-                                    $imageData = $this->rasterizePdfFirstPage($bytes);
+                                    $imageData = $this->cachedRasterizePdfFirstPage((string) $att->id, $bytes);
                                     if ($imageData !== null) {
                                         $isImage = true;
                                     }
@@ -1086,6 +1087,34 @@ class QcReportPdfService
 
             return [];
         }
+    }
+
+    /**
+     * Caches rasterizePdfFirstPage()'s output forever, keyed by attachment id
+     * — every report render (printDraft, HO/Director form loads, the signed
+     * PDF regenerated on each stage transition, ...) was re-running Ghostscript/
+     * Imagick against the same file whenever an order carries a PDF Material
+     * Return attachment, since rasterizePdfFirstPage() itself has no memory
+     * across calls. Safe to cache indefinitely: MaterialReturnAttachment rows
+     * are create/delete only (MaterialReturnService never updates s3_path in
+     * place), so a given attachment id's bytes never change. Only successful
+     * rasterizations are cached — a transient failure (e.g. Ghostscript
+     * briefly unavailable) is left uncached so the next render can retry.
+     */
+    private function cachedRasterizePdfFirstPage(string $attachmentId, string $pdfBytes): ?string
+    {
+        $key = "qc_report_pdf_raster:{$attachmentId}";
+        $cached = Cache::get($key);
+        if ($cached !== null) {
+            return $cached;
+        }
+
+        $rasterized = $this->rasterizePdfFirstPage($pdfBytes);
+        if ($rasterized !== null) {
+            Cache::forever($key, $rasterized);
+        }
+
+        return $rasterized;
     }
 
     /**

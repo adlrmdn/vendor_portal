@@ -889,7 +889,7 @@ class SubconAdminController extends Controller
         }
 
         foreach ($sessions as $s) {
-            $breakdown = $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id);
+            $breakdown = $this->cachedDeductionBreakdown($rpaQueue, (string) $s->project_id, (string) $s->session_id);
             $out[$s->approval_token] = view('subcon.partials.report-validation-deduction', [
                 'total' => $breakdown['total'],
                 'breakdown' => $breakdown,
@@ -897,6 +897,28 @@ class SubconAdminController extends Controller
         }
 
         return response()->json($out);
+    }
+
+    /**
+     * List-display-only cache around RpaQueueService::deductionBreakdown()
+     * (profiled at ~160ms/row regardless of warm/cold — see the callers'
+     * comments). Deliberately NOT used by the actual approval/RPA-queuing
+     * call sites in QcApprovalController (directorApprove,
+     * sendDirectorApprovalRequest), which call deductionTotal()/
+     * deductionBreakdown() directly so the amount that gets charged is
+     * always freshly computed at the moment of approval, never served from
+     * this cache. A short TTL just turns a reload of the same tab, or the
+     * deduction_only filter re-fetching a row the lazy-load endpoint
+     * already computed moments ago, into a cache hit instead of another
+     * qms + D365 round trip.
+     */
+    private function cachedDeductionBreakdown(RpaQueueService $rpaQueue, string $projectId, string $sessionId): array
+    {
+        return Cache::remember(
+            "subcon_deduction_breakdown:{$projectId}:{$sessionId}",
+            60,
+            fn () => $rpaQueue->deductionBreakdown($projectId, $sessionId)
+        );
     }
 
     /**
@@ -1051,7 +1073,7 @@ class SubconAdminController extends Controller
                 // null (not 0) when deferred — the view/JS must be able to tell
                 // "not fetched yet" apart from "fetched, genuinely zero".
                 $deduction = $withDeductions
-                    ? $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id)
+                    ? $this->cachedDeductionBreakdown($rpaQueue, (string) $s->project_id, (string) $s->session_id)
                     : null;
 
                 return [
@@ -1398,7 +1420,7 @@ class SubconAdminController extends Controller
                 // matching comment: the view/JS must tell "not fetched yet"
                 // apart from "fetched, genuinely zero".
                 $deduction = $withDeductions
-                    ? $rpaQueue->deductionBreakdown((string) $s->project_id, (string) $s->session_id)
+                    ? $this->cachedDeductionBreakdown($rpaQueue, (string) $s->project_id, (string) $s->session_id)
                     : null;
 
                 return [
