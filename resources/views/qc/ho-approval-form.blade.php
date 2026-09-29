@@ -256,7 +256,13 @@
 
                         <div class="tab-pane fade" id="pdf-tab-pane" role="tabpanel" aria-labelledby="pdf-tab" tabindex="0">
                             <div class="border rounded-3 overflow-hidden bg-light mb-4" style="height: 600px;">
-                                <iframe src="{{ route('qc.document', ['token' => $token]) }}?t={{ time() }}" style="width: 100%; height: 100%; border: none;"></iframe>
+                                {{-- Lazy-loaded: document() always re-renders the PDF fresh
+                                     (D365 + attachment rasterization, uncached by design — see
+                                     its docblock), so setting src eagerly here paid that full
+                                     cost on every page load even when nobody ever opens this
+                                     tab. data-src is only promoted to src the first time the
+                                     tab is actually shown (see the script below). --}}
+                                <iframe data-src="{{ route('qc.document', ['token' => $token]) }}?t={{ time() }}" id="pdf-tab-iframe" style="width: 100%; height: 100%; border: none;"></iframe>
                             </div>
                         </div>
                     </div>
@@ -269,6 +275,16 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    const pdfTab = document.getElementById('pdf-tab');
+    const pdfIframe = document.getElementById('pdf-tab-iframe');
+    if (pdfTab && pdfIframe) {
+        pdfTab.addEventListener('shown.bs.tab', function () {
+            if (! pdfIframe.src) {
+                pdfIframe.src = pdfIframe.dataset.src;
+            }
+        }, {once: true});
+    }
+
     const dRows = document.getElementById('deduction-rows');
     let dIdx = {{ count($deductionLines ?? []) }};
     document.getElementById('add-deduction').addEventListener('click', function () {
