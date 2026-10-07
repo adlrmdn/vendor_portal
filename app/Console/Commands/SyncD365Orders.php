@@ -266,7 +266,14 @@ class SyncD365Orders extends Command
                 $this->warn("Reassigned {$reassigned} existing PO(s) to a different vendor (D365 vendor account changed).");
             }
 
-            // Insert Items
+            // Insert/refresh items. D365 can revise an already-synced line's
+            // quantity/price/tolerance after the fact (e.g. a quantity or price
+            // correction); matching on the key alone and only inserting-if-missing
+            // would silently freeze those fields at whatever they were the first
+            // time this line was seen. Locally-owned fields (status, fabric_type,
+            // color, specifications) are never touched here.
+            $itemsUpdated = 0;
+            $numericItemFields = ['quantity', 'underdelivery', 'overdelivery', 'unit_price', 'total_price'];
             foreach ($allLines as $l) {
                 $poNumber = $l['PurchaseOrderNumber'];
                 if (isset($poMap[$poNumber])) {
@@ -277,14 +284,15 @@ class SyncD365Orders extends Command
                     // A PO can repeat the same (ItemNumber, batch) across distinct
                     // D365 lines (e.g. a quantity split), so LineNumber — D365's
                     // actual per-line identity — must be part of the match key too,
-                    // or firstOrCreate collapses them into one row and drops the rest.
-                    PoItem::firstOrCreate([
+                    // or matching collapses them into one row and drops the rest.
+                    $matchKey = [
                         'po_id' => $poId,
                         'item_number' => $l['ItemNumber'],
                         'batch' => $l['ItemBatchNumber'] ?? null,
                         'line_number' => $l['LineNumber'] ?? null,
-                    ], [
-                        'id' => (string) Str::uuid(),
+                    ];
+
+                    $d365Values = [
                         'description' => $l['LineDescription'],
                         'plm_number' => $plmId,
                         'quantity' => $l['OrderedPurchaseQuantity'] ?? 0.0,
@@ -293,11 +301,46 @@ class SyncD365Orders extends Command
                         'unit' => $l['PurchaseUnitSymbol'],
                         'unit_price' => $l['PurchasePrice'] ?? 0.0,
                         'total_price' => $l['LineAmount'] ?? 0.0,
-                        'status' => 'pending',
-                    ]);
+                    ];
+
+                    $item = PoItem::where($matchKey)->first();
+
+                    if (! $item) {
+                        PoItem::create($matchKey + $d365Values + [
+                            'id' => (string) Str::uuid(),
+                            'status' => 'pending',
+                        ]);
+
+                        continue;
+                    }
+
+                    $changedFields = [];
+                    foreach ($d365Values as $key => $value) {
+                        $current = $item->{$key};
+                        $isChanged = in_array($key, $numericItemFields, true)
+                            ? abs((float) $current - (float) $value) > 0.01
+                            : (string) $current !== (string) $value;
+
+                        if ($isChanged) {
+                            $changedFields[] = $key;
+                        }
+                    }
+
+                    if (! empty($changedFields)) {
+                        Log::warning('Fabric PO item revised by D365 sync', [
+                            'po_number' => $poNumber,
+                            'item_number' => $l['ItemNumber'],
+                            'line_number' => $l['LineNumber'] ?? null,
+                            'item_status' => $item->status,
+                            'changed_fields' => $changedFields,
+                        ]);
+                        $item->fill($d365Values);
+                        $item->save();
+                        $itemsUpdated++;
+                    }
                 }
             }
-            $this->info('Inserted valid items (skipping duplicates).');
+            $this->info("Inserted new items; refreshed {$itemsUpdated} existing item(s) with revised D365 values.");
 
             DB::commit();
             $this->info('D365 ETL pipeline finished successfully.');

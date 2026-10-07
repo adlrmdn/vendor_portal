@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\PoItem;
 use App\Models\PurchaseOrder;
 use App\Models\User;
 use App\Models\Vendor;
@@ -215,5 +216,105 @@ class SyncD365OrdersTest extends TestCase
         $po = PurchaseOrder::where('po_number', 'MPG/PO/2608/00301')->first();
         $this->assertNotNull($po);
         $this->assertEquals($vendor->id, $po->vendor_id);
+    }
+
+    /**
+     * Regression case: MPG/PO/2608/01433 had its D365 line revised (qty 571 -> 720,
+     * price 11261.26 -> 8558.56) after the first sync. firstOrCreate() used to make
+     * the insert step a no-op for a line that already matched, so the local
+     * quantity/price/tolerance froze at the original values forever while the PO
+     * header's total_amount (recalculated every run) kept tracking D365. Verify the
+     * line itself now gets refreshed too, without touching the locally-owned
+     * status field.
+     */
+    public function test_sync_refreshes_revised_item_without_touching_local_status()
+    {
+        $this->withoutExceptionHandling();
+
+        $vendor = new Vendor([
+            'name' => 'Existing Vendor',
+            'vendor_code' => 'V0795',
+            'type' => 'fabric',
+            'is_active' => true,
+        ]);
+        $vendor->id = (string) Str::uuid();
+        $vendor->save();
+
+        $baseLine = [
+            'PurchaseOrderNumber' => 'MPG/PO/2608/01433',
+            'ItemNumber' => '2605000000599',
+            'ItemBatchNumber' => 'Minimal Greta Vest Brown_Light - SPRING-27',
+            'LineNumber' => 1,
+            'LineDescription' => 'WOVEN 100% POLYESTER',
+            'PurchaseRequisitionId' => '',
+            'AllowedUnderdeliveryPercentage' => 7.0,
+            'AllowedOverdeliveryPercentage' => 7.0,
+            'PurchaseUnitSymbol' => 'YD',
+        ];
+        $lineAsFirstSynced = $baseLine + [
+            'OrderedPurchaseQuantity' => 571.0,
+            'PurchasePrice' => 11261.26,
+            'LineAmount' => 6430179.46,
+        ];
+        $lineAsRevisedByD365 = $baseLine + [
+            'OrderedPurchaseQuantity' => 720.0,
+            'PurchasePrice' => 8558.56,
+            'LineAmount' => 6162163.20,
+        ];
+
+        // Http::fake() stacks rather than replaces stubs registered for the same
+        // URL pattern (the first-registered match wins), so the two sync runs'
+        // differing PurchaseOrderLinesV2 responses must be a single sequence,
+        // not two separate Http::fake() calls.
+        Http::fake([
+            'https://login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'mock-token',
+                'expires_in' => 3600,
+            ], 200),
+            'https://test.dynamics.com/data/PurchaseOrderHeadersV2*' => Http::response([
+                'value' => [
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/2608/01433',
+                        'OrderVendorAccountNumber' => 'V0795',
+                        'DocumentApprovalStatus' => 'Confirmed',
+                        'PurchPoolId' => 'Fab-Local',
+                        'dataAreaId' => 'mpg',
+                        'CreatedDateTime1' => '2026-09-02T13:00:31Z',
+                        'CurrencyCode' => 'IDR',
+                    ],
+                ],
+            ], 200),
+            'https://test.dynamics.com/data/TOC_PurchRequisitions*' => Http::response(['value' => []], 200),
+            'https://test.dynamics.com/data/PurchaseOrderLinesV2*' => Http::sequence()
+                ->push(['value' => [$lineAsFirstSynced]], 200)
+                ->push(['value' => [$lineAsRevisedByD365]], 200),
+        ]);
+
+        $this->assertEquals(0, Artisan::call('d365:sync-orders', ['--company' => 'mpg', '--months' => 6]));
+
+        $item = PoItem::where('item_number', '2605000000599')->first();
+        $this->assertNotNull($item);
+        $this->assertEquals(571.00, $item->quantity);
+
+        // Simulate the vendor/admin having since marked the (then seemingly
+        // in-tolerance) item completed through the app's own roll-saving flow.
+        $item->status = 'completed';
+        $item->save();
+
+        // D365 revises the line: quantity up, price down. The header total
+        // legitimately changes too (571*11261.26 -> 720*8558.56).
+        $this->assertEquals(0, Artisan::call('d365:sync-orders', ['--company' => 'mpg', '--months' => 6]));
+
+        $this->assertEquals(1, PoItem::where('item_number', '2605000000599')->count(), 'Revised line must update the existing row, not insert a duplicate.');
+
+        $item->refresh();
+        $this->assertEquals(720.00, $item->quantity);
+        $this->assertEquals(8558.56, $item->unit_price);
+        $this->assertEquals(6162163.20, $item->total_price);
+        // Locally-owned field: must survive the D365 refresh untouched.
+        $this->assertEquals('completed', $item->status);
+
+        $po = PurchaseOrder::where('po_number', 'MPG/PO/2608/01433')->first();
+        $this->assertEquals(6162163.20, $po->total_amount);
     }
 }
