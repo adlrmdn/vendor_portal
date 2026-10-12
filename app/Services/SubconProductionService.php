@@ -120,11 +120,19 @@ class SubconProductionService
                         return $this->sizeToRank($line->Size ?? '');
                     })->values();
 
+                    // plm_activity.ArticleName is captured once when the PLM activity
+                    // is created and never refreshed — if the item is later renamed in
+                    // D365 (e.g. a color-name correction), this goes stale while
+                    // production_group_lines.SearchName (synced off the live item
+                    // master) stays current. Prefer SearchName; ArticleName is only a
+                    // fallback for a group with no lines synced yet.
+                    $freshArticleName = $sortedLines->first(fn ($line) => ! empty($line->SearchName))?->SearchName;
+
                     return [
                         'plm_id' => $a->PLMId,
                         'production_group' => $a->ProductionGroup,
                         'article_code' => $a->ArticleCode,
-                        'article_name' => $a->ArticleName,
+                        'article_name' => $freshArticleName ?: $a->ArticleName,
                         'brand' => $a->Brand,
                         'colour' => $a->Colour,
                         'group_name' => $a->GroupName,
