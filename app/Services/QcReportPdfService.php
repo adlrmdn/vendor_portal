@@ -426,12 +426,18 @@ class QcReportPdfService
                         : null;
 
                     $f->issue_consumption = null;
+                    // issue_proposal mirrors issue_consumption, never D365's
+                    // ProposalBOMQuantity — confirmed live that it repeats the
+                    // same snapshot across multiple consumption journals on
+                    // one production order (no reversal between them), so
+                    // summing it double-counts. If consumption has no data,
+                    // this stays null (blank) rather than falling back to it.
                     $f->issue_proposal = null;
                     $f->issue_all_posted = true;
                     foreach (array_filter(array_map('trim', explode(',', (string) $f->item_number))) as $it) {
                         if (isset($materialIssue[$it])) {
                             $f->issue_consumption = ($f->issue_consumption ?? 0) + $materialIssue[$it]['consumption'];
-                            $f->issue_proposal = ($f->issue_proposal ?? 0) + $materialIssue[$it]['proposal'];
+                            $f->issue_proposal = $f->issue_consumption;
                             $f->issue_all_posted = $f->issue_all_posted && $materialIssue[$it]['all_posted'];
                         }
                     }
@@ -604,7 +610,11 @@ class QcReportPdfService
                         }
                         if (isset($materialIssue[$it])) {
                             $consumption = ($consumption ?? 0) + $materialIssue[$it]['consumption'];
-                            $matsSentD365 = ($matsSentD365 ?? 0) + $materialIssue[$it]['proposal'];
+                            // Mats Sent D365 fallback mirrors $consumption, never
+                            // ProposalBOMQuantity — see materialIssueForOrder()'s
+                            // docblock: proposal double-counts across journals. If
+                            // consumption has no data, this stays null (blank).
+                            $matsSentD365 = $consumption;
                             $allPosted = $allPosted && $materialIssue[$it]['all_posted'];
                         }
                     }

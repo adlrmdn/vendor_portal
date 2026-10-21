@@ -1319,11 +1319,20 @@ class SubconProductionService
      * admin-entered Fabric Sent to the decimal (420.00 = 420.00).
      *
      * `proposal` = D365's suggested/planned issue quantity (BOM standard × qty
-     * produced) computed before consumption was posted — the closest available
-     * proxy for "material sent for production" absent a dedicated dispatch
-     * event in this app. `consumption` = what was actually posted as consumed.
-     * `all_posted` is false if any contributing line is still a draft
-     * (`IsPosted` = No) — those figures may still move.
+     * produced). **Unreliable to sum**: confirmed live that D365 repeats the
+     * same ProposalBOMQuantity snapshot across multiple consumption journals
+     * on the same production order+item (no reversal line between them), so
+     * naively summing it across journal rows double-counted (234+234=468
+     * instead of 234) — it is NOT a per-journal delta the way
+     * ConsumptionBOMQuantity is. Returned as-is for any caller that wants the
+     * raw figure, but no caller in this app should use it as the "material
+     * sent" display value — use `consumption` instead. `consumption` = what
+     * was actually posted as consumed; a true per-journal delta (reversal +
+     * repost pairs net correctly, verified against a real order where it
+     * matched the admin-entered Fabric Sent to the decimal, 420.00 = 420.00)
+     * — this is what feeds the "Material Issue" prefill/reference everywhere
+     * in the app. `all_posted` is false if any contributing line is still a
+     * draft (`IsPosted` = No) — those figures may still move.
      *
      * @return array<string, array{proposal: float, consumption: float, all_posted: bool}>
      */
@@ -1397,6 +1406,13 @@ class SubconProductionService
         // prefill. Used below as a reference/prefill for Fabric Sent when no
         // admin value is saved yet: this order's OWN production runs only
         // (ProductionGroup-scoped), unlike bom_lines' style-wide BOM Final.
+        // Uses 'consumption', NOT 'proposal': confirmed live that D365 repeats
+        // the same ProposalBOMQuantity snapshot across multiple consumption
+        // journals on the same production order (two journals both carrying
+        // proposal=234 with no reversal between them), so summing it doubled
+        // the real figure (468 instead of 234). ConsumptionBOMQuantity is a
+        // true per-journal delta — confirmed reversal/repost pairs net
+        // correctly — so it's safe to sum.
         $materialIssue = $this->materialIssueForOrder((string) $order->production_group);
         $issueSent = function (?string $itemNumberCsv) use ($materialIssue) {
             if (! $itemNumberCsv) {
@@ -1405,7 +1421,7 @@ class SubconProductionService
             $sum = null;
             foreach (array_filter(array_map('trim', explode(',', $itemNumberCsv))) as $it) {
                 if (isset($materialIssue[$it])) {
-                    $sum = ($sum ?? 0) + $materialIssue[$it]['proposal'];
+                    $sum = ($sum ?? 0) + $materialIssue[$it]['consumption'];
                 }
             }
 

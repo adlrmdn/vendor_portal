@@ -62,15 +62,21 @@
     // Retur/Balance (quantity only) still show when available.
     $showExpectedBalance = $showClaim;
 
-    // Sum the D365 Material Issue "proposal" qty across every item number a
+    // Sum the D365 Material Issue "consumption" qty across every item number a
     // grouped accessory line carries (accessoryLinesForPo() joins them with
     // ", " into item_number) — same split QcReportPdfService's buildAccRow
     // uses. Returns null when none of the item numbers have a posting.
+    // Deliberately 'consumption', never 'proposal': confirmed live that D365
+    // repeats the same ProposalBOMQuantity snapshot across multiple
+    // consumption journals on one production order, so summing it
+    // double-counts — see SubconProductionService::materialIssueForOrder()'s
+    // docblock. If consumption has no data, this stays null (blank) rather
+    // than falling back to proposal.
     $sumIssueProposal = function (?string $itemNumberCsv) use ($accessoryIssue) {
         $sum = null;
         foreach (array_filter(array_map('trim', explode(',', (string) $itemNumberCsv))) as $it) {
             if (isset($accessoryIssue[$it])) {
-                $sum = ($sum ?? 0) + $accessoryIssue[$it]['proposal'];
+                $sum = ($sum ?? 0) + $accessoryIssue[$it]['consumption'];
             }
         }
 
