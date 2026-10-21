@@ -952,9 +952,15 @@ class RpaQueueService
     }
 
     /**
-     * Invoice for one Official Report's own AddPro PO — spec §10. Separate
-     * entity scheme/rpa_type from queueInvoice() (no qms `$project` object
-     * here): entity_id = "{production_group}:{operation}", amount =
+     * Invoice for one Official Report's own AddPro PO — spec §10. Same
+     * rpa_type ('invoice') AND entity_type ('packaging_project', the
+     * upsertJob() default) as queueInvoice() — pending_invoice/listener.py
+     * hard-filters entity_type = 'packaging_project', so tagging this
+     * 'add_process' (as goods_receive's queue does, which has its own
+     * dedicated addprocess_listener.py) would leave it stuck at status=
+     * 'pending' forever, picked up by no bot. Deliberately indistinguishable
+     * from a normal invoice downstream — only the entity scheme differs (no
+     * qms `$project` object here): entity_id = "{production_group}:{operation}", amount =
      * unit_price (matched PO line, resolveAddProcessLineUnitPrice()) *
      * good_qty. Best-effort/never-throwing, same contract as every other
      * method here.
@@ -980,9 +986,9 @@ class RpaQueueService
                 'amount' => $unitPrice * (float) $report->good_qty,
             ];
 
-            $queuedPayload = $this->offloadSignedDocToS3('invoice_addprocess', $entityId, $payload);
+            $queuedPayload = $this->offloadSignedDocToS3('invoice', $entityId, $payload);
 
-            $this->upsertJob($entityId, 'invoice_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing'], entityType: 'add_process');
+            $this->upsertJob($entityId, 'invoice', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing']);
 
             return true;
         } catch (\Throwable $e) {
@@ -995,7 +1001,9 @@ class RpaQueueService
     /**
      * Deduction for one Official Report — only queued when
      * $report->totalDeduction() > 0, same "only when > 0" rule as
-     * queueDeduction(). Separate rpa_type (`deduction_addprocess`) — spec §10.
+     * queueDeduction(). Same rpa_type ('deduction') AND entity_type
+     * ('packaging_project') as queueDeduction() — see
+     * queueOfficialReportInvoice()'s docblock for why.
      */
     public function queueOfficialReportDeduction(\App\Models\SubconOfficialReport $report, string $signedDoc): bool
     {
@@ -1014,9 +1022,9 @@ class RpaQueueService
                 'amount' => $amount,
             ];
 
-            $queuedPayload = $this->offloadSignedDocToS3('deduction_addprocess', $entityId, $payload);
+            $queuedPayload = $this->offloadSignedDocToS3('deduction', $entityId, $payload);
 
-            $this->upsertJob($entityId, 'deduction_addprocess', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing'], entityType: 'add_process');
+            $this->upsertJob($entityId, 'deduction', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'waiting', 'incomplete', 'processing']);
 
             return true;
         } catch (\Throwable $e) {
