@@ -3,7 +3,7 @@
 @section('title', 'Workflow Settings')
 
 @section('content')
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
     <div>
         <h2 class="mb-0">Workflow Settings</h2>
         <small class="text-muted">Configure who receives fabric tolerance &amp; partial-shipment approval requests</small>

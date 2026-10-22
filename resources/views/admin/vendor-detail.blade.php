@@ -4,7 +4,7 @@
 
 @section('content')
     <div class="container-fluid">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
             <div>
                 <a href="{{ route('admin.vendors') }}" class="btn btn-sm btn-outline-secondary mb-2">
                     <i class="fas fa-arrow-left me-2"></i>Back to Vendors
@@ -114,16 +114,16 @@
                     </div>
                     <div class="card-body">
                         <ul class="list-group list-group-flush">
-                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <li class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 Total POs
                                 <span class="badge bg-primary rounded-pill">{{ $vendor->purchaseOrders()->count() }}</span>
                             </li>
-                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <li class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 Active POs
                                 <span
                                     class="badge bg-warning rounded-pill">{{ $vendor->activePurchaseOrders()->count() }}</span>
                             </li>
-                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <li class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 Completed POs
                                 <span
                                     class="badge bg-success rounded-pill">{{ $vendor->purchaseOrders()->where('status', 'completed')->count() }}</span>

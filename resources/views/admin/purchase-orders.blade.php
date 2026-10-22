@@ -4,7 +4,7 @@
 
 @section('content')
     <div class="container-fluid">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
             <h1 class="h3">Purchase Orders</h1>
         </div>
 
@@ -81,7 +81,7 @@
             </div>
         </div>
 
-        <div class="d-flex justify-content-between align-items-center mb-3">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
             <div class="d-flex align-items-center">
                 <form action="{{ route('admin.purchase-orders') }}" method="GET" class="d-flex align-items-center">
                     @if(request('search')) <input type="hidden" name="search" value="{{ request('search') }}"> @endif

@@ -14,6 +14,38 @@
                         </a>
                     </li>
                     <li>
+                        <div class="d-flex align-items-center pc-submenu-row">
+                            <a href="{{ route('admin.pc.index') }}"
+                                class="nav-link flex-grow-1 {{ request()->routeIs('admin.pc.index') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Preliminary Contract">
+                                <i class="fas fa-file-contract me-2"></i> <span>Preliminary Contract</span>
+                            </a>
+                            <button type="button" class="btn pc-submenu-caret {{ request()->routeIs('admin.pc.*') ? '' : 'collapsed' }}"
+                                data-bs-toggle="collapse" data-bs-target="#pcSidebarSubmenu"
+                                aria-expanded="{{ request()->routeIs('admin.pc.*') ? 'true' : 'false' }}" aria-controls="pcSidebarSubmenu"
+                                aria-label="Toggle Preliminary Contract submenu">
+                                <i class="fas fa-chevron-down"></i>
+                            </button>
+                        </div>
+                        <div class="collapse {{ request()->routeIs('admin.pc.*') ? 'show' : '' }}" id="pcSidebarSubmenu">
+                            <ul class="nav flex-column pc-submenu">
+                                <li>
+                                    <a href="{{ route('admin.pc.index') }}" class="nav-link {{ request()->routeIs('admin.pc.index') ? 'active' : '' }}">Dashboard</a>
+                                </li>
+                                <li>
+                                    <a href="{{ route('admin.pc.contracts.create') }}" class="nav-link {{ request()->routeIs('admin.pc.contracts.create') ? 'active' : '' }}">
+                                        <i class="fas fa-plus small me-1"></i>New Contract
+                                    </a>
+                                </li>
+                                <li>
+                                    <a href="{{ route('admin.pc.contracts.index') }}" class="nav-link {{ request()->routeIs('admin.pc.contracts.*') && ! request()->routeIs('admin.pc.contracts.create') ? 'active' : '' }}">Contract List</a>
+                                </li>
+                                <li>
+                                    <a href="{{ route('admin.pc.data.index') }}" class="nav-link {{ request()->routeIs('admin.pc.data.*') ? 'active' : '' }}">Data Management</a>
+                                </li>
+                            </ul>
+                        </div>
+                    </li>
+                    <li>
                         <a href="{{ route('admin.purchase-orders') }}"
                             class="nav-link text-nowrap {{ request()->routeIs('admin.purchase-orders') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Purchase Orders">
                             <i class="fas fa-file-invoice me-2"></i> <span>Purchase Orders</span>

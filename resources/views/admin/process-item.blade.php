@@ -5,7 +5,7 @@
 @section('content')
     <div class="container-fluid">
         <!-- Header -->
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
             <div>
                 <h1 class="h3">Process Item</h1>
                 <nav aria-label="breadcrumb">
@@ -44,7 +44,7 @@
         <!-- Item Info Card -->
         <div class="card mb-4">
             <div class="card-body">
-                <div class="d-flex justify-content-between align-items-center mb-1">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-1">
                     <div class="text-muted fw-bold small">
                         Item Description
                         <span class="text-dark ms-2">|</span>
@@ -113,7 +113,7 @@
         <div class="row">
             <div class="col-md-12">
                 <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
+                    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                         <h5 class="mb-0 d-flex align-items-center">
                             Manage Rolls
                             <button type="button" class="btn btn-link text-info p-0 ms-2" data-bs-toggle="modal" data-bs-target="#instructionsModal" title="Show Instructions">

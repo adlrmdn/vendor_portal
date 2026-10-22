@@ -2,6 +2,13 @@
 
 use App\Http\Controllers\AdminController;
 use App\Http\Controllers\FinanceAdminController;
+use App\Http\Controllers\PcAdminController;
+use App\Http\Controllers\PcContractController;
+use App\Http\Controllers\PcContractSearchController;
+use App\Http\Controllers\PcController;
+use App\Http\Controllers\PcMasterDataController;
+use App\Http\Controllers\PcTotpController;
+use App\Http\Controllers\PcVendorContractController;
 use App\Http\Controllers\RpaFinalizeController;
 use App\Http\Controllers\SubconAddProcessController;
 use App\Http\Controllers\SubconAdminController;
@@ -101,6 +108,66 @@ Route::middleware(['auth', 'role:admin,fabric_admin'])->prefix('admin')->name('a
     // Fabric Workflow (approval email routing)
     Route::get('/workflow', [AdminController::class, 'workflow'])->name('workflow');
     Route::post('/workflow', [AdminController::class, 'updateWorkflow'])->name('workflow.update');
+
+    // PC (Preliminary Contract) — Phase 1: foundations only (master data,
+    // D365/VSM feed admin, audit log, dashboard skeleton, Approver-pool
+    // settings, TOTP step-up setup). No contract/contract_line routes yet
+    // — those are Phase 2+. Absorbed directly into the fabric admin area
+    // (user's call): no dedicated PC role, same admin/fabric_admin gate as
+    // every other route in this group. The Approver pool is an existing
+    // fabric_admin/admin account chosen by email in the pc_approver_emails
+    // setting (PcAdminController::isPcApproverUser(), mirroring
+    // SubconAdminController::isDirectorUser()'s identical pattern) — managed
+    // on the Workflow page below, same as fabric_approver_email already is.
+    Route::prefix('pc')->name('pc.')->group(function () {
+        // Four top-level sections (Dashboard / New Contract / Contract List /
+        // Data Management), each its own page, surfaced both as a sidebar
+        // submenu and as a persistent in-module section nav — see
+        // PcController's docblock.
+        Route::get('/', [PcController::class, 'dashboard'])->name('index');
+        Route::get('/data', [PcController::class, 'data'])->name('data.index');
+
+        Route::post('/master-data/hs-codes', [PcMasterDataController::class, 'storeHsCode'])->name('master-data.hs-codes.store');
+        Route::post('/master-data/lots', [PcMasterDataController::class, 'storeLot'])->name('master-data.lots.store');
+        Route::post('/master-data/transport-modes', [PcMasterDataController::class, 'storeTransportMode'])->name('master-data.transport-modes.store');
+        Route::post('/master-data/delivery-terms', [PcMasterDataController::class, 'storeDeliveryTerm'])->name('master-data.delivery-terms.store');
+        Route::post('/master-data/seasons', [PcMasterDataController::class, 'storeSeason'])->name('master-data.seasons.store');
+        Route::put('/master-data/seasons/{season}', [PcMasterDataController::class, 'updateSeason'])->name('master-data.seasons.update');
+
+        Route::get('/sync/poll', [PcAdminController::class, 'syncPoll'])->name('sync.poll');
+        Route::post('/sync/{feed}', [PcAdminController::class, 'refreshFeed'])->name('sync.refresh');
+
+        Route::post('/workflow', [PcAdminController::class, 'updateWorkflow'])->name('workflow.update');
+
+        // Reachable by any fabric_admin/admin through this same group's
+        // gate, but PcTotpController::ensureIsApprover() is the real check
+        // — a fabric_admin who isn't a configured Approver gets 403 inside
+        // the controller (defense-in-depth, same shape as
+        // authorizeAdmin()/isDirectorUser() elsewhere in this app).
+        Route::post('/totp/confirm', [PcTotpController::class, 'confirmSetup'])->name('totp.confirm');
+        Route::post('/totp/{user}/disable', [PcTotpController::class, 'disable'])->name('totp.disable');
+
+        // PC Phase 2 — contract creation & vendor review (see the PC Phase 2
+        // plan). No dedicated 6th tab — full CRUD+pagination doesn't fit a
+        // Bootstrap tab-pane, so these are ordinary pages linked from the
+        // /admin/pc tab bar instead.
+        Route::get('/contracts', [PcContractController::class, 'index'])->name('contracts.index');
+        Route::get('/contracts/create', [PcContractController::class, 'create'])->name('contracts.create');
+        Route::post('/contracts', [PcContractController::class, 'store'])->name('contracts.store');
+        Route::get('/contracts/{contract}', [PcContractController::class, 'show'])->name('contracts.show');
+        Route::get('/contracts/{contract}/edit', [PcContractController::class, 'edit'])->name('contracts.edit');
+        Route::put('/contracts/{contract}', [PcContractController::class, 'update'])->name('contracts.update');
+        Route::post('/contracts/{contract}/submit', [PcContractController::class, 'submit'])->name('contracts.submit');
+        Route::post('/contracts/{contract}/approve', [PcContractController::class, 'approve'])->name('contracts.approve');
+        Route::post('/contracts/{contract}/reject', [PcContractController::class, 'reject'])->name('contracts.reject');
+        Route::post('/contracts/{contract}/cancel', [PcContractController::class, 'cancel'])->name('contracts.cancel');
+        Route::post('/contracts/{contract}/revise', [PcContractController::class, 'revise'])->name('contracts.revise');
+        Route::get('/contracts/{contract}/pdf', [PcContractController::class, 'pdf'])->name('contracts.pdf');
+
+        Route::get('/search/fabric-items', [PcContractSearchController::class, 'searchFabricItems'])->name('search.fabric-items');
+        Route::get('/search/plm-refs', [PcContractSearchController::class, 'searchPlmRefs'])->name('search.plm-refs');
+        Route::get('/search/fdr-lookup', [PcContractSearchController::class, 'fdrLookup'])->name('search.fdr-lookup');
+    });
 });
 
 // Finance Admin Routes
@@ -111,11 +178,13 @@ Route::middleware(['auth', 'role:admin,finance_admin'])->prefix('finance/admin')
     Route::get('/fabric-delivery', [FinanceAdminController::class, 'fabricDelivery'])->name('fabric-delivery');
     Route::get('/fabric-delivery/export', [FinanceAdminController::class, 'fabricDeliveryExport'])->name('fabric-delivery.export');
     Route::get('/invoices', [FinanceAdminController::class, 'invoices'])->name('invoices');
+    Route::get('/invoices/export', [FinanceAdminController::class, 'invoicesExport'])->name('invoices.export');
     Route::get('/debit-notes', [FinanceAdminController::class, 'debitNotes'])->name('debit-notes');
     Route::post('/debit-notes/retry-waiting', [FinanceAdminController::class, 'retryAllWaitingDebitNotes'])->name('debit-notes.retry-waiting');
     Route::post('/checks/{id}/toggle', [FinanceAdminController::class, 'toggleCheck'])->name('checks.toggle');
     Route::get('/report/{rpaType}/{id}', [FinanceAdminController::class, 'report'])->name('report');
 });
+
 
 // Vendor Routes
 Route::middleware(['auth', 'role:fabric_vendor'])->prefix('vendor')->name('vendor.')->group(function () {
@@ -146,6 +215,17 @@ Route::middleware(['auth', 'role:fabric_vendor'])->prefix('vendor')->name('vendo
     Route::post('/tolerance/amend', [VendorController::class, 'requestToleranceAmendment'])->name('tolerance.amend');
     Route::post('/tolerance/{request}/cancel', [VendorController::class, 'cancelAmendmentRequest'])->name('tolerance.cancel');
     Route::post('/partial/request', [VendorController::class, 'requestPartialShipment'])->name('partial.request');
+
+    // PC Phase 2 — vendor review (PcVendorContractController, its own class
+    // rather than folded in here, matching Phase 1's precedent of PC
+    // getting its own Pc*Controllers).
+    Route::prefix('pc')->name('pc.')->group(function () {
+        Route::get('/contracts', [PcVendorContractController::class, 'index'])->name('contracts.index');
+        Route::get('/contracts/{contract}', [PcVendorContractController::class, 'show'])->name('contracts.show');
+        Route::post('/contracts/{contract}/accept', [PcVendorContractController::class, 'accept'])->name('contracts.accept');
+        Route::post('/contracts/{contract}/query', [PcVendorContractController::class, 'query'])->name('contracts.query');
+        Route::get('/contracts/{contract}/pdf', [PcVendorContractController::class, 'pdf'])->name('contracts.pdf');
+    });
 });
 
 // Approval Routes (Signed URLs)
@@ -168,6 +248,7 @@ Route::post('/subcon/official-report/{report}/director-decline', [App\Http\Contr
 Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->name('subcon.admin.')->group(function () {
     Route::get('/dashboard', [SubconAdminController::class, 'dashboard'])->name('dashboard');
     Route::get('/invoices', [SubconAdminController::class, 'invoices'])->name('invoices');
+    Route::get('/invoices/export', [SubconAdminController::class, 'invoicesExport'])->name('invoices.export');
     Route::get('/invoices/report/{id}', [SubconAdminController::class, 'invoiceReport'])->name('invoices.report');
     Route::get('/debit-notes', [SubconAdminController::class, 'debitNotes'])->name('debit-notes');
     Route::get('/debit-notes/report/{id}', [SubconAdminController::class, 'debitNoteReport'])->name('debit-notes.report');
@@ -197,6 +278,8 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     Route::post('/orders/{id}/cutting-plan', [SubconCuttingPlanController::class, 'save'])->name('orders.cutting-plan.save');
     Route::post('/orders/{id}/status', [SubconAdminController::class, 'updateOrderStatus'])->name('orders.update-status');
     Route::post('/orders/{id}/capacity', [SubconAdminController::class, 'updateCapacity'])->name('orders.update-capacity');
+    Route::post('/orders/{id}/extra-production-group', [SubconAdminController::class, 'attachExtraProductionGroup'])->name('orders.extra-production-group.attach');
+    Route::delete('/orders/{id}/extra-production-group/{extraGroupId}', [SubconAdminController::class, 'detachExtraProductionGroup'])->name('orders.extra-production-group.detach');
     Route::post('/orders/{id}/material-recon', [SubconAdminController::class, 'saveMaterialReconciliation'])->name('orders.material-recon.save');
     Route::post('/orders/{id}/approve', [SubconApprovalController::class, 'approveInApp'])->name('orders.approve');
     Route::post('/orders/{id}/decline', [SubconApprovalController::class, 'declineInApp'])->name('orders.decline');
@@ -221,9 +304,14 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
 
     // Official Report (Berita Acara) — in-app send/HO-approve/Director-approve/decline.
     Route::post('/official-reports/send', [App\Http\Controllers\SubconOfficialReportController::class, 'send'])->name('official-reports.send');
+    Route::get('/official-reports/{id}/document', [App\Http\Controllers\SubconOfficialReportController::class, 'document'])->name('official-reports.document');
     Route::post('/official-reports/{id}/ho-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'hoApproveInApp'])->name('official-reports.ho-approve');
     Route::post('/official-reports/{id}/director-approve', [App\Http\Controllers\SubconOfficialReportController::class, 'directorApproveInApp'])->name('official-reports.director-approve');
     Route::post('/official-reports/{id}/director-decline', [App\Http\Controllers\SubconOfficialReportController::class, 'directorDeclineInApp'])->name('official-reports.director-decline');
+    // Quiet undo of a send — mirrors director-approvals.recall (QC sessions)
+    // for the Official Report row type; no reason/email, open to any
+    // subcon admin, not just the Director.
+    Route::post('/official-reports/{id}/recall', [App\Http\Controllers\SubconOfficialReportController::class, 'recall'])->name('official-reports.recall');
 });
 
 // Subcon Approval Routes (Signed URLs from approval emails)

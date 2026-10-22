@@ -1,0 +1,10 @@
+﻿kind,row_no,label,tolerance,highlight
+WOVEN,1,More than 3000 mtrs/yds,+2%,false
+WOVEN,2,2000-3000 mtrs/yds,+3%,false
+WOVEN,3,1000-1999 mtrs/yds,+5%,false
+WOVEN,4,500-999 mtrs/yds,+7%,false
+WOVEN,5,<=499 meters/yards,+10%,false
+KNIT,1,Above and equal to 300 kgs,+3%,false
+KNIT,2,100-299 kgs,+5%,false
+KNIT,3,<= 99 kgs,+10%,false
+KNIT,4,Rib + Flat Knit Collar + Cuff,+3%,true

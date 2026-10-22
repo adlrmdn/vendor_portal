@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <link rel="icon" href="{{ asset('images/favicon.png') }}" type="image/png">
     <title>@yield('title', 'Vendor Portal')</title>
@@ -165,6 +165,150 @@
             display: block;
             width: fit-content;
         }
+
+        /* Preliminary Contract sidebar submenu (Dashboard / New Contract /
+           Contract List / Data Management). The caret only toggles the
+           submenu — the row's own link still navigates to the Dashboard —
+           so it needs its own compact, de-emphasized hit target next to
+           the nav-link rather than sharing its click area. */
+        .pc-submenu-caret {
+            color: #adb5bd;
+            padding: 0 10px;
+            border: none;
+            background: none;
+        }
+        .pc-submenu-caret:hover,
+        .pc-submenu-caret:focus {
+            color: #fff;
+        }
+        .pc-submenu-caret i {
+            transition: transform .2s ease;
+        }
+        .pc-submenu-caret[aria-expanded="true"] i {
+            transform: rotate(180deg);
+        }
+        .pc-submenu {
+            padding: 2px 0 6px 2.1rem;
+        }
+        .pc-submenu .nav-link {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            color: #adb5bd;
+        }
+        .pc-submenu .nav-link:hover,
+        .pc-submenu .nav-link.active {
+            color: white;
+            background-color: #495057;
+            border-radius: 6px;
+        }
+        /* The icon-only collapsed rail has no room for a submenu (and no
+           label to hang it off of) — only offer it when the sidebar is
+           fully docked and expanded. On mobile the drawer always shows full
+           labels regardless of this saved preference (see the breakpoint
+           below), so the submenu stays available there too. */
+        @media (min-width: 992px) {
+            body[data-sidebar-collapsed="true"] .pc-submenu-caret,
+            body[data-sidebar-collapsed="true"] #pcSidebarSubmenu {
+                display: none !important;
+            }
+        }
+
+        /* Notched/Dynamic-Island phones (iPhone 17 and friends): keep the
+           navbar clear of the hardware cutout in landscape, where the
+           cutout sits inside the horizontal edges rather than the top. */
+        .navbar {
+            padding-left: max(0.75rem, env(safe-area-inset-left));
+            padding-right: max(0.75rem, env(safe-area-inset-right));
+        }
+
+        #mobileSidebarToggle {
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+
+        #mobileSidebarBackdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, .45);
+            z-index: 1040;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity .2s ease;
+        }
+
+        body.mobile-sidebar-open #mobileSidebarBackdrop {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Phones and small tablets, portrait or landscape (below Bootstrap's
+           lg breakpoint — the docked sidebar has no room to coexist with
+           content on any current iPhone, including iPhone 17/17 Pro/Pro Max).
+           The sidebar becomes a slide-in drawer instead of a docked column,
+           and the desktop icon-only "collapsed" mode is suspended — it's a
+           docked-rail concept that doesn't apply to a touch overlay. */
+        @media (max-width: 991.98px) {
+            html, body {
+                overflow-x: hidden;
+            }
+
+            .row.flex-nowrap {
+                flex-wrap: nowrap;
+            }
+
+            .sidebar,
+            body[data-sidebar-collapsed="true"] .sidebar {
+                position: fixed;
+                top: 56px;
+                bottom: 0;
+                left: 0;
+                height: auto;
+                min-height: 0;
+                width: min(78vw, 280px) !important;
+                min-width: 0 !important;
+                flex: 0 0 auto !important;
+                transform: translateX(-100%);
+                transition: transform .25s ease;
+                z-index: 1045;
+                padding-left: env(safe-area-inset-left);
+                box-shadow: 2px 0 16px rgba(0, 0, 0, .25);
+                overflow-y: auto;
+            }
+
+            body.mobile-sidebar-open .sidebar {
+                transform: translateX(0);
+            }
+
+            /* The icon-only collapse state is desktop-only; on a drawer,
+               always show full labels regardless of the saved preference. */
+            body[data-sidebar-collapsed="true"] .sidebar span:not(.badge),
+            body[data-sidebar-collapsed="true"] .sidebar hr,
+            body[data-sidebar-collapsed="true"] .sidebar .small,
+            body[data-sidebar-collapsed="true"] .sidebar .badge span,
+            body[data-sidebar-collapsed="true"] .sidebar .nav-link span {
+                display: unset !important;
+            }
+
+            body[data-sidebar-collapsed="true"] .sidebar .nav-link {
+                justify-content: flex-start;
+            }
+
+            #sidebarToggle {
+                display: none;
+            }
+
+            .sidebar .nav-link {
+                padding: 0.85rem 1rem;
+                font-size: 1rem;
+            }
+
+            .content-area,
+            body[data-sidebar-collapsed="true"] .content-area {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                padding: 15px;
+            }
+        }
     </style>
     @stack('styles')
 </head>
@@ -175,9 +319,15 @@
          kept (so a logged-in admin can still navigate), but the role sidebar is
          dropped so the page reads as a focused, standalone approval. --}}
     @php($__bare = trim($__env->yieldContent('bare')) !== '')
+    <div id="mobileSidebarBackdrop" onclick="closeMobileSidebar()"></div>
     <!-- Navigation -->
     <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
         <div class="container-fluid">
+            @if(auth()->check() && ! $__bare)
+                <button type="button" id="mobileSidebarToggle" class="btn btn-link text-dark d-lg-none p-2 me-1" aria-label="Open menu" onclick="toggleMobileSidebar()">
+                    <i class="fas fa-bars"></i>
+                </button>
+            @endif
             <a class="navbar-brand d-flex align-items-center" href="{{ url('/') }}">
                 <img src="{{ asset('images/mpg_header.png') }}" alt="Logo" height="24" class="me-2">
                 Vendor Portal
@@ -185,8 +335,13 @@
 
 
 
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
+            {{-- Bootstrap's default toggler icon is also 3 horizontal lines —
+                 identical at a glance to the sidebar drawer's hamburger
+                 above, even though this one opens an unrelated account menu
+                 (language/notifications/profile). A user icon reads as "my
+                 account" instead of a second, confusing "menu" button. --}}
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-label="Account menu">
+                <i class="fas fa-user-circle fs-4 text-secondary"></i>
             </button>
 
             <div class="collapse navbar-collapse" id="navbarNav">
@@ -338,6 +493,23 @@
         var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
         var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
             return new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+
+        // Mobile sidebar drawer (phones/small tablets below the lg breakpoint)
+        function openMobileSidebar() {
+            document.body.classList.add('mobile-sidebar-open');
+        }
+        function closeMobileSidebar() {
+            document.body.classList.remove('mobile-sidebar-open');
+        }
+        function toggleMobileSidebar() {
+            document.body.classList.toggle('mobile-sidebar-open');
+        }
+        // Rotating into landscape or resizing past the breakpoint shouldn't
+        // leave the drawer stuck open underneath the now-docked sidebar.
+        var __mobileSidebarMq = window.matchMedia('(min-width: 992px)');
+        __mobileSidebarMq.addEventListener('change', function (e) {
+            if (e.matches) closeMobileSidebar();
         });
 
         // Sidebar Toggle Logic

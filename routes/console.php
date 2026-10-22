@@ -32,3 +32,17 @@ Schedule::command('subcon:reconcile-project-completion --fix')->everyFifteenMinu
 // routinely lapses before an admin works through a multi-item backlog.
 // Every 30 minutes stays comfortably inside that TTL.
 Schedule::command('qc:warm-approval-caches')->everyThirtyMinutes();
+
+// PC module — vendor enrichment (update-only, existing fabric vendors) and
+// fabric-item master feed. Not time-critical, so a lighter cadence than the
+// PO syncs above is fine (see each command's docblock for the still-open
+// D365 field-name verification items — confirm those before relying on
+// this schedule in production).
+Schedule::command('pc:enrich-vendors --company=mpg')->everyFourHours();
+Schedule::command('pc:sync-fabric-items --company=mpg')->everyFourHours();
+
+// PC module — PLM id feed, read from the vsm plm_activity table (not a
+// D365 call). The PC spec requires same-day freshness, so this runs
+// hourly; the PC admin sync screen also offers a manual "refresh now" for
+// anything more urgent.
+Schedule::command('pc:sync-plm-refs')->hourly();

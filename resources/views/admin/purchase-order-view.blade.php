@@ -7,7 +7,7 @@
         $poItems = $purchaseOrder->items;
     @endphp
     <div class="container-fluid">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
             <div>
                 <a href="{{ route('admin.purchase-orders') }}" class="btn btn-sm btn-outline-secondary mb-2">
                     <i class="fas fa-arrow-left me-2"></i>Back to Purchase Orders
@@ -92,7 +92,7 @@
                 @foreach($purchaseOrder->items as $item)
                     <div class="card mb-3">
                         <div class="card-header bg-light">
-                            <div class="d-flex justify-content-between align-items-center mb-1">
+                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-1">
                                 <div class="d-flex align-items-center">
                                     <strong class="me-2">Item {{ $item->item_number }}</strong>
                                     <span class="badge badge-{{ $item->status }}">
@@ -233,7 +233,7 @@
                                         }
                                     @endphp
 
-                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
                                         <h6 class="mb-0">Rolls Details:</h6>
                                         <div class="d-flex align-items-center">
                                             <span class="badge bg-primary me-2">Total Rolls: {{ $sortedRolls->count() }}</span>

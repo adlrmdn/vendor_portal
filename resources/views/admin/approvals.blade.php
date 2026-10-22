@@ -3,7 +3,7 @@
 @section('title', 'Approvals')
 
 @section('content')
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
     <div>
         <h2 class="mb-0">Approvals</h2>
         <small class="text-muted">Tolerance amendments &amp; partial shipment requests awaiting your decision</small>

@@ -4,7 +4,7 @@
 
 @section('content')
     <div class="container-fluid">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
             <h1 class="h3 mb-0">Vendors</h1>
             <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addVendorModal">
                 <i class="fas fa-plus me-2"></i>Add New Vendor

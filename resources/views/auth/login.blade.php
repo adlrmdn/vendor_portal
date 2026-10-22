@@ -1,8 +1,8 @@
 @extends('layouts.app')
 
 @section('content')
-    <div class="container">
-        <div class="row justify-content-center align-items-center" style="height: calc(100vh - 76px);">
+    <div class="container login-wrap d-flex align-items-center justify-content-center">
+        <div class="row justify-content-center w-100">
             <div class="col-xl-9 col-lg-10">
                 <div class="card shadow-lg border-0">
                     <div class="card-body p-0">
@@ -19,7 +19,7 @@
                             </div>
 
                             <!-- Right Side: Login Form -->
-                            <div class="col-md-7 p-5">
+                            <div class="col-md-7 p-4 p-md-5">
                                 <div class="d-md-none text-center mb-4">
                                     <!-- Cropped Logo Container -->
                                     <div style="height: 60px; overflow: hidden; display: inline-block;">
@@ -100,8 +100,25 @@
         </div>
     </div>
     <style>
-        body {
-            overflow: hidden;
+        /* Desktop: pin the card to the vertical center of the one-screen
+           login page, same as before. Mobile: same centering, but height
+           (not min-height) plus body overflow:hidden would clip the form
+           if it's ever taller than the viewport (a validation error, a
+           small/landscape phone) — so this grows instead of cutting it off,
+           and uses dvh so mobile browsers' animated address bar doesn't
+           throw the centering off (the plain-vh bug behind the earlier
+           "card floating in a mis-measured box" screenshot). */
+        .login-wrap {
+            min-height: calc(100vh - 76px);
+            min-height: calc(100dvh - 76px);
+            padding-top: 1.5rem;
+            padding-bottom: 1.5rem;
+        }
+
+        @media (min-width: 992px) {
+            body {
+                overflow: hidden;
+            }
         }
     </style>
 @endsection

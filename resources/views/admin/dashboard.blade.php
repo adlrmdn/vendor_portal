@@ -14,7 +14,7 @@
             <div class="col-md-3">
                 <div class="card stat-card">
                     <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
                             <div>
                                 <h6 class="card-subtitle mb-2 text-muted">Total POs</h6>
                                 <h3 class="card-title mb-0">{{ $stats['total_pos'] ?? 0 }}</h3>
@@ -31,7 +31,7 @@
                 <a href="{{ route('admin.purchase-orders', ['status' => 'active']) }}" class="text-decoration-none">
                     <div class="card stat-card" style="border-left-color: #ffc107;">
                         <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-center">
+                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 <div>
                                     <h6 class="card-subtitle mb-2 text-muted">Active POs</h6>
                                     <h3 class="card-title mb-0 text-dark">{{ $stats['active_pos'] ?? 0 }}</h3>
@@ -49,7 +49,7 @@
                 <a href="{{ route('admin.purchase-orders', ['status' => 'completed']) }}" class="text-decoration-none">
                     <div class="card stat-card" style="border-left-color: #198754;">
                         <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-center">
+                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 <div>
                                     <h6 class="card-subtitle mb-2 text-muted">Completed POs</h6>
                                     <h3 class="card-title mb-0 text-dark">{{ $stats['completed_pos'] ?? 0 }}</h3>
@@ -66,7 +66,7 @@
             <div class="col-md-3">
                 <div class="card stat-card">
                     <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
                             <div>
                                 <h6 class="card-subtitle mb-2 text-muted">Active Vendors</h6>
                                 <h3 class="card-title mb-0">{{ $stats['total_vendors'] ?? 0 }}</h3>
@@ -82,7 +82,7 @@
 
         <!-- Recent Purchase Orders -->
         <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0">Recent Purchase Orders</h5>
                 <a href="{{ route('admin.purchase-orders') }}" class="btn btn-sm btn-primary">
                     View All <i class="fas fa-arrow-right ms-1"></i>
