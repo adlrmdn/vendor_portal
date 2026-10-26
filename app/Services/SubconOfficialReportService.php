@@ -88,19 +88,29 @@ class SubconOfficialReportService
     {
         $cmtOrder = SubconOrder::where('production_group', $productionGroup)->first();
 
-        if ($cmtOrder) {
-            if (in_array($cmtOrder->workflow_stage, [
-                SubconOrder::STAGE_CUTTING,
-                SubconOrder::STAGE_CUTTING_REVIEW,
-            ], true)) {
-                return ['ok' => false, 'reason' => 'Cutting has not been approved yet for this work order.', 'cmt_order' => $cmtOrder, 'matched_po' => null];
-            }
-        } else {
-            $cutQuantities = $this->production->cutQuantitiesForGroup($productionGroup);
-            $hasCutQty = collect($cutQuantities)->contains(fn ($c) => ($c['good'] ?? 0) > 0);
-            if (! $hasCutQty) {
-                return ['ok' => false, 'reason' => 'The D365 cut qty job sync is still blank for this in-house production group.', 'cmt_order' => null, 'matched_po' => null];
-            }
+        // Gated on actual cutting OUTPUT existing — the same cut_qty
+        // computeYield()/the Add Process page itself already show, sourced
+        // from D365's own CMT-Cut/IN-Cut job sync blended with any local
+        // vendor-submitted cutting report — rather than on the CMT work
+        // order's own in-app cutting approval having run. Approval and
+        // physical cutting are frequently out of sync (the factory can cut
+        // and move pieces into Washing/Embro well before anyone has
+        // touched the portal's Cutting Entry form), and an Add Process
+        // operation is its own independent commercial commitment (separate
+        // PO/vendor) that has no actual data dependency on the CMT side's
+        // approval state — only on cutting having genuinely happened.
+        // Previously this checked $cmtOrder->workflow_stage against
+        // STAGE_CUTTING/STAGE_CUTTING_REVIEW instead; changed 2026-10-26
+        // because that blocked a confirmed, already-cut Add Process
+        // operation purely on the CMT order's own approval paperwork
+        // lagging behind, with no cut-qty dependency to justify it.
+        $hasCutQty = $this->computeYield($productionGroup, $operation)['cut_qty'] > 0;
+        if (! $hasCutQty) {
+            $reason = $cmtOrder
+                ? 'No cutting output recorded yet for this work order.'
+                : 'The D365 cut qty job sync is still blank for this in-house production group.';
+
+            return ['ok' => false, 'reason' => $reason, 'cmt_order' => $cmtOrder, 'matched_po' => null];
         }
 
         $pos = $this->production->addProcessPurchaseOrdersForGroup($productionGroup);
