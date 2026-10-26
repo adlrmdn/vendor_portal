@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exports\RpaInvoiceExport;
 use App\Exports\SubconCuttingReportExport;
 use App\Jobs\SyncSubconOrdersJob;
 use App\Models\SubconAddProcessReport;
@@ -55,6 +56,17 @@ class SubconAdminController extends Controller
         return view('subcon.admin.dashboard', compact('stats', 'recentOrders', 'syncRunning', 'syncLast'));
     }
 
+    /** Sort key (as used in the `sort` query param / column headers) => row field. */
+    private const INVOICE_SORTABLE_COLUMNS = [
+        'po' => 'po',
+        'vendor' => 'vendor_name',
+        'style' => 'style',
+        'status' => 'status',
+        'submission' => 'created_at',
+        'updated' => 'updated_at',
+        'checked' => 'checked',
+    ];
+
     /**
      * Read-only view of invoice RPA jobs for subcon vendors — same underlying
      * data as the finance admin Invoices tab (RpaQueueReadService), scoped to
@@ -65,26 +77,8 @@ class SubconAdminController extends Controller
      */
     public function invoices(Request $request)
     {
-        $rows = $this->rpaQueueReader->rows('invoice')->where('portal', 'Subcon')->values();
+        ['rows' => $rows, 'filters' => $filters] = $this->filteredInvoiceRows($request);
 
-        $status = $request->query('status', '');
-        if ($status !== '' && in_array($status, RpaQueueReadService::STATUSES, true)) {
-            $rows = $rows->where('status', $status);
-        }
-
-        $checked = $request->query('checked', '');
-        if ($checked !== '') {
-            $rows = $rows->where('checked', $checked === '1');
-        }
-
-        $search = trim((string) $request->query('q', ''));
-        if ($search !== '') {
-            $needle = strtolower($search);
-            $rows = $rows->filter(fn ($row) => str_contains(strtolower($row->po), $needle)
-                || str_contains(strtolower($row->vendor_name), $needle));
-        }
-
-        $rows = $rows->values();
         $perPage = 25;
         $page = max(1, (int) $request->query('page', 1));
 
@@ -108,8 +102,57 @@ class SubconAdminController extends Controller
 
         return view('subcon.admin.invoices', [
             'rows' => $paginated,
-            'filters' => ['status' => $status, 'checked' => $checked, 'q' => $search],
+            'filters' => $filters,
         ]);
+    }
+
+    /** Same (filtered, sorted) rows as invoices(), as an .xlsx — no pagination. */
+    public function invoicesExport(Request $request)
+    {
+        $rows = $this->filteredInvoiceRows($request)['rows'];
+
+        $name = 'invoices-'.now('Asia/Jakarta')->format('Ymd-Hi').'.xlsx';
+
+        return Excel::download(new RpaInvoiceExport($rows, 'Invoices', includePortal: false), $name);
+    }
+
+    /**
+     * Shared filter + sort step behind invoices() (for the paginated
+     * on-screen table) and invoicesExport() (which exports the same filtered
+     * set, unpaginated).
+     *
+     * @return array{rows: \Illuminate\Support\Collection, filters: array<string,string>}
+     */
+    private function filteredInvoiceRows(Request $request): array
+    {
+        $filters = [
+            'status' => $request->query('status', ''),
+            'checked' => $request->query('checked', ''),
+            'q' => trim((string) $request->query('q', '')),
+            'sort' => $request->query('sort', ''),
+            'dir' => $request->query('dir', 'asc') === 'desc' ? 'desc' : 'asc',
+        ];
+
+        $rows = $this->rpaQueueReader->rows('invoice')->where('portal', 'Subcon')->values();
+
+        if ($filters['status'] !== '' && in_array($filters['status'], RpaQueueReadService::STATUSES, true)) {
+            $rows = $rows->where('status', $filters['status']);
+        }
+        if ($filters['checked'] !== '') {
+            $rows = $rows->where('checked', $filters['checked'] === '1');
+        }
+        if ($filters['q'] !== '') {
+            $needle = strtolower($filters['q']);
+            $rows = $rows->filter(fn ($row) => str_contains(strtolower($row->po), $needle)
+                || str_contains(strtolower($row->vendor_name), $needle));
+        }
+
+        if (array_key_exists($filters['sort'], self::INVOICE_SORTABLE_COLUMNS)) {
+            $field = self::INVOICE_SORTABLE_COLUMNS[$filters['sort']];
+            $rows = $filters['dir'] === 'desc' ? $rows->sortByDesc($field) : $rows->sortBy($field);
+        }
+
+        return ['rows' => $rows->values(), 'filters' => $filters];
     }
 
     /**
@@ -612,7 +655,23 @@ class SubconAdminController extends Controller
         $qcPipelineByOrder = $this->qcPipelineStatusForOrders(collect($orders->items()));
         $addProcessMode = false;
 
-        return view('subcon.admin.orders.index', compact('orders', 'vendors', 'qcPipelineByOrder', 'addProcessMode'));
+        // Add Process rows live on an entirely different row source
+        // (vsm.job_transaction_headers, keyed by ProductionGroup+Operation —
+        // see addProcessOrdersList()'s docblock) than subcon_orders, so a PRG
+        // search here would otherwise never surface an Add-Process-only
+        // operation for that group even though it's clearly "in the system".
+        // Merged in only when searching — the unfiltered default list (and
+        // its pagination) is untouched.
+        $addProcessSearchRows = collect();
+        $ordersByGroup = collect();
+        if ($request->filled('search')) {
+            [$addProcessRows, $ordersByGroup] = $this->buildAddProcessRows($request->search, $request->vendor_id ?: null, $production);
+            if ($addProcessRows->isNotEmpty()) {
+                $addProcessSearchRows = $this->enrichAddProcessRows($addProcessRows, $production);
+            }
+        }
+
+        return view('subcon.admin.orders.index', compact('orders', 'vendors', 'qcPipelineByOrder', 'addProcessMode', 'addProcessSearchRows', 'ordersByGroup'));
     }
 
     /**
@@ -626,6 +685,52 @@ class SubconAdminController extends Controller
      * Process page, never the CMT order page.
      */
     private function addProcessOrdersList(Request $request, SubconProductionService $production)
+    {
+        [$rows, $ordersByGroup] = $this->buildAddProcessRows($request->search, $request->vendor_id ?: null, $production);
+
+        $perPage = 20;
+        $page = LengthAwarePaginator::resolveCurrentPage();
+        // Style/size/vendor-name resolution is done only for the current
+        // page's rows (not all matches) since each needs a live/vsm round
+        // trip — see enrichAddProcessRows()'s docblock.
+        $pageRows = $this->enrichAddProcessRows($rows->forPage($page, $perPage)->values(), $production);
+
+        $addProcessRows = new LengthAwarePaginator(
+            $pageRows,
+            $rows->count(),
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        $vendors = Vendor::where('type', 'subcon')->where('is_active', true)->orderBy('name')->get();
+        $addProcessMode = true;
+
+        return view('subcon.admin.orders.index', [
+            'orders' => $addProcessRows,
+            'ordersByGroup' => $ordersByGroup,
+            'vendors' => $vendors,
+            'qcPipelineByOrder' => [],
+            'addProcessMode' => $addProcessMode,
+            'addProcessSearchRows' => collect(),
+        ]);
+    }
+
+    /**
+     * Shared row-building core of addProcessOrdersList() — also used by
+     * orders() to surface matching Add-Process rows inline on the plain
+     * "All Work Orders" search (see that method's docblock for why: these
+     * rows come from vsm.job_transaction_headers, not subcon_orders, so a
+     * PRG search against subcon_orders alone would never find them).
+     * Returns the fully filtered, sorted, but NOT yet style/vendor-name
+     * enriched row collection, plus the ProductionGroup -> SubconOrder map
+     * used for display fallback — enrichment is a separate step
+     * (enrichAddProcessRows()) so each caller can choose how much of the
+     * result set to resolve (a full page vs. a small search match).
+     *
+     * @return array{0: \Illuminate\Support\Collection, 1: \Illuminate\Support\Collection}
+     */
+    private function buildAddProcessRows(?string $search, ?string $vendorId, SubconProductionService $production): array
     {
         $raw = DB::connection('vsm')->table('job_transaction_headers')
             ->where('Operation', 'ilike', 'ADD-%')
@@ -677,8 +782,9 @@ class SubconAdminController extends Controller
         // this specific operation — don't clutter the list with it.
         $rows = $rows->filter(fn ($r) => $r['matched_po'] !== null);
 
-        if ($request->filled('search')) {
-            $term = strtolower(trim($request->search));
+        $search = trim((string) $search);
+        if ($search !== '') {
+            $term = strtolower($search);
             $rows = $rows->filter(fn ($r) => str_contains(strtolower($r['production_group']), $term)
                 || str_contains(strtolower($r['operation']), $term));
         }
@@ -686,33 +792,38 @@ class SubconAdminController extends Controller
         $groups = $rows->pluck('production_group')->unique()->values();
         $ordersByGroup = SubconOrder::with('vendor')->whereIn('production_group', $groups)->get()->keyBy('production_group');
 
-        if ($request->filled('vendor_id')) {
-            $rows = $rows->filter(fn ($r) => ($ordersByGroup->get($r['production_group'])?->vendor_id) === $request->vendor_id);
+        if ($vendorId) {
+            $rows = $rows->filter(fn ($r) => ($ordersByGroup->get($r['production_group'])?->vendor_id) === $vendorId);
         }
 
         $rows = $rows->sortBy([['production_group', 'asc'], ['operation', 'asc']])->values();
 
-        $perPage = 20;
-        $page = LengthAwarePaginator::resolveCurrentPage();
-        $pageRows = $rows->forPage($page, $perPage)->values();
+        return [$rows, $ordersByGroup];
+    }
 
-        // Style name, size count, and Add Process vendor name: resolved only
-        // for the current page's rows (not all matches) since each needs a
-        // live/vsm round-trip. Style name and size count come straight from
-        // VSM (production_group_lines) rather than a linked order's own
-        // columns — many of these rows have no linked SubconOrder at all
-        // (in-house, or the Add Process PO's own vendor is deliberately
-        // unregistered).
-        $productionGroupsOnPage = $pageRows->pluck('production_group')->unique()->all();
-        $styleNames = $production->styleNamesForGroups($productionGroupsOnPage);
-        $sizeCounts = $production->sizeCountsForGroups($productionGroupsOnPage);
+    /**
+     * Resolves style name, size count, and Add Process vendor name for a
+     * (small) set of buildAddProcessRows() rows — split out from that method
+     * so a caller showing only a handful of search matches doesn't pay for
+     * every vsm/D365 round trip addProcessOrdersList()'s full pagination
+     * would otherwise require.
+     */
+    private function enrichAddProcessRows(\Illuminate\Support\Collection $rows, SubconProductionService $production): \Illuminate\Support\Collection
+    {
+        if ($rows->isEmpty()) {
+            return $rows;
+        }
+
+        $productionGroups = $rows->pluck('production_group')->unique()->all();
+        $styleNames = $production->styleNamesForGroups($productionGroups);
+        $sizeCounts = $production->sizeCountsForGroups($productionGroups);
         // Vendor name is resolved for the PO actually matched to each row's
         // own operation (not just "the group's first AddPro PO") — a group
         // with two ADD-* steps billed on two different POs needs both named.
-        $addProVendorCodes = $pageRows->pluck('matched_po')->filter()->pluck('vendor_code')->filter()->unique()->values()->all();
+        $addProVendorCodes = $rows->pluck('matched_po')->filter()->pluck('vendor_code')->filter()->unique()->values()->all();
         $addProVendorNames = app(\App\Services\D365JobTransactionService::class)->fetchVendorNames($addProVendorCodes);
 
-        $pageRows = $pageRows->map(function ($r) use ($styleNames, $sizeCounts, $addProVendorNames) {
+        return $rows->map(function ($r) use ($styleNames, $sizeCounts, $addProVendorNames) {
             $r['style_name'] = $styleNames[$r['production_group']] ?? null;
             $r['sizes_count'] = $sizeCounts[$r['production_group']] ?? 0;
             if (! empty($r['matched_po'])) {
@@ -720,26 +831,7 @@ class SubconAdminController extends Controller
             }
 
             return $r;
-        });
-
-        $addProcessRows = new LengthAwarePaginator(
-            $pageRows,
-            $rows->count(),
-            $perPage,
-            $page,
-            ['path' => $request->url(), 'query' => $request->query()]
-        );
-
-        $vendors = Vendor::where('type', 'subcon')->where('is_active', true)->orderBy('name')->get();
-        $addProcessMode = true;
-
-        return view('subcon.admin.orders.index', [
-            'orders' => $addProcessRows,
-            'ordersByGroup' => $ordersByGroup,
-            'vendors' => $vendors,
-            'qcPipelineByOrder' => [],
-            'addProcessMode' => $addProcessMode,
-        ]);
+        })->values();
     }
 
     /** Orders currently awaiting a cutting or gramasi approval decision. */
@@ -748,7 +840,11 @@ class SubconAdminController extends Controller
         $search = trim((string) $request->query('q', ''));
 
         $query = SubconOrder::with('vendor')
-            ->whereIn('workflow_stage', [SubconOrder::STAGE_CUTTING_REVIEW, SubconOrder::STAGE_GRAMASI_REVIEW]);
+            ->whereIn('workflow_stage', [SubconOrder::STAGE_CUTTING_REVIEW, SubconOrder::STAGE_GRAMASI_REVIEW])
+            // Add Process POs can't actually be approved here (see
+            // SubconApprovalController::doApprove()'s isAddProcess() guard) —
+            // keep them off this list entirely rather than show a dead-end button.
+            ->whereNull('add_process_operation');
 
         if ($search !== '') {
             $words = array_filter(explode(' ', $search));
@@ -807,19 +903,38 @@ class SubconAdminController extends Controller
             $pending = self::filterPendingRows($pending, $search);
         }
 
-        // Official Report rows needing MD Production's revision (Director
-        // declined) — union alongside the qms-session rows, same page, per
-        // the design's "one page, no redundant new list" decision.
+        // Official Report rows awaiting MD Production — both a fresh send
+        // (revision_count=0) and a resend after the Director declined
+        // (revision_count>0) — union alongside the qms-session rows, same
+        // page, per the design's "one page, no redundant new list" decision.
+        // Every qc_ho_approver_email recipient already has a subcon_admin
+        // portal account (confirmed live), so there's no real reason a first
+        // send should be email-only while a revision gets this in-app row —
+        // the email still goes out either way as a notification/fallback.
         $officialReportRevisions = \App\Models\SubconOfficialReport::where('status', \App\Models\SubconOfficialReport::STATUS_PENDING_HO)
-            ->where('revision_count', '>', 0)
             ->get()
             ->map(fn ($r) => [
                 'type' => 'official_report',
+                'id' => $r->id,
                 'token' => null,
                 'order_id' => null,
                 'order_number' => $r->operation,
                 'production_group' => $r->production_group,
-                'style' => null,
+                'po_number' => $r->matched_po_number,
+                // There's no SubconOrder to link to (order_id above is
+                // always null for this row type — it's keyed by
+                // production_group+operation, not a work order), so every
+                // identifier in this row links here instead: the Add
+                // Process tab's own page for this group, same redirect
+                // target SubconAdminController::viewOrder() sends a
+                // flagged order to.
+                'add_process_url' => route('subcon.admin.add-process.index', ['prg' => $r->production_group]),
+                // Same source as pendingValidateSends()'s $order->title —
+                // the CMT order carries the synced style name, which this
+                // row has no field of its own for.
+                'style' => \App\Models\SubconOrder::where('production_group', $r->production_group)
+                    ->whereNull('add_process_operation')
+                    ->value('title'),
                 'vendor' => $r->matched_po_vendor_name,
                 'ho_signature' => $r->ho_approval_signature,
                 'deduction_total' => $r->totalDeduction(),
@@ -895,12 +1010,22 @@ class SubconAdminController extends Controller
             'tokens.*' => 'string',
         ]);
 
+        // approval_token is a uuid column — a blank value (official_report
+        // rows have no qms session and send data-token="") fails the whole
+        // whereIn with a Postgres "invalid input syntax for type uuid"
+        // error, which the catch below then turns into a silent empty
+        // response for every token in the batch, not just the blank one.
+        $tokens = array_values(array_filter($data['tokens'], fn ($t) => $t !== ''));
+        if (empty($tokens)) {
+            return response()->json([]);
+        }
+
         $rpaQueue = app(RpaQueueService::class);
         $out = [];
 
         try {
             $sessions = DB::connection('qms')->table('packaging_project_sessions')
-                ->whereIn('approval_token', $data['tokens'])
+                ->whereIn('approval_token', $tokens)
                 ->get(['approval_token', 'project_id', 'session_id']);
         } catch (\Throwable $e) {
             Log::warning('Report validation deductions: session lookup failed', ['error' => $e->getMessage()]);
@@ -1201,11 +1326,19 @@ class SubconAdminController extends Controller
             ->get()
             ->map(fn ($r) => [
                 'type' => 'official_report',
+                'id' => $r->id,
                 'token' => null,
                 'order_id' => null,
                 'order_number' => $r->operation,
                 'production_group' => $r->production_group,
-                'style' => null,
+                'po_number' => $r->matched_po_number,
+                // Mirrors reportValidations()'s $officialReportRevisions
+                // mapping — no SubconOrder to link to, so every identifier
+                // in this row points at the Add Process tab's own page.
+                'add_process_url' => route('subcon.admin.add-process.index', ['prg' => $r->production_group]),
+                'style' => \App\Models\SubconOrder::where('production_group', $r->production_group)
+                    ->whereNull('add_process_operation')
+                    ->value('title'),
                 'vendor' => $r->matched_po_vendor_name,
                 'ho_signature' => $r->ho_approval_signature,
                 'deduction_total' => $r->totalDeduction(),
@@ -1676,7 +1809,24 @@ class SubconAdminController extends Controller
     public function viewOrder(string $id, SubconProductionService $production)
     {
         $order = SubconOrder::with(['vendor', 'items'])->findOrFail($id);
-        $productionGroups = $production->forPo($order->order_number);
+
+        // Not a real cutting work order (see SubconOrder::isAddProcess()'s
+        // docblock) — it has no cutting/gramasi page of its own to show.
+        // Send the admin to the exact same place the "Add Process Only" tab's
+        // own View button already goes (resources/views/subcon/admin/orders/
+        // index.blade.php) — the production-group-keyed add-process.index
+        // page — so an Add Process PO behaves identically everywhere it can
+        // be reached from, instead of a second, inconsistent "view" of it.
+        if ($order->isAddProcess()) {
+            if ($order->production_group) {
+                return redirect()->route('subcon.admin.add-process.index', ['prg' => $order->production_group])
+                    ->with('success', $order->order_number.' is an Add Process PO ('.$order->add_process_operation.'), not a work order — showing the Add Process page for this production group instead.');
+            }
+
+            return back()->with('error', $order->order_number.' is an Add Process PO ('.$order->add_process_operation.') with no production group, so there is no Add Process page to show for it.');
+        }
+
+        $productionGroups = array_merge($production->forPo($order->order_number), $production->extraGroupsForOrder($order));
         $summary = $production->summarize($productionGroups);
 
         // Read-only: a genuinely separate commercial PO/vendor from this CMT
@@ -2447,6 +2597,40 @@ class SubconAdminController extends Controller
         $order->save();
 
         return back()->with('success', 'Blister/sack capacity updated.');
+    }
+
+    /**
+     * Manually pin an additional D365 production group onto this order — see
+     * SubconOrderExtraProductionGroup's docblock for why this exists.
+     */
+    public function attachExtraProductionGroup(Request $request, string $id)
+    {
+        $order = SubconOrder::findOrFail($id);
+
+        $data = $request->validate([
+            'production_group' => 'required|string|max:255',
+        ]);
+        $productionGroup = trim($data['production_group']);
+
+        $groups = app(SubconProductionService::class)->forExtraGroup($productionGroup);
+        if (empty($groups)) {
+            return back()->with('error', "Couldn't resolve \"{$productionGroup}\" — it has no production lines in VSM or live D365 yet. Check the production group code and try again.");
+        }
+
+        \App\Models\SubconOrderExtraProductionGroup::firstOrCreate(
+            ['subcon_order_id' => $order->id, 'production_group' => $productionGroup],
+            ['added_by' => Auth::user()->name]
+        );
+
+        return back()->with('success', "Attached {$productionGroup} to this order.");
+    }
+
+    public function detachExtraProductionGroup(string $id, string $extraGroupId)
+    {
+        $extra = \App\Models\SubconOrderExtraProductionGroup::where('subcon_order_id', $id)->findOrFail($extraGroupId);
+        $extra->delete();
+
+        return back()->with('success', "Detached {$extra->production_group} from this order.");
     }
 
     public function printPackagingLabels(Request $request, string $id, SubconLabelService $labels)

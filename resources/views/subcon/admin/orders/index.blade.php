@@ -161,64 +161,7 @@
                         {{-- $order here is a plain ['production_group','operation','reported','addpro_pos']
                              array from vsm.job_transaction_headers, NOT a SubconOrder — this
                              row can exist with no work order at all (in-house production). --}}
-                        @php
-                            $linkedOrder = $ordersByGroup->get($order['production_group']);
-                            // The PO matched to THIS row's own operation (not just any
-                            // PO the group happens to have) — see
-                            // SubconAdminController::addProcessOrdersList(). Every row
-                            // reaching this table already has one: rows without a
-                            // confirmed match are filtered out before pagination.
-                            $addproPo = $order['matched_po'] ?? null;
-                            $extraPos = max(0, count($order['addpro_pos'] ?? []) - 1);
-                        @endphp
-                        <tr>
-                            <td>
-                                {{-- Always label what's shown here — a bare unlabeled PO
-                                     pill is indistinguishable from an "Add Process PO"
-                                     pill at a glance, but the two can be genuinely
-                                     different POs, or (for a standalone/non-PLM group
-                                     with only one PO on record) the very same PO number
-                                     showing up two ways: once as the vendor's synced
-                                     work order, once tagged AddPro-pool in D365. --}}
-                                @if($addproPo)
-                                    <span class="code-pill" style="background-color: #fff4e6; border-color: #ffe0b3;">{{ $addproPo['po_number'] }}</span>
-                                    <div class="text-muted small mt-1">Add Process PO{{ $extraPos > 0 ? ' (+'.$extraPos.' more)' : '' }}</div>
-                                @elseif($linkedOrder)
-                                    <span class="code-pill">{{ $linkedOrder->order_number }}</span>
-                                    <div class="text-muted small mt-1">Work Order</div>
-                                @else
-                                    <span class="text-muted small">—</span>
-                                @endif
-                            </td>
-                            <td><span class="code-pill text-primary" style="background-color: #eff6ff; border-color: #dbeafe;">{{ $order['production_group'] }}</span></td>
-                            <td class="fw-semibold">
-                                @if($addproPo)
-                                    {{ $addproPo['vendor_name'] ?? $addproPo['vendor_code'] ?? '—' }}
-                                @else
-                                    {{ $linkedOrder?->vendor?->name ?? '— (in-house / unregistered)' }}
-                                @endif
-                            </td>
-                            <td>{{ $order['style_name'] ?? $linkedOrder?->title ?? '—' }}</td>
-                            <td><span class="badge bg-light text-dark border">{{ $order['sizes_count'] ?? 0 }} sizes</span></td>
-                            <td>
-                                @php
-                                    // The matched PO's own D365 RequestedDeliveryDate first
-                                    // (this row's actual Add Process PO) — falls back to the
-                                    // linked CMT work order's due_date when the PO doesn't
-                                    // carry one.
-                                    $addProcessDueDate = $addproPo['due_date'] ?? null;
-                                    $addProcessDueDate = $addProcessDueDate ? \Illuminate\Support\Carbon::parse($addProcessDueDate) : $linkedOrder?->due_date;
-                                @endphp
-                                {{ $addProcessDueDate?->format('d M Y') ?? '—' }}
-                            </td>
-                            <td><span class="badge bg-primary-subtle text-primary border">{{ $order['operation'] }}</span></td>
-                            <td><span class="badge-workflow bg-{{ $order['reported'] ? 'success' : 'secondary' }}">{{ $order['reported'] ? 'Reported' : 'Not reported' }}</span></td>
-                            <td class="text-end">
-                                <a href="{{ route('subcon.admin.add-process.index', ['prg' => $order['production_group']]) }}" class="btn btn-sm btn-outline-primary rounded-pill px-3">
-                                    <i class="fas fa-eye me-1"></i> View
-                                </a>
-                            </td>
-                        </tr>
+                        @include('subcon.partials.add-process-row', ['order' => $order, 'ordersByGroup' => $ordersByGroup])
                     @else
                     <tr>
                         <td><span class="code-pill">{{ $order->order_number }}</span></td>
@@ -274,6 +217,20 @@
                         </td>
                     </tr>
                     @endforelse
+                    {{-- Search-only: Add Process rows for a matching PRG/operation,
+                         sourced separately from vsm.job_transaction_headers (not
+                         subcon_orders) — see SubconAdminController::orders()'s
+                         docblock. Never shown on the unfiltered default list. --}}
+                    @if(! ($addProcessMode ?? false) && isset($addProcessSearchRows) && $addProcessSearchRows->isNotEmpty())
+                        <tr>
+                            <td colspan="9" class="text-muted small fw-semibold" style="padding: 10px 16px; background-color: #f8fafc;">
+                                <i class="fas fa-layer-group me-1"></i> Add Process operations matching this search
+                            </td>
+                        </tr>
+                        @foreach($addProcessSearchRows as $order)
+                            @include('subcon.partials.add-process-row', ['order' => $order, 'ordersByGroup' => $ordersByGroup])
+                        @endforeach
+                    @endif
                 </tbody>
             </table>
         </div>
