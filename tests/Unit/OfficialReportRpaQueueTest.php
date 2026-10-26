@@ -34,7 +34,7 @@ class OfficialReportRpaQueueTest extends TestCase
     protected function tearDown(): void
     {
         DB::connection('rpa')->table('rpa_queues')
-            ->whereIn('rpa_type', ['invoice_addprocess', 'deduction_addprocess'])
+            ->whereIn('rpa_type', ['invoice', 'deduction'])
             ->where('entity_id', 'like', 'MPG/PRG/TEST/RPA01%')
             ->delete();
         SubconOfficialReport::where('production_group', 'MPG/PRG/TEST/RPA01')->delete();
@@ -50,8 +50,13 @@ class OfficialReportRpaQueueTest extends TestCase
         $this->assertTrue($ok);
         $this->assertDatabaseHas('rpa_queues', [
             'entity_id' => 'MPG/PRG/TEST/RPA01:ADD-Was',
-            'entity_type' => 'add_process',
-            'rpa_type' => 'invoice_addprocess',
+            // packaging_project, not 'add_process' — see
+            // RpaQueueService::queueOfficialReportInvoice()'s docblock: the
+            // automaton bots hard-filter entity_type='packaging_project',
+            // so tagging this 'add_process' leaves the row picked up by no
+            // bot (commit e76ac7e).
+            'entity_type' => 'packaging_project',
+            'rpa_type' => 'invoice',
             'status' => 'pending',
         ], 'rpa');
     }
@@ -64,15 +69,15 @@ class OfficialReportRpaQueueTest extends TestCase
         $this->assertTrue($service->queueOfficialReportDeduction($zero, 'data:application/pdf;base64,AAAA'));
         $this->assertDatabaseMissing('rpa_queues', [
             'entity_id' => 'MPG/PRG/TEST/RPA01:ADD-Embro',
-            'rpa_type' => 'deduction_addprocess',
+            'rpa_type' => 'deduction',
         ], 'rpa');
 
         $withDeduction = $this->makeReport(['operation' => 'ADD-Sab', 'reject_penalty' => 100000]);
         $this->assertTrue($service->queueOfficialReportDeduction($withDeduction, 'data:application/pdf;base64,AAAA'));
         $this->assertDatabaseHas('rpa_queues', [
             'entity_id' => 'MPG/PRG/TEST/RPA01:ADD-Sab',
-            'entity_type' => 'add_process',
-            'rpa_type' => 'deduction_addprocess',
+            'entity_type' => 'packaging_project',
+            'rpa_type' => 'deduction',
             'status' => 'pending',
         ], 'rpa');
     }

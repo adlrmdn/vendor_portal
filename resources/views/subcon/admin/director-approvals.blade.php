@@ -58,15 +58,32 @@
                         @php $isOfficialReport = ($p['type'] ?? null) === 'official_report'; @endphp
                         <tr data-token="{{ $p['token'] }}">
                             <td style="word-break: break-word;">
-                                @if($p['order_id'])
-                                    <a href="{{ route('subcon.admin.orders.view', $p['order_id']) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $p['order_number'] }}</a>
-                                @else
-                                    <span class="fw-semibold text-primary font-monospace">{{ $p['order_number'] }}</span>
+                                @unless($isOfficialReport)
+                                    {{-- Official Report rows have no work-order number of their
+                                         own ($p['order_number'] holds the operation code instead,
+                                         e.g. "ADD-Was" — folded into the Status badge below so this
+                                         cell matches a normal row's PO/PRG/style/vendor shape). --}}
+                                    @if($p['order_id'])
+                                        <a href="{{ route('subcon.admin.orders.view', $p['order_id']) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $p['order_number'] }}</a>
+                                    @else
+                                        <span class="fw-semibold text-primary font-monospace">{{ $p['order_number'] }}</span>
+                                    @endif
+                                @endunless
+                                @if(! empty($p['po_number']))
+                                    <div class="small">
+                                        @if(! empty($p['add_process_url']))
+                                            <a href="{{ $p['add_process_url'] }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $p['po_number'] }}</a>
+                                        @else
+                                            <span class="fw-semibold text-primary font-monospace">{{ $p['po_number'] }}</span>
+                                        @endif
+                                    </div>
                                 @endif
                                 @if(! empty($p['production_group']))
                                     <div class="small">
                                         @if($p['order_id'])
                                             <a href="{{ route('subcon.admin.orders.view', $p['order_id']) }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $p['production_group'] }}</a>
+                                        @elseif(! empty($p['add_process_url']))
+                                            <a href="{{ $p['add_process_url'] }}" class="fw-semibold text-primary font-monospace text-decoration-none">{{ $p['production_group'] }}</a>
                                         @else
                                             <span class="fw-semibold text-primary font-monospace">{{ $p['production_group'] }}</span>
                                         @endif
@@ -74,23 +91,23 @@
                                 @endif
                                 @if($p['style'])<div class="text-muted small">{{ $p['style'] }}</div>@endif
                                 <div class="text-muted small">{{ $p['vendor'] }}</div>
-                                @if($isOfficialReport)
-                                    <span class="badge bg-info-subtle text-info border border-info-subtle mt-1">Add Process</span>
-                                @endif
                             </td>
                             <td class="small text-muted" style="word-break: break-word;">{{ $p['ho_signature'] ?: '—' }}</td>
                             <td data-deduction-cell>
-                                @if($isOfficialReport)
-                                    Rp {{ number_format($p['deduction_total'], 0, ',', '.') }}
-                                @elseif($p['deduction_total'] === null)
+                                @if($isOfficialReport || $p['deduction_total'] !== null)
+                                    {{-- Same badge component for every row type — see
+                                         report-validations.blade.php's matching comment. --}}
+                                    @include('subcon.partials.report-validation-deduction', ['total' => $p['deduction_total'], 'breakdown' => $p['deduction_breakdown']])
+                                @else
                                     {{-- Deferred — see SubconAdminController::pendingDirectorApprovals()'s
                                          docblock; filled in by the background fetch below. --}}
                                     <span class="placeholder-glow"><span class="placeholder col-8"></span></span>
-                                @else
-                                    @include('subcon.partials.report-validation-deduction', ['total' => $p['deduction_total'], 'breakdown' => $p['deduction_breakdown']])
                                 @endif
                             </td>
                             <td>
+                                @if($isOfficialReport)
+                                    <span class="badge bg-info-subtle text-info border border-info-subtle">Add Process ({{ $p['order_number'] }})</span>
+                                @endif
                                 @if($p['result'])
                                     <div>
                                         <span class="badge {{ strtoupper($p['result']) === 'PASSED' ? 'bg-success-subtle text-success border-success' : 'bg-danger-subtle text-danger border-danger' }} border border-opacity-25">{{ strtoupper($p['result']) }}</span>
@@ -122,7 +139,22 @@
                             </td>
                             <td class="text-end pe-4">
                                 <div class="d-flex gap-2 justify-content-end">
-                                    @unless($isOfficialReport)
+                                    @if($isOfficialReport)
+                                        {{-- The Official Report PDF as it currently stands —
+                                             rendered fresh from current data on every open,
+                                             same as the QC row's "Report" button below. --}}
+                                        <a href="{{ route('subcon.admin.official-reports.document', $p['id']) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
+                                            <i class="fas fa-file-pdf me-1"></i> Report
+                                        </a>
+                                        {{-- Quiet undo of a send — same "no reason, no email" shape
+                                             as the QC row's Recall below, open to any subcon admin. --}}
+                                        <form action="{{ route('subcon.admin.official-reports.recall', $p['id']) }}" method="POST" class="d-inline" onsubmit="return confirm('Recall {{ $p['order_number'] }} back to Report Validation? No email will be sent — this just undoes the send.');">
+                                            @csrf
+                                            <button type="submit" class="btn btn-sm btn-outline-warning">
+                                                <i class="fas fa-rotate-left me-1"></i> Recall
+                                            </button>
+                                        </form>
+                                    @else
                                         {{-- Signed inspection report as it currently stands (QC + Factory
                                              Rep + MD Production signatures) — the email attachment. --}}
                                         <a href="{{ route('qc.document', ['token' => $p['token']]) }}" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">
@@ -137,7 +169,7 @@
                                                 <i class="fas fa-rotate-left me-1"></i> Recall
                                             </button>
                                         </form>
-                                    @endunless
+                                    @endif
                                     @if($isDirector)
                                         @if($isOfficialReport)
                                             {{-- Signed GET confirm pages built in Task 9 — Authorize opens
@@ -240,7 +272,12 @@
             if (! cells.length) {
                 return;
             }
-            const tokens = Array.from(document.querySelectorAll('tr[data-token]')).map(row => row.dataset.token);
+            // Official Report rows carry no qms session (data-token="") —
+            // see report-validations.blade.php's matching comment for why
+            // this must be filtered out before the fetch.
+            const tokens = Array.from(document.querySelectorAll('tr[data-token]'))
+                .map(row => row.dataset.token)
+                .filter(token => token);
             const csrf = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
             fetch(@json(route('subcon.admin.report-validations.deductions')), {

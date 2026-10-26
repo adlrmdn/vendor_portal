@@ -4,6 +4,10 @@
 /public/storage
 /storage/*.key
 /storage/framework/testing
+# Runtime-written, www-data-owned (0700) analysis output — unreadable by the
+# build user and irrelevant to the image anyway since storage/ is bind-mounted
+# at runtime (see docker-compose.yml volumes).
+/storage/app/private/analysis
 /.git
 /.idea
 /.vscode

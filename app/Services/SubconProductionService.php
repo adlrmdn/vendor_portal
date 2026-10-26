@@ -231,6 +231,100 @@ class SubconProductionService
     }
 
     /**
+     * Resolve ONE manually-attached "extra" production group (see
+     * SubconOrderExtraProductionGroup's docblock for why this exists: D365
+     * sometimes spins up a brand-new supplement production group for extra
+     * capacity on a style that already has a CMT PO, with no po_lines/PLM
+     * link this app can discover on its own). VSM-first via
+     * forProductionGroup(); when VSM hasn't synced the group yet (a brand-new
+     * batch can lag a sync cycle), falls back to a live D365 OData fetch so
+     * it shows in the portal immediately rather than waiting on VSM.
+     *
+     * Same return shape as one forPo() entry.
+     *
+     * @return array<int, array{
+     *   plm_id: string, production_group: ?string, article_code: ?string,
+     *   article_name: ?string, brand: ?string, colour: ?string,
+     *   group_name: ?string, plm_status: ?string, total_qty: float,
+     *   lines: array<int, object>
+     * }>
+     */
+    public function forExtraGroup(string $productionGroup): array
+    {
+        $viaVsm = $this->forProductionGroup($productionGroup);
+        if (! empty($viaVsm)) {
+            return $viaVsm;
+        }
+
+        try {
+            $liveLines = $this->d365JobTransactions->fetchProductionGroupLinesLive($productionGroup);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+
+        if (empty($liveLines)) {
+            return [];
+        }
+
+        $sortedLines = collect($liveLines)->map(fn (array $l) => (object) [
+            'ProductionGroup' => $productionGroup,
+            'ProdId' => $l['ProdId'] ?? null,
+            'ItemId' => $l['ItemId'] ?? null,
+            'Size' => $l['Size'] ?? '',
+            'Qty' => $l['Qty'] ?? 0,
+            // Not exposed on the live entity — VSM will fill this in once it syncs.
+            'ProdStatus' => null,
+            'InventSiteId' => $l['InventSiteId'] ?? null,
+            'InventLocationId' => $l['InventLocationId'] ?? null,
+            'SearchName' => null,
+        ])->sortBy(fn ($line) => $this->sizeToRank($line->Size ?? ''))->values();
+
+        return [
+            [
+                'plm_id' => '',
+                'production_group' => $productionGroup,
+                'article_code' => $sortedLines->first()->ItemId ?? null,
+                'article_name' => null,
+                'brand' => null,
+                'colour' => null,
+                'group_name' => null,
+                'plm_status' => null,
+                'season' => null,
+                'world' => null,
+                'department' => null,
+                'category' => null,
+                'subcategory' => null,
+                'total_qty' => (float) $sortedLines->sum('Qty'),
+                'lines' => $sortedLines->all(),
+            ],
+        ];
+    }
+
+    /**
+     * All manually-attached extra production groups for an order, resolved
+     * to the same shape forPo() returns — callers append this to forPo()'s
+     * result before rendering, so the shared production-detail partial (and
+     * cutting-report submission, keyed by prod_id) handle them for free.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function extraGroupsForOrder(\App\Models\SubconOrder $order): array
+    {
+        $productionGroups = \App\Models\SubconOrderExtraProductionGroup::where('subcon_order_id', $order->id)
+            ->orderBy('created_at')
+            ->pluck('production_group');
+
+        $groups = [];
+        foreach ($productionGroups as $productionGroup) {
+            $groups = array_merge($groups, $this->forExtraGroup($productionGroup));
+        }
+
+        return $groups;
+    }
+
+    /**
      * Distinct "add process" side-step operations (ADD-Was/ADD-Embro/ADD-Sab/
      * ADD-Pleat/...) present on a production group's D365 route, together
      * with each one's JobTransactionId and `resource` — read from

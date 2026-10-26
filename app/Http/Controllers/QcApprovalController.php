@@ -860,6 +860,16 @@ class QcApprovalController extends Controller
                     if (Schema::connection('qms')->hasColumn(self::TABLE, 'ho_remarks')) {
                         $update['ho_remarks'] = $data['ho_remarks'] ?? null;
                     }
+                    // The console only flips `result` away from its 'Pending' default
+                    // via a manually-typed Kaizen command (see ai_agent_service.ts) —
+                    // nothing ties it to the actual approval chain, so a session can
+                    // sail through QC+HO sign-off while still showing "Pending". MD
+                    // Production approving IS the pass determination, so auto-set it
+                    // here — but never stomp an inspector's explicit 'Failed'.
+                    if (Schema::connection('qms')->hasColumn(self::TABLE, 'result')
+                        && ! in_array(strtolower((string) ($row->result ?? '')), ['passed', 'failed'], true)) {
+                        $update['result'] = 'Passed';
+                    }
                     DB::connection('qms')->table(self::TABLE)
                         ->where('approval_token', $token)
                         ->where(function ($q) {
@@ -2380,17 +2390,32 @@ class QcApprovalController extends Controller
     private function subconContext(object $row): array
     {
         $productionGroup = null;
+        $poInfo = null;
         if (Schema::connection('qms')->hasTable('packaging_projects')) {
             $project = DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', $row->project_id)->first();
             $productionGroup = $project->production_group ?? null;
+            $poInfo = $project->po_info ?? null;
         }
 
         // Must be an Eloquent SubconOrder (not a stdClass): the consumption engine,
         // publisher, and fabricLinesWithData() all type-hint the model.
-        $subcon = $productionGroup
-            ? SubconOrder::where('production_group', $productionGroup)->first()
-            : null;
+        $subcon = null;
+        if ($productionGroup) {
+            $candidates = SubconOrder::where('production_group', $productionGroup)->get();
+            // Two work orders can share one production_group (same style/cutting
+            // ticket split across POs) — an unordered ->first() over just the
+            // group can silently bind this session to the WRONG sibling order
+            // (e.g. one still at 'cutting' with no saved reconciliation yet),
+            // making the real order's consumption/Material Flow data vanish.
+            // po_info (validated/healed by QcProjectValidator) names the PO this
+            // session is actually for, so prefer matching on that first.
+            if ($candidates->count() > 1 && $poInfo) {
+                $wanted = array_filter(array_map('trim', explode(',', (string) $poInfo)));
+                $subcon = $candidates->first(fn ($c) => in_array($c->order_number, $wanted, true));
+            }
+            $subcon ??= $candidates->first();
+        }
 
         // Live production-group total (VSM-first, local fallback) so it can't drift
         // with stale/edited local cutting rows — matches the consumption engine.

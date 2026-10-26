@@ -60,11 +60,14 @@ class PcController extends Controller
                 'plm_refs' => PcPlmRef::max('synced_at'),
             ],
             'contractCounts' => [
-                'draft' => PcContract::where('status', 'draft')->count(),
-                'pending_vendor_review' => PcContract::where('status', 'pending_vendor_review')->count(),
-                'pending_final_approval' => PcContract::where('status', 'pending_final_approval')->count(),
-                'confirmed' => PcContract::where('status', 'confirmed')->count(),
+                'draft' => PcContract::where('status', PcContract::STATUS_DRAFT)->count(),
+                'pending_approval' => PcContract::where('status', PcContract::STATUS_PENDING_APPROVAL)->count(),
+                'approved' => PcContract::where('status', PcContract::STATUS_APPROVED)->count(),
+                'sent_to_supplier' => PcContract::where('status', PcContract::STATUS_SENT_TO_SUPPLIER)->count(),
+                'confirmed' => PcContract::where('status', PcContract::STATUS_CONFIRMED)->count(),
+                'supplier_queried' => PcContract::where('status', PcContract::STATUS_SUPPLIER_QUERIED)->count(),
             ],
+            'recentContracts' => PcContract::with(['vendor', 'season'])->withCount('lines')->latest()->take(6)->get(),
         ]);
     }
 

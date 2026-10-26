@@ -82,6 +82,25 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
             return;
         }
 
+        $this->runFullGeneration($order);
+    }
+
+    /**
+     * Calls the DTT bot to (re)build the D365 packing instruction and, on
+     * success, advances the order to `labels` and syncs Coli/Blister.
+     *
+     * $preserveStage is true when this is called as a recovery fallback from
+     * recalculateColiBlister() on an order already at labels/completed — the
+     * stage must not be touched (in particular must never un-complete a
+     * finished order), only the underlying D365 data gets (re)built.
+     *
+     * Exceptions intentionally propagate to the caller/queue worker so the
+     * job's own retry/backoff ($tries, $backoff) and failed() handling apply
+     * uniformly whether this runs from the normal waiting_distribution path
+     * or the recalc fallback.
+     */
+    private function runFullGeneration(SubconOrder $order, bool $preserveStage = false): void
+    {
         $unresolvedReason = $this->resolveDistributionId($order);
 
         if (empty($order->distribution_id)) {
@@ -161,7 +180,9 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
             throw new \RuntimeException($fullMessage);
         }
 
-        $order->workflow_stage = SubconOrder::STAGE_LABELS;
+        if (! $preserveStage) {
+            $order->workflow_stage = SubconOrder::STAGE_LABELS;
+        }
         $order->label_gen_status = null;
         $order->label_gen_error = null;
         $order->save();
@@ -220,6 +241,17 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
      * workflow stage. Used both for the "Generate Labels" retry on an
      * already-labelled order and for the on-demand button on the order detail
      * page after the admin edits capacity.
+     *
+     * Dynamic fallback: a prior "generate" run can report success (DTT
+     * returned success:true, workflow_stage already advanced to
+     * labels/completed) while D365 never actually finished writing
+     * TOC_PILines — e.g. the bot's Auto Scan step crashed right after the
+     * TOC_PI header was created. A plain recalc then has zero lines to patch
+     * and used to report a hollow "success", leaving the order stuck forever
+     * (this stage never re-runs the real generate flow on its own). When that
+     * happens — no TOC_PI at all, or a TOC_PI with no lines yet — re-run the
+     * full DTT flow instead of a no-op, preserving the current workflow_stage
+     * either way (an already-completed order must not be un-completed).
      */
     private function recalculateColiBlister(SubconOrder $order): void
     {
@@ -232,30 +264,6 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
         try {
             $stats = app(\App\Services\D365JobTransactionService::class)->syncPackingColiBlister($order);
             Log::info("Coli/Blister recalculation for {$order->order_number}: ".json_encode($stats));
-
-            if (! empty($stats['errors'])) {
-                $order->markLabelGenFailed('Recalculation errors: '.implode('; ', $stats['errors']));
-
-                \App\Models\SubconJobLog::create([
-                    'order_id' => $order->id,
-                    'order_number' => $order->order_number,
-                    'job_type' => 'label_generation',
-                    'status' => 'failed',
-                    'message' => 'Coli/Blister recalculation errors: '.implode('; ', $stats['errors']),
-                ]);
-
-                return;
-            }
-
-            $order->clearLabelGenState();
-
-            \App\Models\SubconJobLog::create([
-                'order_id' => $order->id,
-                'order_number' => $order->order_number,
-                'job_type' => 'label_generation',
-                'status' => 'success',
-                'message' => "Recalculated Coli/Blister with updated capacity ({$stats['patched']} line(s) patched, {$stats['skipped']} unchanged).",
-            ]);
         } catch (\Throwable $e) {
             Log::warning("Coli/Blister recalculation threw for {$order->order_number}: ".$e->getMessage());
             $order->markLabelGenFailed($e->getMessage());
@@ -267,7 +275,44 @@ class GenerateSubconLabels implements ShouldBeUnique, ShouldQueue
                 'status' => 'failed',
                 'message' => $e->getMessage(),
             ]);
+
+            return;
         }
+
+        if ($stats['pis'] === 0 || $stats['total_lines'] === 0) {
+            Log::warning("Recalc for {$order->order_number} found no usable TOC_PILines (pis={$stats['pis']}, total_lines={$stats['total_lines']}) — re-running full label generation instead of a no-op recalc.");
+
+            // Exceptions here propagate to the queue worker so $tries/$backoff
+            // and failed()/markLabelGenFailed() apply, same as a normal
+            // waiting_distribution generation failure.
+            $this->runFullGeneration($order, preserveStage: true);
+
+            return;
+        }
+
+        if (! empty($stats['errors'])) {
+            $order->markLabelGenFailed('Recalculation errors: '.implode('; ', $stats['errors']));
+
+            \App\Models\SubconJobLog::create([
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'job_type' => 'label_generation',
+                'status' => 'failed',
+                'message' => 'Coli/Blister recalculation errors: '.implode('; ', $stats['errors']),
+            ]);
+
+            return;
+        }
+
+        $order->clearLabelGenState();
+
+        \App\Models\SubconJobLog::create([
+            'order_id' => $order->id,
+            'order_number' => $order->order_number,
+            'job_type' => 'label_generation',
+            'status' => 'success',
+            'message' => "Recalculated Coli/Blister with updated capacity ({$stats['patched']} line(s) patched, {$stats['skipped']} unchanged).",
+        ]);
     }
 
     /**

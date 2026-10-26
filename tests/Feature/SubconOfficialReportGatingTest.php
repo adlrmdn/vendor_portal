@@ -52,7 +52,7 @@ class SubconOfficialReportGatingTest extends TestCase
         return $vendor;
     }
 
-    public function test_cmt_group_blocked_while_cutting_not_yet_approved()
+    public function test_cmt_group_blocked_when_no_cutting_output_yet()
     {
         $vendor = $this->makeVendor('V_GATE');
         SubconOrder::create([
@@ -61,27 +61,43 @@ class SubconOfficialReportGatingTest extends TestCase
             'production_group' => $this->prg, 'workflow_stage' => SubconOrder::STAGE_CUTTING_REVIEW,
         ]);
 
+        // No job_transaction_headers/line_details and no SubconCuttingReport
+        // rows seeded for this group, so there's genuinely no cutting output
+        // yet — gate() blocks on that, not on workflow_stage.
         $result = $this->service()->gate($this->prg, 'ADD-Was');
 
         $this->assertFalse($result['ok']);
         $this->assertStringContainsString('cutting', strtolower($result['reason']));
     }
 
-    public function test_cmt_group_passes_cutting_check_once_past_cutting_review()
+    public function test_cmt_group_passes_cutting_check_based_on_cut_output_not_approval_stage()
     {
         $vendor = $this->makeVendor('V_GATE2');
         SubconOrder::create([
             'order_number' => 'PO-GATE-02', 'vendor_id' => $vendor->id, 'title' => 'T',
             'status' => 'pending', 'order_date' => now(),
-            'production_group' => $this->prg, 'workflow_stage' => SubconOrder::STAGE_GRAMASI,
+            // Still unapproved (STAGE_CUTTING, not past cutting_review) — the
+            // point of this test: gate() no longer cares, only cut OUTPUT
+            // existing matters (see gate()'s docblock, changed 2026-10-26).
+            'production_group' => $this->prg, 'workflow_stage' => SubconOrder::STAGE_CUTTING,
+        ]);
+
+        // Real cutting output already synced from D365 (CMT-Cut), even
+        // though the work order's own in-app cutting approval hasn't run.
+        DB::connection('vsm')->table('job_transaction_headers')->insert([
+            'ProductionGroup' => $this->prg, 'Operation' => 'CMT-Cut', 'JobTransactionId' => $this->jobTransactionId,
+        ]);
+        DB::connection('vsm')->table('job_transaction_line_details')->insert([
+            'JobTransactionId' => $this->jobTransactionId, 'Size' => 'M', 'TotalGoodQty' => 100, 'TotalRejectQty' => 0,
         ]);
 
         $result = $this->service()->gate($this->prg, 'ADD-Was');
 
         // No matched PO for this made-up PRG, so still blocked — but NOT on
-        // the cutting-approval reason.
+        // a cutting-output reason.
         $this->assertFalse($result['ok']);
         $this->assertStringNotContainsString('cutting', strtolower($result['reason']));
+        $this->assertStringContainsString('purchase order', strtolower($result['reason']));
     }
 
     public function test_in_house_group_blocked_when_no_cut_qty_synced()

@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Jobs\SyncSubconAddProcessToD365;
 use App\Models\SubconAddProcessReport;
+use App\Models\SubconCuttingReport;
 use App\Models\SubconOrder;
+use App\Services\D365JobTransactionService;
 use App\Services\SubconProductionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -24,7 +26,7 @@ class SubconAddProcessController extends Controller
     // Access is enforced by the 'auth' + 'role:admin,subcon_admin' middleware
     // on the /subcon/admin route group (routes/web.php).
 
-    public function index(Request $request, SubconProductionService $production)
+    public function index(Request $request, SubconProductionService $production, D365JobTransactionService $d365)
     {
         $prg = trim((string) $request->query('prg', ''));
 
@@ -46,9 +48,16 @@ class SubconAddProcessController extends Controller
         $operationPos = [];
         $existingReports = collect();
         $cutQuantities = [];
+        $liveAddProcessQty = [];
 
         if ($prg !== '') {
-            $cmtOrder = SubconOrder::with('vendor')->where('production_group', $prg)->first();
+            // Excludes an Add Process PO flagged onto subcon_orders itself
+            // (see SubconOrder::isAddProcess()'s docblock) — this group can
+            // have one of those alongside its real CMT order, and only the
+            // real one belongs in the "CMT (Subcontracted)" section below.
+            $cmtOrder = SubconOrder::with('vendor')->where('production_group', $prg)
+                ->whereNull('add_process_operation')
+                ->first();
             // Already Confirmed-only (see addProcessPurchaseOrdersForGroup()'s
             // docblock) — a Draft/InReview/Rejected PO simply won't appear
             // here, which is what drives the filter below.
@@ -68,6 +77,82 @@ class SubconAddProcessController extends Controller
                 ->get()
                 ->groupBy('operation');
             $cutQuantities = $production->cutQuantitiesForGroup($prg);
+
+            // Live D365 Good/Reject qty per operation — confirmed live that
+            // the factory's own ADD-* job transaction in D365 can already
+            // carry real TotalGoodQty/TotalRejectQty well before anyone has
+            // typed anything into this page's local form (D365's shop-floor
+            // reporting is independent of this portal).
+            //
+            // computeYield()/computeDeduction() (used by the Official Report
+            // send) read ONLY the local subcon_add_process_reports table, with
+            // no D365 fallback of their own — so merely *displaying* the D365
+            // prefill isn't enough: Send Official Report would silently
+            // compute a zero good/reject qty (and so a zero deduction) until
+            // someone clicks Submit. Since the values already match D365
+            // exactly, that submit click saves nothing new and pushes back
+            // numbers D365 already has — pure busywork. So: auto-persist the
+            // D365 prefill into the local table here (never touching a prod_id
+            // that already has its own saved row — a real local edit always
+            // wins), WITHOUT dispatching SyncSubconAddProcessToD365 (nothing
+            // changed from D365's point of view, there's nothing to push).
+            // This genuinely is the one safe place for a GET to write: it's
+            // idempotent (a second load finds the row already there and skips
+            // it) and it only ever materialises what D365 itself already
+            // reports, never anything the admin hasn't effectively already
+            // confirmed by way of it being real shop-floor data.
+            $lines = collect($productionGroups)->flatMap(fn ($g) => collect($g['lines'] ?? []))->values();
+            foreach ($operations as $operation) {
+                $liveAddProcessQty[$operation] = $d365->fetchAddProcessQuantities($prg, $operation);
+                if (empty($liveAddProcessQty[$operation])) {
+                    continue;
+                }
+
+                $existingForOp = $existingReports->get($operation, collect())->keyBy('prod_id');
+                $autoFilled = false;
+                foreach ($lines as $line) {
+                    if ($existingForOp->has($line->ProdId)) {
+                        continue;
+                    }
+                    $liveQty = $liveAddProcessQty[$operation][$line->Size] ?? null;
+                    $good = (int) ($liveQty['good'] ?? 0);
+                    $reject = (int) ($liveQty['reject'] ?? 0);
+                    if ($good <= 0 && $reject <= 0) {
+                        continue;
+                    }
+                    SubconAddProcessReport::updateOrCreate(
+                        ['production_group' => $prg, 'prod_id' => $line->ProdId, 'operation' => $operation],
+                        ['size' => $line->Size, 'qty' => $good, 'reject_qty' => $reject]
+                    );
+                    $autoFilled = true;
+                }
+                if ($autoFilled) {
+                    // Refresh so $opReports (built from $existingReports in the
+                    // view) sees the rows just created — otherwise this request
+                    // would still render them as the D365-prefill fallback.
+                    $existingReports = SubconAddProcessReport::where('production_group', $prg)
+                        ->get()
+                        ->groupBy('operation');
+                }
+            }
+
+            // cutQuantitiesForGroup() only has data once D365's own CMT-Cut job
+            // transaction is started/confirmed on the shop floor — that can lag
+            // well behind the vendor's own cutting-report submission in the
+            // portal (confirmed live: group MPG/PRG/2607/000255's CMT-Cut job
+            // was still IsStarted=No while the vendor's local cutting report
+            // already had real qty for every size). Fall back to the CMT
+            // order's own subcon_cutting_reports for any size D365 doesn't
+            // have yet, so "Cut Qty" isn't a blank dash when the vendor has
+            // genuinely already reported it — just not yet synced to D365.
+            if ($cmtOrder) {
+                $localCutQuantities = SubconCuttingReport::where('order_id', $cmtOrder->id)
+                    ->get()
+                    ->keyBy('size')
+                    ->map(fn ($r) => ['good' => (float) $r->cutting_qty, 'reject' => 0.0, 'source' => 'local'])
+                    ->all();
+                $cutQuantities = $cutQuantities + $localCutQuantities;
+            }
         }
 
         $officialReports = [];
@@ -84,7 +169,7 @@ class SubconAddProcessController extends Controller
             }
         }
 
-        return view('subcon.admin.add-process.index', compact('prg', 'cmtOrder', 'addProcessPos', 'productionGroups', 'summary', 'steps', 'allOperations', 'operations', 'operationPos', 'existingReports', 'cutQuantities', 'officialReports', 'officialReportGates'));
+        return view('subcon.admin.add-process.index', compact('prg', 'cmtOrder', 'addProcessPos', 'productionGroups', 'summary', 'steps', 'allOperations', 'operations', 'operationPos', 'existingReports', 'cutQuantities', 'liveAddProcessQty', 'officialReports', 'officialReportGates'));
     }
 
     public function submit(Request $request, SubconProductionService $production)

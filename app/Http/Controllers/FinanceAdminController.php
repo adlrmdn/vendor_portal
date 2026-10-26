@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Exports\FabricDeliveryToleranceExport;
+use App\Exports\RpaInvoiceExport;
 use App\Models\FinanceRpaCheck;
 use App\Services\FabricDeliveryToleranceService;
 use App\Services\RpaQueueReadService;
@@ -16,6 +17,18 @@ use Maatwebsite\Excel\Facades\Excel;
 class FinanceAdminController extends Controller
 {
     private const PER_PAGE = 25;
+
+    /** Sort key (as used in the `sort` query param / column headers) => row field. */
+    private const SORTABLE_COLUMNS = [
+        'po' => 'po',
+        'vendor' => 'vendor_name',
+        'portal' => 'portal',
+        'style' => 'style',
+        'status' => 'status',
+        'submission' => 'created_at',
+        'updated' => 'updated_at',
+        'checked' => 'checked',
+    ];
 
     // Access is enforced by the 'auth' + 'role:admin,finance_admin' middleware
     // on the /finance/admin route group (routes/web.php) — every action in
@@ -201,6 +214,16 @@ class FinanceAdminController extends Controller
         ));
     }
 
+    /** Same (filtered, sorted) rows as invoices(), as an .xlsx — no pagination. */
+    public function invoicesExport(Request $request)
+    {
+        $rows = $this->filteredRpaRows('invoice', $request)['rows'];
+
+        $name = 'invoices-'.now('Asia/Jakarta')->format('Ymd-Hi').'.xlsx';
+
+        return Excel::download(new RpaInvoiceExport($rows, 'Invoices'), $name);
+    }
+
     /**
      * Finance's own review checkbox on a completed invoice/deduction: writes
      * straight to rpa_queues.checked (the shared column other consumers of
@@ -380,11 +403,37 @@ class FinanceAdminController extends Controller
      */
     private function rpaRows(string $rpaType, Request $request): array
     {
+        ['rows' => $rows, 'filters' => $filters] = $this->filteredRpaRows($rpaType, $request);
+
+        $page = max(1, (int) $request->query('page', 1));
+
+        $paginated = new LengthAwarePaginator(
+            $rows->slice(($page - 1) * self::PER_PAGE, self::PER_PAGE)->values(),
+            $rows->count(),
+            self::PER_PAGE,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        return ['rows' => $paginated, 'filters' => $filters];
+    }
+
+    /**
+     * Shared filter + sort step behind rpaRows() (for the paginated on-screen
+     * tables) and the Export Excel buttons (which export the same filtered
+     * set, unpaginated).
+     *
+     * @return array{rows: \Illuminate\Support\Collection, filters: array<string,string>}
+     */
+    private function filteredRpaRows(string $rpaType, Request $request): array
+    {
         $filters = [
             'status' => $request->query('status', ''),
             'portal' => $request->query('portal', ''),
             'checked' => $request->query('checked', ''),
             'q' => trim((string) $request->query('q', '')),
+            'sort' => $request->query('sort', ''),
+            'dir' => $request->query('dir', 'asc') === 'desc' ? 'desc' : 'asc',
         ];
 
         $rows = $this->rpaQueueReader->rows($rpaType);
@@ -404,37 +453,34 @@ class FinanceAdminController extends Controller
                 || str_contains(strtolower($row->vendor_name), $needle));
         }
 
-        // Actionable rows (completed, not yet checked) float to the top,
-        // then failed rows — these need attention too — then waiting (still
-        // needs monitoring) and processing, then already-checked completed
-        // rows last, since those are fully resolved and reviewed. Previously
-        // waiting/processing sorted after checked-completed rows, burying an
-        // aging waiting backlog under already-done work indefinitely.
-        // updated_at desc is kept as the tiebreaker within each group since
-        // sortBy() is stable.
-        $rows = $rows->sortBy(function ($row) {
-            if ($row->status === 'completed') {
-                return $row->checked ? 4 : 0;
-            }
+        if (array_key_exists($filters['sort'], self::SORTABLE_COLUMNS)) {
+            $field = self::SORTABLE_COLUMNS[$filters['sort']];
+            $rows = $filters['dir'] === 'desc' ? $rows->sortByDesc($field) : $rows->sortBy($field);
+            $rows = $rows->values();
+        } else {
+            // Default (no column header clicked yet): actionable rows
+            // (completed, not yet checked) float to the top, then failed rows
+            // — these need attention too — then waiting (still needs
+            // monitoring) and processing, then already-checked completed rows
+            // last, since those are fully resolved and reviewed. Previously
+            // waiting/processing sorted after checked-completed rows, burying
+            // an aging waiting backlog under already-done work indefinitely.
+            // updated_at desc is kept as the tiebreaker within each group
+            // since sortBy() is stable.
+            $rows = $rows->sortBy(function ($row) {
+                if ($row->status === 'completed') {
+                    return $row->checked ? 4 : 0;
+                }
 
-            return match ($row->status) {
-                'failed' => 1,
-                'waiting' => 2,
-                default => 3, // processing
-            };
-        })->values();
+                return match ($row->status) {
+                    'failed' => 1,
+                    'waiting' => 2,
+                    default => 3, // processing
+                };
+            })->values();
+        }
 
-        $page = max(1, (int) $request->query('page', 1));
-
-        $paginated = new LengthAwarePaginator(
-            $rows->slice(($page - 1) * self::PER_PAGE, self::PER_PAGE)->values(),
-            $rows->count(),
-            self::PER_PAGE,
-            $page,
-            ['path' => $request->url(), 'query' => $request->query()]
-        );
-
-        return ['rows' => $paginated, 'filters' => $filters];
+        return ['rows' => $rows, 'filters' => $filters];
     }
 
     /**

@@ -1,251 +1,366 @@
 {{--
-    Shared design tokens + components for the PC (Preliminary Contract)
-    module. `@include`d once near the top of each top-level PC page/section
-    (admin/pc/index, contracts/{index,create,edit,show}, vendor/pc/*) — not
-    from a partial that's included many times per page (e.g. line-row).
-
-    Design rationale: PC replaces a paper contract process, so the palette
-    leans toward a ledger/dossier rather than a generic SaaS dashboard —
-    warm paper background, indigo (a literal textile/denim reference) as
-    the accent instead of a generic brand blue, muted "stamp" colors for
-    status instead of stock Bootstrap red/yellow/green. The stage tracker
-    is the one bespoke device (the workflow really is a 4-step sequence,
-    so encoding it as connected segments is informative, not decorative);
-    everything else — tables, forms — stays plain and quiet around it.
+    Modernized design tokens + components for the PC (Preliminary Contract) module.
+    Aligned with Vendor Portal global design system (Bootstrap 5, Segoe UI, clean SaaS aesthetics).
 --}}
 <style>
     :root {
-        --pc-ink: #20262E;
-        --pc-ink-soft: #596273;
-        --pc-paper: #F7F3EA;
-        --pc-paper-line: #E8E0CC;
-        --pc-indigo: #2E4A66;
-        --pc-indigo-soft: #E8EEF3;
-        --pc-amber: #A9752C;
-        --pc-amber-soft: #F3E9D7;
-        --pc-forest: #3C6652;
-        --pc-forest-soft: #E3EDE7;
-        --pc-brick: #8B4C3F;
-        --pc-brick-soft: #F1E3DF;
-        --pc-thread: #D9CBA8;
-        --pc-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+        --pc-ink: #1e293b;
+        --pc-ink-soft: #64748b;
+        --pc-border: #e2e8f0;
+        --pc-bg-subtle: #f8fafc;
+        --pc-primary: #0d6efd;
+        --pc-primary-hover: #0b5ed7;
+        --pc-primary-soft: #e7f1ff;
+        --pc-success: #198754;
+        --pc-success-soft: #d1e7dd;
+        --pc-warning: #ffc107;
+        --pc-warning-soft: #fff3cd;
+        --pc-danger: #dc3545;
+        --pc-danger-soft: #f8d7da;
+        --pc-info: #0dcaf0;
+        --pc-info-soft: #cff4fc;
+        --pc-purple: #6f42c1;
+        --pc-purple-soft: #e2d9f3;
     }
 
     .pc-shell {
-        background: var(--pc-paper);
-        border: 1px solid var(--pc-paper-line);
-        border-radius: 6px;
-        padding: 1.5rem;
+        background: transparent;
         color: var(--pc-ink);
-    }
-    @media (max-width: 480px) {
-        .pc-shell { padding: 0.85rem; }
-        .pc-table th, .pc-table td { padding: 0.5rem 0.5rem; font-size: 0.85rem; }
+        padding: 0;
     }
 
-    /* Ledger-style tab row: underline, not filled pills — reads as folder
-       dividers rather than the generic rounded-pill tab bar. */
+    /* Modern Tabs Navigation matching Vendor Portal */
     .pc-ledger-tabs {
         display: flex;
-        gap: 1.75rem;
-        border-bottom: 1px solid var(--pc-paper-line);
-        margin-bottom: 1.75rem;
+        gap: 0.5rem;
+        border-bottom: 2px solid #e2e8f0;
+        margin-bottom: 1.5rem;
         padding: 0;
         list-style: none;
         overflow-x: auto;
     }
     .pc-ledger-tabs .nav-link,
     .pc-ledger-tabs a.nav-link {
-        background: none !important;
+        background: transparent !important;
         border: none !important;
-        border-radius: 0 !important;
-        padding: 0.65rem 0.1rem !important;
+        border-radius: 0.375rem 0.375rem 0 0 !important;
+        padding: 0.75rem 1.25rem !important;
         color: var(--pc-ink-soft) !important;
         font-weight: 500;
-        font-size: 0.92rem;
+        font-size: 0.95rem;
         white-space: nowrap;
-        border-bottom: 2px solid transparent !important;
+        position: relative;
+        bottom: -2px;
+        border-bottom: 3px solid transparent !important;
+        transition: all 0.2s ease;
     }
-    /* Below ~700px, 6 tabs in a single nowrap/scroll strip hide most of
-       them off-screen with no hint they're there (the "where did Contracts
-       go" bug) — wrap to a second/third row instead, so every tab stays
-       visible and tappable without a hidden horizontal swipe. */
-    @media (max-width: 700px) {
-        .pc-ledger-tabs {
-            flex-wrap: wrap;
-            overflow-x: visible;
-            gap: 0.25rem 1.1rem;
-            row-gap: 0.4rem;
-        }
-        .pc-ledger-tabs .nav-link,
-        .pc-ledger-tabs a.nav-link {
-            font-size: 0.85rem;
-            padding: 0.5rem 0.1rem !important;
-        }
+    .pc-ledger-tabs .nav-link:hover,
+    .pc-ledger-tabs a.nav-link:hover {
+        color: var(--pc-primary) !important;
+        background-color: rgba(13, 110, 253, 0.04) !important;
     }
-
     .pc-ledger-tabs .nav-link.active,
     .pc-ledger-tabs a.nav-link.active {
-        color: var(--pc-indigo) !important;
-        border-bottom-color: var(--pc-indigo) !important;
+        color: var(--pc-primary) !important;
+        border-bottom-color: var(--pc-primary) !important;
         font-weight: 600;
+        background-color: transparent !important;
     }
 
-    .pc-h1 { font-size: 1.5rem; font-weight: 600; color: var(--pc-ink); margin: 0; }
-    .pc-meta { color: var(--pc-ink-soft); font-size: 0.85rem; }
-    .pc-mono { font-family: var(--pc-mono); letter-spacing: -0.01em; }
+    .pc-h1 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #0f172a;
+        margin: 0;
+        letter-spacing: -0.01em;
+    }
+    .pc-meta {
+        color: #64748b;
+        font-size: 0.875rem;
+    }
+    .pc-mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        letter-spacing: -0.02em;
+    }
 
+    /* Modern Card Styles with crisp, visible borders */
     .pc-card {
-        background: #fff;
-        border: 1px solid var(--pc-paper-line);
-        border-radius: 6px;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        margin-bottom: 1.25rem;
     }
     .pc-card > .pc-card-head {
-        padding: 0.85rem 1.1rem;
-        border-bottom: 1px solid var(--pc-paper-line);
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid #cbd5e1;
         font-weight: 600;
-        font-size: 0.95rem;
-        color: var(--pc-ink);
+        font-size: 1rem;
+        color: #0f172a;
+        background-color: #ffffff;
+        border-top-left-radius: 0.5rem;
+        border-top-right-radius: 0.5rem;
     }
-    .pc-card > .pc-card-body { padding: 1.1rem; }
+    .pc-card > .pc-card-body {
+        padding: 1.25rem;
+    }
 
-    /* Stage tracker: the one bespoke device. Draft / Vendor Review /
-       Approval / Confirmed as connected segments — filled = past/current,
-       outlined = not reached yet. Cancelled/superseded render as a single
-       flat strip instead (there's no "progress" to show for a dead end). */
-    .pc-stage-tracker { display: flex; align-items: center; gap: 0; }
+    /* Distinct Nested Line Item Card */
+    .line-row.pc-card {
+        background: #f8fafc;
+        border: 1px solid #cbd5e1 !important;
+        border-left: 4px solid #0d6efd !important;
+        border-radius: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        margin-bottom: 1rem;
+    }
+    .line-row.pc-card:hover {
+        border-color: #94a3b8 !important;
+        border-left-color: #0b5ed7 !important;
+    }
+
+    /* Form Controls & TomSelect Crisp Borders */
+    .form-control, .form-select {
+        border: 1px solid #ced4da !important;
+    }
+    .form-control:focus, .form-select:focus {
+        border-color: #86b7fe !important;
+        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25) !important;
+    }
+    .ts-wrapper.form-select,
+    .ts-wrapper.form-control {
+        padding: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        height: auto !important;
+        background: transparent !important;
+    }
+    .ts-wrapper .ts-control,
+    .ts-wrapper.form-select .ts-control,
+    .ts-wrapper.form-control .ts-control,
+    .ts-control {
+        border: 1px solid #ced4da !important;
+        border-radius: 0.375rem !important;
+        min-height: 38px !important;
+        height: 38px !important;
+        padding: 0.375rem 2.25rem 0.375rem 0.75rem !important;
+        background-color: #ffffff !important;
+        background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e") !important;
+        background-repeat: no-repeat !important;
+        background-position: right 0.75rem center !important;
+        background-size: 16px 12px !important;
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+    }
+    .ts-wrapper.focus .ts-control,
+    .ts-control.focus {
+        border-color: #86b7fe !important;
+        outline: 0 !important;
+        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25) !important;
+    }
+    .ts-dropdown {
+        font-size: 0.85rem !important;
+        z-index: 1055 !important;
+        border: 1px solid #ced4da !important;
+        border-radius: 0.375rem !important;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.12) !important;
+        max-height: 220px !important;
+    }
+    .ts-dropdown .ts-dropdown-content {
+        max-height: 220px !important;
+        overflow-y: auto !important;
+        padding: 4px 0 !important;
+    }
+    .ts-dropdown .option {
+        padding: 5px 10px !important;
+        font-size: 0.84rem !important;
+        line-height: 1.35 !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+    .ts-dropdown .option.active {
+        background-color: #e7f1ff !important;
+        color: #0f172a !important;
+    }
+
+    /* Pipeline Interactive Stat Card */
+    .pc-stat-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-left: 4px solid #cbd5e1;
+        border-radius: 0.5rem;
+        padding: 1rem 1.15rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        text-decoration: none !important;
+        color: inherit !important;
+        display: block;
+        height: 100%;
+    }
+    .pc-stat-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    }
+    .pc-stat-card .stat-num {
+        font-size: 1.75rem;
+        font-weight: 700;
+        line-height: 1.1;
+        color: #0f172a;
+    }
+    .pc-stat-card .stat-label {
+        font-size: 0.825rem;
+        font-weight: 500;
+        color: #64748b;
+        margin-top: 0.25rem;
+    }
+
+    .pc-stat-draft { border-left-color: #64748b; }
+    .pc-stat-pending { border-left-color: #f59e0b; }
+    .pc-stat-approved { border-left-color: #6366f1; }
+    .pc-stat-sent { border-left-color: #0ea5e9; }
+    .pc-stat-confirmed { border-left-color: #10b981; }
+    .pc-stat-queried { border-left-color: #ef4444; }
+
+    /* Modern Table */
+    .pc-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .pc-table th {
+        text-align: left;
+        font-size: 0.78rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #64748b;
+        background-color: #f8fafc;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #e2e8f0;
+    }
+    .pc-table td {
+        padding: 0.85rem 1rem;
+        border-bottom: 1px solid #e2e8f0;
+        font-size: 0.92rem;
+        color: #1e293b;
+        vertical-align: middle;
+    }
+    .pc-table tbody tr:hover {
+        background-color: #f8fafc;
+    }
+    .pc-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    /* Badges & Status Pills */
+    .pc-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.28rem 0.65rem;
+        border-radius: 9999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        line-height: 1;
+    }
+    .pc-pill::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+    .pc-pill-draft { background: #f1f5f9; color: #475569; }
+    .pc-pill-draft::before { background: #94a3b8; }
+    .pc-pill-waiting { background: #fef3c7; color: #b45309; }
+    .pc-pill-waiting::before { background: #f59e0b; }
+    .pc-pill-confirmed { background: #d1fae5; color: #047857; }
+    .pc-pill-confirmed::before { background: #10b981; }
+    .pc-pill-dead { background: #fee2e2; color: #b91c1c; }
+    .pc-pill-dead::before { background: #ef4444; }
+    .pc-pill-neutral { background: #e0e7ff; color: #4338ca; }
+    .pc-pill-neutral::before { background: #6366f1; }
+
+    /* Modern Stage Tracker */
+    .pc-stage-tracker {
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
     .pc-stage-tracker .seg {
         flex: 1;
         display: flex;
         align-items: center;
-        gap: 0.4rem;
-        font-size: 0.78rem;
-        color: var(--pc-ink-soft);
-        white-space: nowrap;
+        gap: 0.5rem;
+        font-size: 0.825rem;
+        color: #94a3b8;
+        font-weight: 500;
     }
     .pc-stage-tracker .dot {
-        width: 9px; height: 9px; border-radius: 50%;
-        border: 2px solid var(--pc-thread);
-        background: #fff;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid #cbd5e1;
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.65rem;
+        font-weight: bold;
         flex-shrink: 0;
+        color: #94a3b8;
     }
-    .pc-stage-tracker .seg.done .dot,
+    .pc-stage-tracker .seg.done .dot {
+        border-color: #0d6efd;
+        background: #0d6efd;
+        color: #ffffff;
+    }
     .pc-stage-tracker .seg.current .dot {
-        border-color: var(--pc-indigo);
-        background: var(--pc-indigo);
+        border-color: #0d6efd;
+        background: #ffffff;
+        color: #0d6efd;
+        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.2);
     }
-    .pc-stage-tracker .seg.current { color: var(--pc-indigo); font-weight: 600; }
-    .pc-stage-tracker .seg.done { color: var(--pc-ink); }
+    .pc-stage-tracker .seg.current { color: #0d6efd; font-weight: 600; }
+    .pc-stage-tracker .seg.done { color: #1e293b; font-weight: 500; }
     .pc-stage-tracker .bar {
         flex: 1;
-        height: 1px;
-        background: var(--pc-thread);
-        margin: 0 0.35rem;
+        height: 2px;
+        background: #e2e8f0;
+        margin: 0 0.5rem;
     }
-    .pc-stage-tracker .seg.done + .bar,
-    .pc-stage-tracker .bar.done { background: var(--pc-indigo); }
-
-    /* Four nowrap labels + connecting bars don't fit an iPhone-width card at
-       the full font size — drop to a centered, wrapping label under each
-       dot instead of truncating or forcing the strip to scroll. */
-    @media (max-width: 480px) {
-        .pc-stage-tracker .seg {
-            flex-direction: column;
-            align-items: center;
-            gap: 0.25rem;
-            font-size: 0.68rem;
-            white-space: normal;
-            text-align: center;
-        }
-        .pc-stage-tracker .bar { margin: 0 0.15rem; align-self: flex-start; margin-top: 4px; }
-    }
-    .pc-stage-tracker.pc-stage-flat {
-        background: var(--pc-brick-soft);
-        color: var(--pc-brick);
-        padding: 0.4rem 0.75rem;
-        border-radius: 4px;
-        font-weight: 600;
-        font-size: 0.82rem;
-        display: inline-flex;
-    }
-    .pc-stage-tracker.pc-stage-flat.is-superseded {
-        background: #ECECEC;
-        color: var(--pc-ink-soft);
+    .pc-stage-tracker .bar.done {
+        background: #0d6efd;
     }
 
-    .pc-pill {
-        display: inline-flex;
-        align-items: center;
-        padding: 0.2rem 0.6rem;
-        border-radius: 4px;
-        font-size: 0.78rem;
-        font-weight: 600;
+    /* Action Buttons */
+    .pc-btn-primary {
+        background-color: var(--pc-primary);
+        border-color: var(--pc-primary);
+        color: #fff;
+        font-weight: 500;
     }
-    .pc-pill-draft { background: #ECECEC; color: var(--pc-ink-soft); }
-    .pc-pill-waiting { background: var(--pc-amber-soft); color: var(--pc-amber); }
-    .pc-pill-confirmed { background: var(--pc-forest-soft); color: var(--pc-forest); }
-    .pc-pill-dead { background: var(--pc-brick-soft); color: var(--pc-brick); }
-    .pc-pill-neutral { background: var(--pc-indigo-soft); color: var(--pc-indigo); }
-
-    /* Solid/outline action-button variants carrying the module's own
-       forest (approve/accept) and brick (reject/cancel) colors. These
-       replace one-off inline `style="background:..."` on buttons — an
-       inline style wins over any :hover rule in the stylesheet, including
-       Bootstrap's own, so those buttons could never get a hover state and
-       just sat dead/unresponsive to the cursor. */
+    .pc-btn-primary:hover {
+        background-color: var(--pc-primary-hover);
+        border-color: var(--pc-primary-hover);
+        color: #fff;
+    }
     .pc-btn-forest {
-        background: var(--pc-forest); border-color: var(--pc-forest); color: #fff;
+        background-color: var(--pc-success);
+        border-color: var(--pc-success);
+        color: #fff;
     }
-    .pc-btn-forest:hover, .pc-btn-forest:focus {
-        background: #2f5443; border-color: #2f5443; color: #fff;
+    .pc-btn-forest:hover {
+        background-color: #157347;
+        border-color: #157347;
+        color: #fff;
     }
     .pc-btn-outline-brick {
-        background: transparent; border-color: var(--pc-brick); color: var(--pc-brick);
+        background: transparent;
+        border-color: var(--pc-danger);
+        color: var(--pc-danger);
     }
-    .pc-btn-outline-brick:hover, .pc-btn-outline-brick:focus {
-        background: var(--pc-brick); border-color: var(--pc-brick); color: #fff;
+    .pc-btn-outline-brick:hover {
+        background: var(--pc-danger);
+        color: #fff;
     }
-    .pc-text-brick { color: var(--pc-brick); }
-
-    .pc-stat {
-        border-left: 3px solid var(--pc-indigo);
-        padding: 0.15rem 0 0.15rem 0.85rem;
-    }
-    .pc-stat .n { font-size: 1.6rem; font-weight: 600; color: var(--pc-ink); font-family: var(--pc-mono); line-height: 1; }
-    .pc-stat .l { font-size: 0.8rem; color: var(--pc-ink-soft); }
-
-    /* A non-zero "waiting on someone" count is a to-do, not trivia — give
-       it the amber accent so it reads as something to act on rather than
-       blending into the same neutral indigo as every other tally. */
-    .pc-stat-actionable { border-left-color: var(--pc-amber); }
-    .pc-stat-actionable .n { color: var(--pc-amber); }
-
-    .pc-table { width: 100%; border-collapse: collapse; }
-    .pc-table th {
-        text-align: left;
-        font-size: 0.76rem;
-        font-weight: 600;
-        color: var(--pc-ink-soft);
-        padding: 0.5rem 0.75rem;
-        border-bottom: 1px solid var(--pc-paper-line);
-    }
-    .pc-table td {
-        padding: 0.65rem 0.75rem;
-        border-bottom: 1px solid var(--pc-paper-line);
-        font-size: 0.9rem;
-        vertical-align: middle;
-    }
-    .pc-table tbody tr:hover { background: var(--pc-paper); }
-    .pc-table .num { font-family: var(--pc-mono); text-align: right; }
-
-    /* Caps an unpaginated reference table (e.g. Master Data's add-as-you-go
-       lists) so one growing list can't push every other card on the page
-       far down the scroll — the table scrolls internally instead. */
-    .pc-table-scroll { max-height: 280px; overflow-y: auto; }
-    .pc-table-scroll .pc-table thead th { position: sticky; top: 0; background: #fff; }
-
-    .pc-btn-primary {
-        background: var(--pc-indigo); border-color: var(--pc-indigo); color: #fff;
-    }
-    .pc-btn-primary:hover { background: #253c54; border-color: #253c54; color: #fff; }
 </style>

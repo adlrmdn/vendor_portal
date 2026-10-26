@@ -5,10 +5,16 @@
 @section('content')
 @include('admin.pc.partials._tokens')
 
-<div class="pc-shell">
-    @include('admin.pc.partials.section-nav', ['pcSection' => 'contracts'])
+<div class="container-fluid px-0">
+    @include('admin.pc.partials.section-nav', ['pcSection' => 'edit'])
 
-    <h1 class="pc-h1 pc-mono mb-4">Edit Draft — {{ $contract->contract_number ?? 'Draft' }}</h1>
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="h3 fw-bold text-dark mb-1">Edit Draft — {{ $contract->contract_number ?? 'Draft' }}</h1>
+            <p class="text-muted small mb-0">Modify specifications, delivery schedules, or pricing before submitting for approval</p>
+        </div>
+    </div>
+
     @include('admin.pc.contracts.form')
 </div>
 @endsection

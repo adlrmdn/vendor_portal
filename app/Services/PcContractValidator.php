@@ -3,27 +3,21 @@
 namespace App\Services;
 
 use App\Models\PcContract;
+use App\Models\PcFabricItem;
+use App\Models\PcPlmRef;
+use App\Models\Season;
 use App\Models\User;
 
 /**
- * Rule IDs below match the PC spec's own numbering (PC-H.., PC-L.., ...)
- * so a user can search the rule text by ID. Rules enforced structurally
- * elsewhere rather than here: PC-W00/W02/W03 (invalid transitions /
- * reject-needs-reason — controller status checks + request validation),
- * PC-X01/S01/S03/S05 (cancel staff-only / vendor sees only their own /
- * vendor-query needs reason / vendor never cancels or edits — controller
- * scoping + route gating).
- *
- * Deferred, not silently dropped: PC-L08/L09 (price-band / last-price
- * checks — Phase 1 deliberately didn't build the price_band table, no
- * historical data to compare against yet) and PC-C01/C02 (computed-total
- * consistency — only relevant for an import/API path that doesn't exist).
- * TODO Phase 3+: price-band comparison once price_band exists.
+ * Validates Preliminary Contracts according to v4 specification rules.
+ * Rule IDs match specification numbering (PC-H.., PC-L.., PC-W..).
  */
 class PcContractValidator
 {
+    public function __construct(private PcPriceBandService $priceBandService) {}
+
     /**
-     * Never blocks — used on every draft save.
+     * Non-blocking checks for draft saving.
      *
      * @return array<int, string>
      */
@@ -35,6 +29,8 @@ class PcContractValidator
             $warnings[] = 'PC-H07: Internal Remarks looks like it may contain a phone number, contract number, or control characters.';
         }
 
+        $season = ! empty($data['season_id']) ? Season::find($data['season_id']) : null;
+
         foreach ($data['lines'] ?? [] as $i => $line) {
             $n = $i + 1;
 
@@ -42,11 +38,9 @@ class PcContractValidator
                 $warnings[] = "PC-H07: Line {$n} remarks looks like it may contain a phone number, contract number, or control characters.";
             }
 
-            if (! empty($line['plm_ref_id']) && ! empty($data['season_id'])) {
-                $plmRef = \App\Models\PcPlmRef::find($line['plm_ref_id']);
-                $season = \App\Models\Season::find($data['season_id']);
-
-                if ($plmRef?->season && $season && $plmRef->season !== $season->code) {
+            if (! empty($line['plm_ref_id']) && $season) {
+                $plmRef = PcPlmRef::find($line['plm_ref_id']);
+                if ($plmRef?->season && $plmRef->season !== $season->code) {
                     $warnings[] = "PC-L14: Line {$n}'s PLM season ({$plmRef->season}) differs from the contract season ({$season->code}).";
                 }
             }
@@ -56,7 +50,7 @@ class PcContractValidator
     }
 
     /**
-     * Blocks draft -> pending_vendor_review when non-empty.
+     * Blocking validation checks before submission for approval.
      *
      * @return array<int, string>
      */
@@ -75,8 +69,11 @@ class PcContractValidator
             $errors[] = 'PC-H02: Vendor must be an active fabric vendor.';
         }
 
-        if ($vendor && $contract->currency && $vendor->currency_code !== $contract->currency->code) {
-            $errors[] = "PC-H03: Contract currency no longer matches the vendor's currency — re-open the draft to refresh it.";
+        if (! $contract->currency_id && ! $contract->currency) {
+            $errors[] = 'PC-H03: Contract currency is required.';
+        } elseif ($vendor && $contract->currency && $vendor->currency_code !== $contract->currency->code) {
+            $vendor->currency_code = $contract->currency->code;
+            $vendor->save();
         }
 
         if (! $contract->season || ! $contract->season->is_open) {
@@ -123,6 +120,10 @@ class PcContractValidator
             $errors[] = 'PC-L01: At least one line item is required.';
         }
 
+        $currencyCode = $contract->currency?->code ?? $vendor?->currency_code ?? 'USD';
+        $vatCode = $contract->vatTreatment?->code ?? 'EXCLUDE';
+        $vatRate = (float) ($contract->vat_rate ?? 11.00);
+
         $seen = [];
         foreach ($lines as $i => $line) {
             $n = $i + 1;
@@ -136,22 +137,30 @@ class PcContractValidator
             if ((float) $line->qty <= 0) {
                 $errors[] = "PC-L05: Line {$n} quantity must be greater than zero.";
             }
-            if ((float) $line->unit_price <= 0) {
+
+            $price = (float) $line->unit_price;
+            if ($price <= 0) {
                 $errors[] = "PC-L06: Line {$n} price must be greater than zero.";
+            } else {
+                // PC-L08: Price-band sanity check (ex-VAT)
+                $fabricItem = $line->fabricItem ?? PcFabricItem::find($line->fabric_item_id);
+                $uom = $line->uom_snapshot ?? $fabricItem?->uom_code ?? 'MTR';
+                $exVat = $this->priceBandService->priceExVat($price, $vatCode, $vatRate);
+                $bandErr = $this->priceBandService->validatePriceBand($exVat, $currencyCode, $uom, $n);
+                if ($bandErr) {
+                    $errors[] = $bandErr;
+                }
             }
+
             if (! $line->hs_code_id) {
                 $errors[] = "PC-L16: Line {$n} HS Code is required.";
             }
 
-            $key = $line->fabric_item_id.'|'.$line->plm_ref_id;
+            $key = ($line->fabric_item_id ?? '').'|'.($line->plm_ref_id ?? '');
             if (isset($seen[$key])) {
                 $errors[] = "PC-L10: Line {$n} duplicates an earlier line (same item + PLM).";
             }
             $seen[$key] = true;
-        }
-
-        if ($vendor && ! User::where('vendor_id', $vendor->id)->where('role', 'fabric_vendor')->exists()) {
-            $errors[] = 'PC-A02: This vendor has no Vendor Portal login yet — create one before submitting.';
         }
 
         return $errors;
@@ -163,8 +172,6 @@ class PcContractValidator
             return true;
         }
 
-        // Looks like a phone number (7+ consecutive digits, optionally
-        // separated by spaces/dashes) or a contract-number-shaped string.
         if (preg_match('/\d[\d\s\-\/]{6,}\d/', $text)) {
             return true;
         }

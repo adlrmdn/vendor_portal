@@ -130,12 +130,7 @@
     </div>
 </div>
 
-@if(session('success'))
-    <div class="alert alert-success">{{ session('success') }}</div>
-@endif
-@if(session('error'))
-    <div class="alert alert-danger">{{ session('error') }}</div>
-@endif
+{{-- session('success')/('error') are already rendered once by layouts/admin.blade.php — don't repeat them here. --}}
 @if($errors->any())
     <div class="alert alert-danger">
         <ul class="mb-0">
@@ -230,8 +225,19 @@
                     $totalOrderQty = $lines->sum('Qty');
                     $totalCutQty = $lines->sum(fn ($l) => $cutQuantities[$l->Size]['good'] ?? 0);
                     $anyCutData = $lines->contains(fn ($l) => isset($cutQuantities[$l->Size]));
-                    $totalGood = $lines->sum(fn ($l) => $opReports->get($l->ProdId)->qty ?? 0);
-                    $totalReject = $lines->sum(fn ($l) => $opReports->get($l->ProdId)->reject_qty ?? 0);
+                    // Falls back to the live D365 prefill per line, same rule as
+                    // each row below: a locally saved entry always wins, otherwise
+                    // use whatever D365 already has (see fetchAddProcessQuantities()).
+                    $totalGood = $lines->sum(function ($l) use ($opReports, $liveAddProcessQty, $operation) {
+                        $existing = $opReports->get($l->ProdId);
+
+                        return $existing ? $existing->qty : ($liveAddProcessQty[$operation][$l->Size]['good'] ?? 0);
+                    });
+                    $totalReject = $lines->sum(function ($l) use ($opReports, $liveAddProcessQty, $operation) {
+                        $existing = $opReports->get($l->ProdId);
+
+                        return $existing ? $existing->reject_qty : ($liveAddProcessQty[$operation][$l->Size]['reject'] ?? 0);
+                    });
                     $anyProcessed = ($totalGood + $totalReject) > 0;
                     $totalBalance = $totalCutQty - ($totalGood + $totalReject);
 
@@ -281,42 +287,6 @@
                             $existingOfficialReport = $officialReports[$operation] ?? null;
                             $officialGate = $officialReportGates[$operation] ?? ['ok' => false, 'reason' => 'Not checked.'];
                         @endphp
-                        <div class="mt-3 pt-3 border-top">
-                            @if($existingOfficialReport)
-                                <span class="status-indicator status-indicator-{{ $existingOfficialReport->isCompleted() ? 'success' : 'info' }}">
-                                    Official Report:
-                                    {{ match(true) {
-                                        $existingOfficialReport->isCompleted() => 'Completed',
-                                        $existingOfficialReport->needsRevision() => 'Needs Revision (Director declined)',
-                                        $existingOfficialReport->isPendingDirector() => 'Pending Director',
-                                        default => 'Pending MD Production',
-                                    } }}
-                                </span>
-                            @elseif($officialGate['ok'])
-                                <form method="POST" action="{{ route('subcon.admin.official-reports.send') }}" class="d-flex flex-wrap gap-2 align-items-end">
-                                    @csrf
-                                    <input type="hidden" name="production_group" value="{{ $prg }}">
-                                    <input type="hidden" name="operation" value="{{ $operation }}">
-                                    <div>
-                                        <label class="form-label small mb-1">Additional Deduction (Rp)</label>
-                                        <input type="number" step="0.01" min="0" name="additional_deduction" class="form-control form-control-sm" style="width: 140px;" value="0">
-                                    </div>
-                                    <div>
-                                        <label class="form-label small mb-1">Sales Price (Rp, optional — D365 auto-fill if blank)</label>
-                                        <input type="number" step="0.01" min="0" name="sales_price" class="form-control form-control-sm" style="width: 160px;">
-                                    </div>
-                                    <div class="flex-grow-1" style="min-width: 200px;">
-                                        <label class="form-label small mb-1">Remarks</label>
-                                        <input type="text" name="remarks" class="form-control form-control-sm">
-                                    </div>
-                                    <button type="submit" class="btn btn-sm btn-outline-primary">
-                                        <i class="fas fa-file-signature me-1"></i> Send Official Report
-                                    </button>
-                                </form>
-                            @else
-                                <span class="text-muted small"><i class="fas fa-circle-info me-1"></i> Official Report unavailable: {{ $officialGate['reason'] }}</span>
-                            @endif
-                        </div>
                     </div>
 
                     @if($opInvoiced)
@@ -359,8 +329,14 @@
                                             $existing = $opReports->get($line->ProdId);
                                             $cutInfo = $cutQuantities[$line->Size] ?? null;
                                             $cutQty = $cutInfo['good'] ?? null;
-                                            $good = (int) ($existing->qty ?? 0);
-                                            $reject = (int) ($existing->reject_qty ?? 0);
+                                            // D365's own ADD-* job transaction can already carry real
+                                            // Good/Reject qty before anyone has saved anything in this
+                                            // portal's local form — see fetchAddProcessQuantities()'s
+                                            // docblock. Only a fallback: a locally saved entry always wins.
+                                            $liveQty = $existing ? null : ($liveAddProcessQty[$operation][$line->Size] ?? null);
+                                            $fromLiveD365 = $liveQty !== null;
+                                            $good = $existing ? (int) $existing->qty : (int) ($liveQty['good'] ?? 0);
+                                            $reject = $existing ? (int) $existing->reject_qty : (int) ($liveQty['reject'] ?? 0);
                                             $hasEntry = $good > 0 || $reject > 0;
                                             $rowBalance = $cutQty !== null ? ((int) $cutQty - ($good + $reject)) : null;
                                             $balClass = ! $hasEntry ? 'text-muted' : ($rowBalance === 0 ? 'text-success' : 'text-danger');
@@ -373,22 +349,28 @@
                                             <td class="text-end fw-semibold text-dark">{{ number_format($line->Qty) }}{!! $pcsSuffix !!}</td>
                                             <td class="text-end {{ $cutQty !== null ? 'fw-semibold text-primary' : 'text-muted' }}">
                                                 {{ $cutQty !== null ? number_format($cutQty) : '—' }}
+                                                @if(($cutInfo['source'] ?? null) === 'local')
+                                                    <i class="fas fa-circle-info text-muted ms-1" style="font-size:.65rem;" data-bs-toggle="tooltip" title="From the vendor's cutting report — not yet confirmed/started in D365"></i>
+                                                @endif
                                             </td>
                                             <td class="text-end">
                                                 <input type="hidden" name="reports[{{ $loop->index }}][prod_id]" value="{{ $line->ProdId }}">
                                                 <input type="hidden" name="reports[{{ $loop->index }}][size]" value="{{ $line->Size }}">
-                                                <input type="number" min="0" class="form-control form-control-sm modern-input good-qty-input"
+                                                <input type="number" min="0" class="form-control form-control-sm modern-input good-qty-input {{ $fromLiveD365 ? 'border-primary' : '' }}"
                                                        name="reports[{{ $loop->index }}][qty]"
                                                        data-cut-qty="{{ $cutQty ?? '' }}"
                                                        data-balance-target="ap_bal_{{ $opIndex }}_{{ $loop->index }}"
-                                                       value="{{ old('reports.'.$loop->index.'.qty', $existing->qty ?? '') }}">
+                                                       value="{{ old('reports.'.$loop->index.'.qty', $existing->qty ?? ($liveQty['good'] ?? '')) }}">
+                                                @if($fromLiveD365)
+                                                    <i class="fas fa-circle-info text-muted ms-1" style="font-size:.65rem;" data-bs-toggle="tooltip" title="Prefilled from D365 — not yet saved in the portal. Review and submit to confirm."></i>
+                                                @endif
                                             </td>
                                             <td class="text-end">
-                                                <input type="number" min="0" class="form-control form-control-sm modern-input reject-qty-input"
+                                                <input type="number" min="0" class="form-control form-control-sm modern-input reject-qty-input {{ $fromLiveD365 ? 'border-primary' : '' }}"
                                                        name="reports[{{ $loop->index }}][reject_qty]"
                                                        data-cut-qty="{{ $cutQty ?? '' }}"
                                                        data-balance-target="ap_bal_{{ $opIndex }}_{{ $loop->index }}"
-                                                       value="{{ old('reports.'.$loop->index.'.reject_qty', $existing->reject_qty ?? '') }}">
+                                                       value="{{ old('reports.'.$loop->index.'.reject_qty', $existing->reject_qty ?? ($liveQty['reject'] ?? '')) }}">
                                             </td>
                                             <td class="text-end pe-4">
                                                 <span id="ap_bal_{{ $opIndex }}_{{ $loop->index }}" class="fw-semibold {{ $balClass }}">{{ $balText }}</span>
@@ -420,6 +402,46 @@
                         </div>
                     </form>
                     @endif
+
+                    {{-- Official Report, grouped with the Submit/Sync action above
+                    rather than split off into the card header — both are the
+                    "do something with this operation" actions for this card. --}}
+                    <div class="p-3 border-top">
+                        @if($existingOfficialReport)
+                            <span class="status-indicator status-indicator-{{ $existingOfficialReport->isCompleted() ? 'success' : 'info' }}">
+                                Official Report:
+                                {{ match(true) {
+                                    $existingOfficialReport->isCompleted() => 'Completed',
+                                    $existingOfficialReport->needsRevision() => 'Needs Revision (Director declined)',
+                                    $existingOfficialReport->isPendingDirector() => 'Pending Director',
+                                    default => 'Pending MD Production',
+                                } }}
+                            </span>
+                        @elseif($officialGate['ok'])
+                            <form method="POST" action="{{ route('subcon.admin.official-reports.send') }}" class="d-flex flex-wrap gap-2 align-items-end">
+                                @csrf
+                                <input type="hidden" name="production_group" value="{{ $prg }}">
+                                <input type="hidden" name="operation" value="{{ $operation }}">
+                                <div>
+                                    <label class="form-label small mb-1">Additional Deduction (Rp)</label>
+                                    <input type="number" step="0.01" min="0" name="additional_deduction" class="form-control form-control-sm" style="width: 140px;" value="0">
+                                </div>
+                                <div>
+                                    <label class="form-label small mb-1">Sales Price (Rp, optional — D365 auto-fill if blank)</label>
+                                    <input type="number" step="0.01" min="0" name="sales_price" class="form-control form-control-sm" style="width: 160px;">
+                                </div>
+                                <div class="flex-grow-1" style="min-width: 200px;">
+                                    <label class="form-label small mb-1">Remarks</label>
+                                    <input type="text" name="remarks" class="form-control form-control-sm">
+                                </div>
+                                <button type="submit" class="btn btn-sm btn-outline-primary">
+                                    <i class="fas fa-file-signature me-1"></i> Send Official Report
+                                </button>
+                            </form>
+                        @else
+                            <span class="text-muted small"><i class="fas fa-circle-info me-1"></i> Official Report unavailable: {{ $officialGate['reason'] }}</span>
+                        @endif
+                    </div>
                 </div>
             @endforeach
 

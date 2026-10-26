@@ -1,20 +1,19 @@
 {{--
     Compact single-label status for list contexts (one row among many).
-    The full stage-tracker is the right component for a single contract's
-    own page, where there's room and it's genuinely about that one
-    contract's journey — repeating it down every row of a table just adds
-    visual noise and slows scanning, so lists get this instead.
     Expects $status.
 --}}
 @php
     $map = [
         'draft' => ['Draft', 'pc-pill-draft'],
-        'pending_vendor_review' => ['Awaiting vendor', 'pc-pill-waiting'],
-        'pending_final_approval' => ['Awaiting approval', 'pc-pill-waiting'],
+        'pending_approval' => ['Awaiting approval', 'pc-pill-waiting'],
+        'approved' => ['Approved', 'pc-pill-neutral'],
+        'sent_to_supplier' => ['Sent to vendor', 'pc-pill-waiting'],
         'confirmed' => ['Confirmed', 'pc-pill-confirmed'],
+        'supplier_queried' => ['Vendor queried', 'pc-pill-waiting'],
+        'rejected' => ['Rejected', 'pc-pill-dead'],
         'cancelled' => ['Cancelled', 'pc-pill-dead'],
-        'superseded' => ['Superseded', 'pc-pill-neutral'],
+        'superseded' => ['Superseded', 'pc-pill-draft'],
     ];
-    [$label, $class] = $map[$status] ?? [ucfirst($status), 'pc-pill-draft'];
+    [$label, $class] = $map[$status] ?? [ucfirst(str_replace('_', ' ', $status)), 'pc-pill-draft'];
 @endphp
 <span class="pc-pill {{ $class }}">{{ $label }}</span>

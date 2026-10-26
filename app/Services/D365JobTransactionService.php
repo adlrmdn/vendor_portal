@@ -315,11 +315,17 @@ class D365JobTransactionService
      * Best-effort: every failure is logged and swallowed so it can never block
      * label generation, which has already unlocked printing by this point.
      *
-     * @return array{pis:int, patched:int, skipped:int, errors:array<int,string>}
+     * `total_lines` lets a caller (GenerateSubconLabels' recalc fallback)
+     * distinguish "a TOC_PI header exists but D365 never finished writing its
+     * TOC_PILines" from a normal recalc with nothing to patch — both leave
+     * `patched`/`skipped` at 0 and `errors` empty, but only the former means
+     * the packing instruction is actually incomplete.
+     *
+     * @return array{pis:int, total_lines:int, patched:int, skipped:int, errors:array<int,string>}
      */
     public function syncPackingColiBlister(SubconOrder $order): array
     {
-        $stats = ['pis' => 0, 'patched' => 0, 'skipped' => 0, 'errors' => []];
+        $stats = ['pis' => 0, 'total_lines' => 0, 'patched' => 0, 'skipped' => 0, 'errors' => []];
 
         $dist = $order->distribution_id;
         if (empty($dist)) {
@@ -364,6 +370,7 @@ class D365JobTransactionService
             $pidFilter = 'PackingID eq '.$this->odataLit($packingId);
             $lines = $this->odataGet($token, 'TOC_PILines', $pidFilter);
             $details = $this->odataGet($token, 'TOC_PILinesDetails', $pidFilter);
+            $stats['total_lines'] += count($lines);
 
             // Sum store qty from the per-size detail rows. A TOC_PILines row is one
             // per store; its detail rows carry their OWN `No` sequence (unrelated to
@@ -1013,6 +1020,77 @@ class D365JobTransactionService
     }
 
     /**
+     * Live D365 Good/Reject qty for a single ADD-* operation's job
+     * transaction, keyed by size — confirmed live that D365 can carry this
+     * (TotalGoodQty/TotalRejectQty on JobTransactionLinesDetails) well before
+     * the admin has entered anything into the local subcon_add_process_reports
+     * table, since the vendor/factory reports progress straight into D365's
+     * own shop-floor system independently of this portal's Add Process form.
+     * SubconAddProcessController::index() uses this as a prefill so the admin
+     * isn't stuck re-typing numbers D365 already has. Read-only — does not
+     * write syncAddProcessToD365()'s job of pushing local edits to D365.
+     * Best-effort + cached (1h, matches fetchSalesPrice()/fetchGoodsReceipts()'s
+     * convention): [] on any failure or if the operation's job isn't found.
+     *
+     * @return array<string, array{good: float, reject: float}> keyed by Size
+     */
+    public function fetchAddProcessQuantities(string $productionGroup, string $operation): array
+    {
+        $productionGroup = trim($productionGroup);
+        $operation = trim($operation);
+        if ($productionGroup === '' || $operation === '') {
+            return [];
+        }
+
+        $cacheKey = 'd365_add_process_qty_'.md5($productionGroup.'|'.$operation);
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $token = $this->getD365Token();
+        if (! $token) {
+            return [];
+        }
+
+        try {
+            $headers = $this->odataGet($token, 'JobTransactionHeaders', 'ProductionGroup eq '.$this->odataLit($productionGroup));
+            $jobId = null;
+            foreach ($headers as $h) {
+                if ($this->isOperation($h['Operation'] ?? '', $operation)) {
+                    $jobId = $h['JobTransactionId'];
+                    break;
+                }
+            }
+            if (! $jobId) {
+                Cache::put($cacheKey, [], now()->addHour());
+
+                return [];
+            }
+
+            $lines = $this->odataGet($token, 'JobTransactionLinesDetails', 'JobTransactionId eq '.$this->odataLit($jobId));
+            $quantities = [];
+            foreach ($lines as $line) {
+                $size = $line['Size'] ?? '';
+                if ($size === '') {
+                    continue;
+                }
+                $quantities[$size] = [
+                    'good' => (float) ($line['TotalGoodQty'] ?? 0),
+                    'reject' => (float) ($line['TotalRejectQty'] ?? 0),
+                ];
+            }
+
+            Cache::put($cacheKey, $quantities, now()->addHour());
+
+            return $quantities;
+        } catch (\Throwable $e) {
+            Log::error("Exception fetching {$operation} quantities for {$productionGroup}: ".$e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
      * Fetch DTLines from D365 OData entity filter by DTID (distribution_id).
      */
     public function fetchDTLines(string $distributionId): array
@@ -1043,6 +1121,53 @@ class D365JobTransactionService
             Log::error("Failed to fetch DTLines for DTID {$distributionId}. Status: {$response->status()}, Body: ".$response->body());
         } catch (\Throwable $e) {
             Log::error("Exception fetching DTLines for DTID {$distributionId}: ".$e->getMessage());
+        }
+
+        return [];
+    }
+
+    /**
+     * Live fetch of a production group's per-size lines straight from D365's
+     * `ProductionGroupLinesItem` OData entity — used only as a fallback for a
+     * manually-attached "extra" production group (see
+     * SubconOrderExtraProductionGroup) that VSM hasn't synced yet: a brand-new
+     * PLM/production batch can lag VSM's own sync by a cycle, and this lets
+     * the admin/vendor see it in the portal immediately instead of waiting.
+     * Not used anywhere in the normal forPo() path, which stays VSM-only.
+     *
+     * Field names differ from vsm.production_group_lines (no ProdStatus,
+     * SearchName here) — the caller fills in sensible blanks.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function fetchProductionGroupLinesLive(string $productionGroup): array
+    {
+        $token = $this->getD365Token();
+        if (! $token) {
+            Log::error('Could not obtain UAT token for fetching ProductionGroupLinesItem');
+
+            return [];
+        }
+
+        $url = $this->getResource().'/data/ProductionGroupLinesItem?$filter=TOC_ProductionGroup eq '.$this->odataLit($productionGroup).'&cross-company=true';
+
+        try {
+            $response = Http::withToken($token)
+                ->withHeaders([
+                    'OData-MaxVersion' => '4.0',
+                    'OData-Version' => '4.0',
+                    'Accept' => 'application/json',
+                ])
+                ->timeout(60)
+                ->get($url);
+
+            if ($response->successful()) {
+                return $response->json()['value'] ?? [];
+            }
+
+            Log::error("Failed to fetch ProductionGroupLinesItem for {$productionGroup}. Status: {$response->status()}, Body: ".$response->body());
+        } catch (\Throwable $e) {
+            Log::error("Exception fetching ProductionGroupLinesItem for {$productionGroup}: ".$e->getMessage());
         }
 
         return [];

@@ -300,7 +300,7 @@ class QcReportPdfService
             $qtyIII = $qtyByCycleGroup([4], $size);
             $totalDeliveryFG = $goodGarments;
             $wip = max(0, $cuttingQty - $totalDeliveryFG - $totalReject);
-            $goodsReceiveDelivery = $goodGarments + $rBahan + $rejectProduksi;
+            $goodsReceiveDelivery = $goodGarments + $totalReject;
 
             $row = [
                 'size' => $size !== '' ? $size : '—',

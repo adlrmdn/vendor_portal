@@ -34,6 +34,8 @@ class User extends Authenticatable
         'id' => 'string',
         'email_verified_at' => 'datetime',
         'vendor_id' => 'string',
+        'totp_secret' => 'encrypted',
+        'totp_confirmed_at' => 'datetime',
     ];
 
     public function vendor()

@@ -90,13 +90,19 @@ class SubconOrder extends Model
      */
     public static function pendingValidateSendCount(): int
     {
+        // Official Report rows union into this same tab
+        // (SubconAdminController::reportValidations()) but live in their own
+        // table, not qms — counted separately so the sidebar badge doesn't
+        // undercount against what the tab actually lists.
+        $officialReports = (int) SubconOfficialReport::where('status', SubconOfficialReport::STATUS_PENDING_HO)->count();
+
         try {
             if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
                 || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'ho_validation_signature')) {
-                return 0;
+                return $officialReports;
             }
 
-            return (int) DB::connection('qms')->table('packaging_project_sessions')
+            return $officialReports + (int) DB::connection('qms')->table('packaging_project_sessions')
                 ->whereNotNull('approval_token')
                 ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
                 ->where(function ($q) {
@@ -111,7 +117,7 @@ class SubconOrder extends Model
                 })
                 ->count();
         } catch (\Throwable $e) {
-            return 0;
+            return $officialReports;
         }
     }
 
@@ -122,13 +128,17 @@ class SubconOrder extends Model
      */
     public static function pendingDirectorApprovalCount(): int
     {
+        // Same union as pendingValidateSendCount() above, for the Director
+        // Approvals tab's own Official Report rows.
+        $officialReports = (int) SubconOfficialReport::where('status', SubconOfficialReport::STATUS_PENDING_DIRECTOR)->count();
+
         try {
             if (! Schema::connection('qms')->hasTable('packaging_project_sessions')
                 || ! Schema::connection('qms')->hasColumn('packaging_project_sessions', 'director_approval_signature')) {
-                return 0;
+                return $officialReports;
             }
 
-            return (int) DB::connection('qms')->table('packaging_project_sessions')
+            return $officialReports + (int) DB::connection('qms')->table('packaging_project_sessions')
                 ->whereNotNull('approval_token')
                 ->where('ho_approval_signature', 'like', 'Digitally Signed:%')
                 // Two-step MD gate: only validated & sent sessions are actually
@@ -148,7 +158,7 @@ class SubconOrder extends Model
                 })
                 ->count();
         } catch (\Throwable $e) {
-            return 0;
+            return $officialReports;
         }
     }
 
@@ -336,16 +346,41 @@ class SubconOrder extends Model
         ])->save();
     }
 
+    /**
+     * True when this row isn't actually a CMT cutting work order — it's an
+     * Add Process PO (ADD-Was/ADD-Embro/ADD-Sab/ADD-Pleat) that got ingested
+     * before d365:sync-subcon-orders started excluding those at sync time,
+     * or was flagged by hand. Gates every vendor-facing edit action below as
+     * defense-in-depth, and callers must also exclude it from vendor
+     * visibility entirely via scopeForVendor().
+     */
+    public function isAddProcess(): bool
+    {
+        return ! empty($this->add_process_operation);
+    }
+
+    /**
+     * The only query vendor-facing controllers should use to scope orders to
+     * their own vendor — excludes any order flagged isAddProcess() so an Add
+     * Process PO (never a real cutting job) is invisible to the vendor
+     * entirely, not just blocked from editing. Replaces a bare
+     * where('vendor_id', ...) everywhere in SubconVendorController.
+     */
+    public function scopeForVendor($query, string $vendorId)
+    {
+        return $query->where('vendor_id', $vendorId)->whereNull('add_process_operation');
+    }
+
     /** Vendor may edit/submit the cutting report (qty per size). */
     public function canEditCutting(): bool
     {
-        return $this->workflow_stage === self::STAGE_CUTTING;
+        return ! $this->isAddProcess() && $this->workflow_stage === self::STAGE_CUTTING;
     }
 
     /** Vendor may submit a cutting revision after cutting was already approved, up until the order is completed. */
     public function canReviseCutting(): bool
     {
-        return in_array($this->workflow_stage, [
+        return ! $this->isAddProcess() && in_array($this->workflow_stage, [
             self::STAGE_GRAMASI,
             self::STAGE_WAITING_DISTRIBUTION,
             self::STAGE_LABELS,
@@ -355,7 +390,7 @@ class SubconOrder extends Model
     /** Vendor may edit/submit gramasi + blister capacity. */
     public function canEditGramasi(): bool
     {
-        return $this->workflow_stage === self::STAGE_GRAMASI;
+        return ! $this->isAddProcess() && $this->workflow_stage === self::STAGE_GRAMASI;
     }
 
     /** An approval (cutting or gramasi) is currently pending. */

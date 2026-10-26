@@ -6,6 +6,11 @@
                 <div id="sidebarToggle" class="align-self-center" onclick="toggleSidebar()">
                     <i class="fas fa-bars"></i>
                 </div>
+                @php
+                    $pendingPcApprovals = \App\Models\PcContract::where('status', \App\Models\PcContract::STATUS_PENDING_APPROVAL)->count();
+                    $pendingFabricApprovals = \App\Models\ToleranceAmendmentRequest::where('status', 'pending')->count();
+                    $totalPendingApprovals = $pendingFabricApprovals + $pendingPcApprovals;
+                @endphp
                 <ul class="nav nav-pills flex-column mb-auto">
                     <li class="nav-item">
                         <a href="{{ route('admin.dashboard') }}"
@@ -14,36 +19,13 @@
                         </a>
                     </li>
                     <li>
-                        <div class="d-flex align-items-center pc-submenu-row">
-                            <a href="{{ route('admin.pc.index') }}"
-                                class="nav-link flex-grow-1 {{ request()->routeIs('admin.pc.index') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Preliminary Contract">
-                                <i class="fas fa-file-contract me-2"></i> <span>Preliminary Contract</span>
-                            </a>
-                            <button type="button" class="btn pc-submenu-caret {{ request()->routeIs('admin.pc.*') ? '' : 'collapsed' }}"
-                                data-bs-toggle="collapse" data-bs-target="#pcSidebarSubmenu"
-                                aria-expanded="{{ request()->routeIs('admin.pc.*') ? 'true' : 'false' }}" aria-controls="pcSidebarSubmenu"
-                                aria-label="Toggle Preliminary Contract submenu">
-                                <i class="fas fa-chevron-down"></i>
-                            </button>
-                        </div>
-                        <div class="collapse {{ request()->routeIs('admin.pc.*') ? 'show' : '' }}" id="pcSidebarSubmenu">
-                            <ul class="nav flex-column pc-submenu">
-                                <li>
-                                    <a href="{{ route('admin.pc.index') }}" class="nav-link {{ request()->routeIs('admin.pc.index') ? 'active' : '' }}">Dashboard</a>
-                                </li>
-                                <li>
-                                    <a href="{{ route('admin.pc.contracts.create') }}" class="nav-link {{ request()->routeIs('admin.pc.contracts.create') ? 'active' : '' }}">
-                                        <i class="fas fa-plus small me-1"></i>New Contract
-                                    </a>
-                                </li>
-                                <li>
-                                    <a href="{{ route('admin.pc.contracts.index') }}" class="nav-link {{ request()->routeIs('admin.pc.contracts.*') && ! request()->routeIs('admin.pc.contracts.create') ? 'active' : '' }}">Contract List</a>
-                                </li>
-                                <li>
-                                    <a href="{{ route('admin.pc.data.index') }}" class="nav-link {{ request()->routeIs('admin.pc.data.*') ? 'active' : '' }}">Data Management</a>
-                                </li>
-                            </ul>
-                        </div>
+                        <a href="{{ route('admin.pc.index') }}"
+                            class="nav-link d-flex align-items-center {{ request()->routeIs('admin.pc.*') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Preliminary Contract">
+                            <i class="fas fa-file-contract me-2"></i> <span>Preliminary Contract</span>
+                            @if($pendingPcApprovals > 0)
+                                <span class="badge bg-warning text-dark rounded-pill ms-auto">{{ $pendingPcApprovals }}</span>
+                            @endif
+                        </a>
                     </li>
                     <li>
                         <a href="{{ route('admin.purchase-orders') }}"
@@ -58,12 +40,11 @@
                         </a>
                     </li>
                     <li>
-                        @php($pendingFabricApprovals = \App\Models\ToleranceAmendmentRequest::where('status', 'pending')->count())
                         <a href="{{ route('admin.approvals') }}"
                             class="nav-link d-flex align-items-center {{ request()->routeIs('admin.approvals') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Approvals">
                             <i class="fas fa-gavel me-2"></i> <span>Approvals</span>
-                            @if($pendingFabricApprovals > 0)
-                                <span class="badge bg-danger rounded-pill ms-auto">{{ $pendingFabricApprovals }}</span>
+                            @if($totalPendingApprovals > 0)
+                                <span class="badge bg-danger rounded-pill ms-auto">{{ $totalPendingApprovals }}</span>
                             @endif
                         </a>
                     </li>

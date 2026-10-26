@@ -30,7 +30,7 @@ class SubconOfficialReportTransitionsTest extends TestCase
     protected function tearDown(): void
     {
         DB::connection('rpa')->table('rpa_queues')
-            ->whereIn('rpa_type', ['invoice_addprocess', 'deduction_addprocess'])
+            ->whereIn('rpa_type', ['invoice', 'deduction'])
             ->where('entity_id', 'like', 'MPG/PRG/2512/000014:%')
             ->delete();
         parent::tearDown();
@@ -54,7 +54,7 @@ class SubconOfficialReportTransitionsTest extends TestCase
         $this->assertDatabaseHas('subcon_job_logs', [
             'job_type' => 'official_report:ADD-Was',
             'status' => 'ho_approved',
-            'order_number' => 'MPG/PRG/2512/000014',
+            'order_number' => 'MPG/PO/2601/00302', // matched_po_number, not the production group — see SubconOfficialReportService::logResult()'s docblock
         ]);
     }
 
@@ -70,7 +70,7 @@ class SubconOfficialReportTransitionsTest extends TestCase
         $this->assertDatabaseHas('subcon_job_logs', [
             'job_type' => 'official_report:ADD-Was',
             'status' => 'ho_approved',
-            'order_number' => 'MPG/PRG/2512/000014',
+            'order_number' => 'MPG/PO/2601/00302', // matched_po_number, not the production group — see SubconOfficialReportService::logResult()'s docblock
         ]);
     }
 
@@ -85,12 +85,12 @@ class SubconOfficialReportTransitionsTest extends TestCase
         $this->assertStringContainsString('The Director', $report->director_approval_signature);
         $this->assertDatabaseHas('rpa_queues', [
             'entity_id' => 'MPG/PRG/2512/000014:ADD-Was',
-            'rpa_type' => 'invoice_addprocess',
+            'rpa_type' => 'invoice',
         ], 'rpa');
         $this->assertDatabaseHas('subcon_job_logs', [
             'job_type' => 'official_report:ADD-Was',
             'status' => 'director_approved',
-            'order_number' => 'MPG/PRG/2512/000014',
+            'order_number' => 'MPG/PO/2601/00302', // matched_po_number, not the production group — see SubconOfficialReportService::logResult()'s docblock
         ]);
     }
 
@@ -107,7 +107,7 @@ class SubconOfficialReportTransitionsTest extends TestCase
         $this->assertDatabaseHas('subcon_job_logs', [
             'job_type' => 'official_report:ADD-Was',
             'status' => 'director_declined',
-            'order_number' => 'MPG/PRG/2512/000014',
+            'order_number' => 'MPG/PO/2601/00302', // matched_po_number, not the production group — see SubconOfficialReportService::logResult()'s docblock
         ]);
     }
 
@@ -138,7 +138,7 @@ class SubconOfficialReportTransitionsTest extends TestCase
     public function test_director_approval_rejects_a_report_that_is_not_pending_director_and_does_not_double_queue_rpa()
     {
         // Seed a REAL completion first (this legitimately queues one
-        // invoice_addprocess row), then simulate a stale signed link being
+        // invoice row), then simulate a stale signed link being
         // clicked again on the now-completed report.
         $report = $this->makeReport(['status' => SubconOfficialReport::STATUS_PENDING_DIRECTOR, 'ho_approval_signature' => 'Digitally Signed: Ika']);
         $this->service()->applyDirectorApproval($report, 'The Director');
@@ -153,10 +153,10 @@ class SubconOfficialReportTransitionsTest extends TestCase
         } finally {
             $report->refresh();
             $this->assertSame(SubconOfficialReport::STATUS_COMPLETED, $report->status);
-            $this->assertSame('Digitally Signed: The Director', $report->director_approval_signature);
+            $this->assertStringStartsWith('Digitally Signed: The Director [UTC+07:00:', $report->director_approval_signature);
             $this->assertSame(1, DB::connection('rpa')->table('rpa_queues')
                 ->where('entity_id', 'MPG/PRG/2512/000014:ADD-Was')
-                ->where('rpa_type', 'invoice_addprocess')
+                ->where('rpa_type', 'invoice')
                 ->count());
         }
     }

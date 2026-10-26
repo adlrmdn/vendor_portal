@@ -12,6 +12,18 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // Same guard as 2026_07_02_000002_create_subcon_fabric_reconciliations_table:
+        // this table can already exist on the shared `vsm` connection from a prior
+        // environment/run (it's app-owned but physically hosted there), and without
+        // this check `migrate`/`migrate:fresh` aborts on "already exists" — which
+        // silently blocks every later-dated migration in the same batch from ever
+        // running too (confirmed live: this is why database/database_test.sqlite's
+        // migrations table could show several unrelated, much-later migrations
+        // permanently stuck "Pending").
+        if (Schema::connection('vsm')->hasTable('subcon_daily_production_day_notes')) {
+            return;
+        }
+
         Schema::connection('vsm')->create('subcon_daily_production_day_notes', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->uuid('vendor_id')->index();

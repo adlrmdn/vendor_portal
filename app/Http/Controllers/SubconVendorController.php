@@ -27,15 +27,15 @@ class SubconVendorController extends Controller
         $vendorId = Auth::user()->vendor_id;
 
         $stats = [
-            'total_orders' => SubconOrder::where('vendor_id', $vendorId)->count(),
-            'active_orders' => SubconOrder::where('vendor_id', $vendorId)
+            'total_orders' => SubconOrder::forVendor($vendorId)->count(),
+            'active_orders' => SubconOrder::forVendor($vendorId)
                 ->whereIn('status', ['pending', 'in_progress'])->count(),
-            'completed' => SubconOrder::where('vendor_id', $vendorId)
+            'completed' => SubconOrder::forVendor($vendorId)
                 ->where('status', 'completed')->count(),
         ];
 
         $recentOrders = SubconOrder::with('items')
-            ->where('vendor_id', $vendorId)
+            ->forVendor($vendorId)
             ->orderBy('created_at', 'desc')
             ->limit(5)
             ->get();
@@ -53,7 +53,7 @@ class SubconVendorController extends Controller
         $likeOperator = $driver === 'pgsql' ? 'ilike' : 'like';
 
         $orders = SubconOrder::with('items')
-            ->where('vendor_id', $vendorId)
+            ->forVendor($vendorId)
             ->when($style !== '', function ($q) use ($style, $likeOperator) {
                 $words = array_filter(explode(' ', $style));
                 $q->where(function ($sub) use ($words, $likeOperator) {
@@ -80,7 +80,7 @@ class SubconVendorController extends Controller
      */
     public function saveRemarks(\Illuminate\Http\Request $request, string $id, \App\Services\SubconRemarksPublisher $remarks)
     {
-        $order = SubconOrder::where('vendor_id', Auth::user()->vendor_id)->findOrFail($id);
+        $order = SubconOrder::forVendor(Auth::user()->vendor_id)->findOrFail($id);
 
         $data = $request->validate([
             'remarks' => 'nullable|string|max:5000',
@@ -99,11 +99,13 @@ class SubconVendorController extends Controller
         $vendorId = Auth::user()->vendor_id;
 
         $order = SubconOrder::with('items')
-            ->where('vendor_id', $vendorId)
+            ->forVendor($vendorId)
             ->findOrFail($id);
 
-        // Garment production detail backing this CMT PO (best-effort; [] if unlinked).
-        $productionGroups = $production->forPo($order->order_number);
+        // Garment production detail backing this CMT PO (best-effort; [] if unlinked),
+        // plus any extra production group an admin has manually pinned onto this
+        // order (see SubconOrderExtraProductionGroup's docblock).
+        $productionGroups = array_merge($production->forPo($order->order_number), $production->extraGroupsForOrder($order));
         $summary = $production->summarize($productionGroups);
 
         $cuttingReports = SubconCuttingReport::where('order_id', $order->id)
@@ -220,7 +222,7 @@ class SubconVendorController extends Controller
     public function uploadMaterialReturn(\Illuminate\Http\Request $request, string $id, \App\Services\MaterialReturnService $materialReturns)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::with('vendor')->forVendor($vendorId)->findOrFail($id);
 
         if (! $order->materialReturnVendorWindowOpen()) {
             return back()->with('error', 'This order has already been sent to the Director — a material-return note can no longer be attached.');
@@ -244,7 +246,7 @@ class SubconVendorController extends Controller
     public function deleteMaterialReturn(string $id, string $attachment, \App\Services\MaterialReturnService $materialReturns)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::with('vendor')->forVendor($vendorId)->findOrFail($id);
 
         if (! $order->materialReturnVendorWindowOpen()) {
             return back()->with('error', 'This order has already been sent to the Director — a material-return note can no longer be removed.');
@@ -265,7 +267,7 @@ class SubconVendorController extends Controller
     public function submitCuttingReport(\Illuminate\Http\Request $request, string $id)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::with('vendor')->forVendor($vendorId)->findOrFail($id);
 
         $isRevision = $order->canReviseCutting();
         if (! ($order->canEditCutting() || $isRevision)) {
@@ -395,7 +397,7 @@ class SubconVendorController extends Controller
     public function saveMaterialReconciliation(\Illuminate\Http\Request $request, string $id)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::with('vendor')->forVendor($vendorId)->findOrFail($id);
 
         if (! $order->materialReturnVendorWindowOpen()) {
             return back()->with('error', 'This order has already been sent to the Director — Material Reconciliation can no longer be edited.');
@@ -433,7 +435,7 @@ class SubconVendorController extends Controller
     public function submitGramasi(\Illuminate\Http\Request $request, string $id)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::with('vendor')->forVendor($vendorId)->findOrFail($id);
 
         if (! $order->canEditGramasi()) {
             return back()->with('error', 'Gramasi & blister capacity can only be entered after the cutting report is approved (current stage: '.$order->stageLabel().').');
@@ -509,7 +511,7 @@ class SubconVendorController extends Controller
     public function completeOrder(string $id)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::forVendor($vendorId)->findOrFail($id);
 
         if (! $order->canComplete()) {
             return back()->with('error', 'This order cannot be completed at its current stage ('.$order->stageLabel().').');
@@ -556,7 +558,7 @@ class SubconVendorController extends Controller
     public function downloadTemplate(string $id, SubconProductionService $production)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::forVendor($vendorId)->findOrFail($id);
 
         // Pre-fill the template with this order's production lines so the vendor
         // only fills Qty Cut / Gramasi against the right size & production id.
@@ -586,7 +588,7 @@ class SubconVendorController extends Controller
         D365JobTransactionService $d365Service
     ) {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::forVendor($vendorId)->findOrFail($id);
 
         if (! $order->canEditCutting() && ! $order->canEditGramasi()) {
             return back()->with('error', 'Upload is not available at this stage ('.$order->stageLabel().').');
@@ -833,7 +835,7 @@ class SubconVendorController extends Controller
     public function printPackagingLabels(\Illuminate\Http\Request $request, string $id, SubconLabelService $labels)
     {
         $vendorId = Auth::user()->vendor_id;
-        $order = SubconOrder::with('vendor')->where('vendor_id', $vendorId)->findOrFail($id);
+        $order = SubconOrder::with('vendor')->forVendor($vendorId)->findOrFail($id);
 
         if (! $order->canPrintLabels()) {
             return back()->with('error', 'Label printing unlocks after gramasi & blister capacity are approved (current stage: '.$order->stageLabel().').');

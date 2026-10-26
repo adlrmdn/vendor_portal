@@ -54,7 +54,7 @@ class SubconOfficialReportFlowTest extends TestCase
         SubconOfficialReport::query()->where('production_group', $this->guestPrg)->delete();
         User::query()->whereIn('email', ['flowtest@test.com', 'directorflowtest@test.com'])->delete();
         DB::connection('rpa')->table('rpa_queues')
-            ->whereIn('rpa_type', ['invoice_addprocess', 'deduction_addprocess'])
+            ->whereIn('rpa_type', ['invoice', 'deduction'])
             ->where('entity_id', 'like', $this->prg.':%')
             ->delete();
         DB::connection('vsm')->table('job_transaction_line_details')->where('JobTransactionId', $this->jobTransactionId)->delete();
@@ -151,15 +151,13 @@ class SubconOfficialReportFlowTest extends TestCase
 
         $response->assertSessionHas('success');
         $report = SubconOfficialReport::where('production_group', $this->prg)->where('operation', 'ADD-Was')->firstOrFail();
-        $this->assertSame(SubconOfficialReport::STATUS_PENDING_HO, $report->status);
-
-        // HO approves in-app.
-        $response2 = $this->actingAs($admin)
-            ->withoutMiddleware(ValidateCsrfToken::class)
-            ->post(route('subcon.admin.official-reports.ho-approve', $report->id), []);
-        $response2->assertSessionHas('success');
-        $report->refresh();
+        // send() now folds in the HO approval — whoever sends it already has
+        // a subcon_admin account, same as every qc_ho_approver_email
+        // recipient (confirmed live), so a separate HO-approve click on the
+        // same figures moments later would just be a rubber stamp. Goes
+        // straight to pending_director, signed as the sending admin.
         $this->assertSame(SubconOfficialReport::STATUS_PENDING_DIRECTOR, $report->status);
+        $this->assertStringContainsString($admin->name, $report->ho_approval_signature);
 
         // Director approves in-app — must act as the configured Director (Fix 4's route-level gate).
         $response3 = $this->actingAs($director)
@@ -171,7 +169,7 @@ class SubconOfficialReportFlowTest extends TestCase
 
         $this->assertDatabaseHas('rpa_queues', [
             'entity_id' => $this->prg.':ADD-Was',
-            'rpa_type' => 'invoice_addprocess',
+            'rpa_type' => 'invoice',
         ], 'rpa');
     }
 
@@ -186,10 +184,11 @@ class SubconOfficialReportFlowTest extends TestCase
 
         $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.send'), ['production_group' => $this->prg, 'operation' => 'ADD-Was']);
+        // send() now folds in the HO approval (see the happy-path test) —
+        // the report is already pending_director here, no separate
+        // ho-approve call needed before the Director can decline it.
         $report = SubconOfficialReport::where('production_group', $this->prg)->where('operation', 'ADD-Was')->firstOrFail();
-
-        $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
-            ->post(route('subcon.admin.official-reports.ho-approve', $report->id), []);
+        $this->assertSame(SubconOfficialReport::STATUS_PENDING_DIRECTOR, $report->status);
 
         $this->actingAs($director)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.director-decline', $report->id), ['reason' => 'Please recheck.']);
@@ -199,6 +198,10 @@ class SubconOfficialReportFlowTest extends TestCase
         $this->assertSame(1, $report->revision_count);
         $this->assertTrue($report->needsRevision());
 
+        // THIS ho-approve call is the real, still-untouched revision path —
+        // a genuine second look at figures the Director already rejected
+        // once, reached from the Report Validation tab's "Revise & Resend"
+        // (not send() again).
         $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.ho-approve', $report->id), ['additional_deduction' => 10000]);
         $this->actingAs($director)->withoutMiddleware(ValidateCsrfToken::class)
@@ -228,10 +231,9 @@ class SubconOfficialReportFlowTest extends TestCase
 
         $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.send'), ['production_group' => $this->prg, 'operation' => 'ADD-Was']);
+        // send() folds in the HO approval now — already pending_director here.
         $report = SubconOfficialReport::where('production_group', $this->prg)->where('operation', 'ADD-Was')->firstOrFail();
 
-        $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
-            ->post(route('subcon.admin.official-reports.ho-approve', $report->id), []);
         $this->actingAs($director)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.director-approve', $report->id), []);
 
@@ -270,10 +272,9 @@ class SubconOfficialReportFlowTest extends TestCase
 
         $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.send'), ['production_group' => $this->prg, 'operation' => 'ADD-Was']);
+        // send() folds in the HO approval now — already pending_director here.
         $report = SubconOfficialReport::where('production_group', $this->prg)->where('operation', 'ADD-Was')->firstOrFail();
 
-        $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
-            ->post(route('subcon.admin.official-reports.ho-approve', $report->id), []);
         $this->actingAs($director)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.director-approve', $report->id), []);
 
@@ -321,10 +322,9 @@ class SubconOfficialReportFlowTest extends TestCase
 
         $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.send'), ['production_group' => $this->prg, 'operation' => 'ADD-Was']);
+        // send() folds in the HO approval now — already pending_director here.
         $report = SubconOfficialReport::where('production_group', $this->prg)->where('operation', 'ADD-Was')->firstOrFail();
 
-        $this->actingAs($admin)->withoutMiddleware(ValidateCsrfToken::class)
-            ->post(route('subcon.admin.official-reports.ho-approve', $report->id), []);
         $this->actingAs($director)->withoutMiddleware(ValidateCsrfToken::class)
             ->post(route('subcon.admin.official-reports.director-approve', $report->id), []);
 

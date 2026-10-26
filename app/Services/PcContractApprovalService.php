@@ -7,12 +7,12 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 /**
- * The one transaction that moves a contract from pending_final_approval
- * to confirmed: number issuance + freeze + PDF, in that order, plus
- * superseding the previous revision if this is one. Separation-of-duties
- * is re-checked here as defense-in-depth (the controller already checked
- * it before consuming the TOTP window) — never call this without that
- * earlier check too.
+ * Handles internal approval of Preliminary Contracts.
+ * Transitions pending_approval -> approved:
+ * 1. Checks separation of duties (approver != preparer).
+ * 2. Freezes master snapshot, standard clauses, and tolerance tables.
+ * 3. Renders and securely stores the approved PDF (PC-A01 prerequisite).
+ * 4. Supersedes the previous revision if this is a revision.
  */
 class PcContractApprovalService
 {
@@ -31,16 +31,14 @@ class PcContractApprovalService
             $contract->approval_decision = 'approved';
             $contract->approval_decision_at = now();
             $contract->approval_decision_by = $approver->id;
-            $contract->confirmed_at = now();
-            $contract->confirmed_by = $approver->id;
-            $contract->status = 'confirmed';
+            $contract->status = PcContract::STATUS_APPROVED;
             $contract->save();
 
             $this->freezeService->freeze($contract);
             $this->pdfService->generate($contract);
 
             if ($contract->previous_revision_id) {
-                PcContract::where('id', $contract->previous_revision_id)->update(['status' => 'superseded']);
+                PcContract::where('id', $contract->previous_revision_id)->update(['status' => PcContract::STATUS_SUPERSEDED]);
             }
         });
     }

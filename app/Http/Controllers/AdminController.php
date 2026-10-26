@@ -7,6 +7,7 @@ use App\Models\PurchaseOrder;
 use App\Models\User;
 use App\Models\Vendor;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
@@ -942,7 +943,37 @@ class AdminController extends Controller
 
         $requests = $query->orderBy('created_at', 'desc')->paginate(20)->withQueryString();
 
-        return view('admin.approvals', compact('requests', 'search'));
+        $user = Auth::user();
+        $isPcApprover = $user && ($user->isAdmin() || \App\Http\Controllers\PcAdminController::isPcApproverUser($user));
+
+        $pcQuery = \App\Models\PcContract::with(['vendor', 'season', 'creator', 'currency', 'lines'])
+            ->where('status', \App\Models\PcContract::STATUS_PENDING_APPROVAL);
+
+        if ($search !== '') {
+            $driver = DB::connection()->getDriverName();
+            $likeOperator = $driver === 'pgsql' ? 'ilike' : 'like';
+            $pcQuery->where(function ($q) use ($search, $likeOperator) {
+                $q->where('contract_number', $likeOperator, "%{$search}%")
+                    ->orWhereHas('vendor', function ($vq) use ($search, $likeOperator) {
+                        $vq->where('name', $likeOperator, "%{$search}%");
+                    });
+            });
+        }
+
+        $pendingPcContracts = $pcQuery->latest('submitted_at')->get();
+        $pendingPcCount = $pendingPcContracts->count();
+        $pendingAmendmentCount = \App\Models\ToleranceAmendmentRequest::where('status', 'pending')->count();
+        $tab = $request->query('tab', ($pendingPcCount > 0 ? 'pc' : 'amendments'));
+
+        return view('admin.approvals', compact(
+            'requests',
+            'search',
+            'pendingPcContracts',
+            'pendingPcCount',
+            'pendingAmendmentCount',
+            'isPcApprover',
+            'tab'
+        ));
     }
 
     /**

@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\SubconAddProcessReport;
+use App\Models\SubconApprovalLog;
+use App\Models\SubconCuttingReport;
 use App\Models\SubconJobLog;
 use App\Models\SubconOfficialReport;
 use App\Models\SubconOrder;
@@ -19,6 +21,7 @@ class SubconOfficialReportService
     public function __construct(
         private readonly SubconProductionService $production,
         private readonly D365JobTransactionService $d365,
+        private readonly QcReportPdfService $reportPdf,
     ) {}
 
     /**
@@ -41,6 +44,28 @@ class SubconOfficialReportService
         $lines = collect($groups)->flatMap(fn ($g) => collect($g['lines'] ?? []))->values();
         $cutQuantities = $this->production->cutQuantitiesForGroup($productionGroup);
 
+        // cutQuantitiesForGroup() only has data once D365's own CMT-Cut job is
+        // started/confirmed on the shop floor, which can lag well behind the
+        // vendor's own cutting-report submission in the portal (same gap
+        // SubconAddProcessController::index()'s Cut Qty column falls back
+        // for). Without this, cut_qty silently computes as 0 here whenever
+        // that D365 job hasn't started yet, understating allowed_limit in
+        // computeDeduction() (floor(cutQty*0.01)) and so overcharging any
+        // real reject qty. whereNull('add_process_operation') excludes an
+        // Add Process PO flagged onto subcon_orders itself — see
+        // SubconOrder::isAddProcess()'s docblock.
+        $cmtOrder = SubconOrder::where('production_group', $productionGroup)
+            ->whereNull('add_process_operation')
+            ->first();
+        if ($cmtOrder) {
+            $localCutQuantities = SubconCuttingReport::where('order_id', $cmtOrder->id)
+                ->get()
+                ->keyBy('size')
+                ->map(fn ($r) => ['good' => (float) $r->cutting_qty, 'reject' => 0.0])
+                ->all();
+            $cutQuantities = $cutQuantities + $localCutQuantities;
+        }
+
         $reports = SubconAddProcessReport::where('production_group', $productionGroup)
             ->where('operation', $operation)
             ->get()
@@ -52,6 +77,69 @@ class SubconOfficialReportService
             'good_qty' => (int) $lines->sum(fn ($l) => $reports->get($l->ProdId)->qty ?? 0),
             'reject_qty' => (int) $lines->sum(fn ($l) => $reports->get($l->ProdId)->reject_qty ?? 0),
         ];
+    }
+
+    /**
+     * Per-size breakdown behind computeYield()'s totals — same data
+     * sources, same "local save always wins, no live D365 prefill" rule
+     * (this is what actually got frozen into the report's good_qty/
+     * reject_qty columns at send time, so a row-by-row sum here always
+     * matches those totals; the Add Process page's own live D365 prefill
+     * is deliberately NOT mixed in here for that reason). Size only — no
+     * PRD ID/Status columns, those are the Add Process page's own
+     * production-detail concern, not this report's.
+     *
+     * @return array{rows: list<array{size: string, order_qty: int, cut_qty: int, good_qty: int, reject_qty: int, balance: int}>, total: array{order_qty: int, cut_qty: int, good_qty: int, reject_qty: int, balance: int}}
+     */
+    public function yieldMatrix(string $productionGroup, string $operation): array
+    {
+        $groups = $this->production->forProductionGroup($productionGroup);
+        $lines = collect($groups)->flatMap(fn ($g) => collect($g['lines'] ?? []))->values();
+        $cutQuantities = $this->production->cutQuantitiesForGroup($productionGroup);
+
+        $cmtOrder = SubconOrder::where('production_group', $productionGroup)
+            ->whereNull('add_process_operation')
+            ->first();
+        if ($cmtOrder) {
+            $localCutQuantities = SubconCuttingReport::where('order_id', $cmtOrder->id)
+                ->get()
+                ->keyBy('size')
+                ->map(fn ($r) => ['good' => (float) $r->cutting_qty, 'reject' => 0.0])
+                ->all();
+            $cutQuantities = $cutQuantities + $localCutQuantities;
+        }
+
+        $reports = SubconAddProcessReport::where('production_group', $productionGroup)
+            ->where('operation', $operation)
+            ->get()
+            ->keyBy('prod_id');
+
+        $rows = $lines->map(function ($l) use ($cutQuantities, $reports) {
+            $cutQty = (int) ($cutQuantities[$l->Size]['good'] ?? 0);
+            $good = (int) ($reports->get($l->ProdId)->qty ?? 0);
+            $reject = (int) ($reports->get($l->ProdId)->reject_qty ?? 0);
+
+            return [
+                'size' => $l->Size,
+                'order_qty' => (int) $l->Qty,
+                'cut_qty' => $cutQty,
+                'good_qty' => $good,
+                'reject_qty' => $reject,
+                'balance' => $cutQty - ($good + $reject),
+            ];
+        })->values()->all();
+
+        $total = array_reduce($rows, function ($acc, $r) {
+            $acc['order_qty'] += $r['order_qty'];
+            $acc['cut_qty'] += $r['cut_qty'];
+            $acc['good_qty'] += $r['good_qty'];
+            $acc['reject_qty'] += $r['reject_qty'];
+            $acc['balance'] += $r['balance'];
+
+            return $acc;
+        }, ['order_qty' => 0, 'cut_qty' => 0, 'good_qty' => 0, 'reject_qty' => 0, 'balance' => 0]);
+
+        return ['rows' => $rows, 'total' => $total];
     }
 
     /**
@@ -86,7 +174,13 @@ class SubconOfficialReportService
      */
     public function gate(string $productionGroup, string $operation): array
     {
-        $cmtOrder = SubconOrder::where('production_group', $productionGroup)->first();
+        // Excludes an Add Process PO flagged onto subcon_orders itself (see
+        // SubconOrder::isAddProcess()'s docblock) — this group can have one
+        // of those alongside its real CMT order, and gating on the wrong
+        // one's workflow_stage would misjudge whether cutting is approved.
+        $cmtOrder = SubconOrder::where('production_group', $productionGroup)
+            ->whereNull('add_process_operation')
+            ->first();
 
         // Gated on actual cutting OUTPUT existing — the same cut_qty
         // computeYield()/the Add Process page itself already show, sourced
@@ -104,7 +198,23 @@ class SubconOfficialReportService
         // because that blocked a confirmed, already-cut Add Process
         // operation purely on the CMT order's own approval paperwork
         // lagging behind, with no cut-qty dependency to justify it.
-        $hasCutQty = $this->computeYield($productionGroup, $operation)['cut_qty'] > 0;
+        //
+        // Checked directly off cutQuantitiesForGroup()/the local cutting
+        // report, NOT via computeYield()['cut_qty'] — that figure is summed
+        // over forProductionGroup()'s per-size lines (production_group_lines),
+        // which can legitimately be empty/not-yet-synced even when real cut
+        // output already exists in job_transaction_line_details, silently
+        // zeroing the check for no reason tied to cutting itself.
+        $cutQuantities = $this->production->cutQuantitiesForGroup($productionGroup);
+        if ($cmtOrder) {
+            $localCutQuantities = SubconCuttingReport::where('order_id', $cmtOrder->id)
+                ->get()
+                ->keyBy('size')
+                ->map(fn ($r) => ['good' => (float) $r->cutting_qty, 'reject' => 0.0])
+                ->all();
+            $cutQuantities = $cutQuantities + $localCutQuantities;
+        }
+        $hasCutQty = collect($cutQuantities)->contains(fn ($c) => ($c['good'] ?? 0) > 0);
         if (! $hasCutQty) {
             $reason = $cmtOrder
                 ? 'No cutting output recorded yet for this work order.'
@@ -135,7 +245,7 @@ class SubconOfficialReportService
      * Production. Throws \RuntimeException (message = gate()'s reason) when
      * blocked — callers turn that into a flash error.
      */
-    public function send(string $productionGroup, string $operation, float $additionalDeduction, ?string $remarks, ?float $salesPriceOverride = null): SubconOfficialReport
+    public function send(string $productionGroup, string $operation, float $additionalDeduction, ?string $remarks, ?float $salesPriceOverride = null, ?string $approver = null): SubconOfficialReport
     {
         $gate = $this->gate($productionGroup, $operation);
         if (! $gate['ok']) {
@@ -176,10 +286,26 @@ class SubconOfficialReportService
 
         $deduction = $this->computeDeduction($yield['cut_qty'], $yield['reject_qty'], (float) ($salesPrice ?? 0), $additionalDeduction);
 
-        return SubconOfficialReport::updateOrCreate(
+        // Whoever clicks "Send" here already has a subcon_admin portal
+        // account — confirmed live that qc_ho_approver_email's full
+        // recipient list does too — and is the one actually providing
+        // additional_deduction/sales_price/remarks on this same form. A
+        // separate MD Production approval click on the SAME figures moments
+        // later is a rubber stamp, not a real second review, so send()
+        // folds it in: passing $approver sends straight to pending_director
+        // with the HO signature stamped immediately, skipping pending_ho
+        // entirely. $approver is optional only so existing callers that
+        // don't pass it (e.g. tests exercising sales_price resolution) keep
+        // the old pending_ho behavior unchanged. The *revision* path
+        // (applyHoApproval(), reached after a Director decline) is
+        // deliberately untouched — that's a real second look at figures
+        // someone else already saw once, not a rubber stamp.
+        $isAutoApproved = $approver !== null;
+
+        $report = SubconOfficialReport::updateOrCreate(
             ['production_group' => $productionGroup, 'operation' => $operation],
             [
-                'status' => SubconOfficialReport::STATUS_PENDING_HO,
+                'status' => $isAutoApproved ? SubconOfficialReport::STATUS_PENDING_DIRECTOR : SubconOfficialReport::STATUS_PENDING_HO,
                 'matched_po_number' => $matchedPo['po_number'] ?? null,
                 'matched_po_vendor_code' => $matchedPo['vendor_code'] ?? null,
                 'matched_po_vendor_name' => $matchedPo['vendor_name'] ?? null,
@@ -196,12 +322,22 @@ class SubconOfficialReportService
                 'additional_deduction' => $additionalDeduction,
                 'remarks' => $remarks,
                 'director_decline_reason' => null,
-                'ho_approval_signature' => null,
-                'ho_approved_at' => null,
+                // Same 'Digitally Signed: <actor> [UTC+07:00: <timestamp>]'
+                // contract as QcApprovalController's signatures (e.g.
+                // hoApprove()'s $signature) — kept consistent so this
+                // column renders identically wherever it's shown.
+                'ho_approval_signature' => $isAutoApproved ? $this->signatureFor($approver) : null,
+                'ho_approved_at' => $isAutoApproved ? now() : null,
                 'director_approval_signature' => null,
                 'director_approved_at' => null,
             ]
         );
+
+        if ($isAutoApproved) {
+            $this->logResult($report, 'ho_approved', "Sent and HO-approved by {$approver} (combined send + approval).");
+        }
+
+        return $report;
     }
 
     /**
@@ -233,12 +369,34 @@ class SubconOfficialReportService
                 report($e);
             }
 
+            // Same logo asset + data-URI pattern as QcReportPdfService's
+            // inspection-report-body partial, so both PDFs carry the same
+            // wordmark.
+            $logoPath = public_path('images/mp-logo-report.png');
+            $logoData = is_file($logoPath)
+                ? 'data:image/png;base64,'.base64_encode((string) file_get_contents($logoPath))
+                : null;
+
+            // Same stamp shape (badge + truncated email + date, name + role
+            // below a divider) as the base CMT inspection report's
+            // signature boxes — parseSignature() is the shared 'Digitally
+            // Signed: <actor> [UTC+07:00: <ts>]' decoder both reports' HO/
+            // Director columns are written in (SubconOfficialReportService::
+            // signatureFor() / QcApprovalController's own signature lines).
+            $signatures = [
+                'ho' => $this->reportPdf->parseSignature((string) $report->ho_approval_signature),
+                'director' => $this->reportPdf->parseSignature((string) $report->director_approval_signature),
+            ];
+
             $bytes = \Barryvdh\DomPDF\Facade\Pdf::loadView('subcon.pdf.official-report', [
                 'report' => $report,
                 'articleName' => $first['article_name'] ?? null,
                 'deliveryPlan' => null,
                 'season' => $first['season'] ?? null,
                 'plmId' => $plmId ?? ($first['plm_id'] ?? null),
+                'logoData' => $logoData,
+                'signatures' => $signatures,
+                'yield' => $this->yieldMatrix($report->production_group, $report->operation),
             ])->setPaper('a4', 'portrait')->output();
 
             return 'data:application/pdf;base64,'.base64_encode($bytes);
@@ -272,7 +430,7 @@ class SubconOfficialReportService
                 $report->remarks = $remarks;
             }
 
-            $report->ho_approval_signature = "Digitally Signed: {$approver}";
+            $report->ho_approval_signature = $this->signatureFor($approver);
             $report->ho_approved_at = now();
             $report->status = SubconOfficialReport::STATUS_PENDING_DIRECTOR;
             $report->save();
@@ -296,7 +454,7 @@ class SubconOfficialReportService
         }
 
         DB::transaction(function () use ($report, $approver) {
-            $report->director_approval_signature = "Digitally Signed: {$approver}";
+            $report->director_approval_signature = $this->signatureFor($approver);
             $report->director_approved_at = now();
             $report->status = SubconOfficialReport::STATUS_COMPLETED;
             $report->save();
@@ -312,6 +470,19 @@ class SubconOfficialReportService
         }
 
         $this->logResult($report, 'director_approved', "Director approved by {$approver}.");
+        $this->logDirectorDecision($report, 'approved', $approver, "Director authorized Add Process ({$report->operation}); Invoice/Deduction RPA queued; report completed.");
+    }
+
+    /**
+     * 'Digitally Signed: <actor> [UTC+07:00: <timestamp>]' — same contract
+     * QcApprovalController's signature columns use (e.g. hoApprove()'s
+     * $signature), so this report's HO/Director columns render identically
+     * to the QC workflow's wherever both appear side by side (Report
+     * Validation / Director Approvals tabs).
+     */
+    private function signatureFor(string $approver): string
+    {
+        return 'Digitally Signed: '.$approver.' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
     }
 
     /**
@@ -334,19 +505,79 @@ class SubconOfficialReportService
         });
 
         $this->logResult($report, 'director_declined', "Director declined: {$reason}");
+        $this->logDirectorDecision($report, 'declined', 'Director', "Director rejection recorded for Add Process ({$report->operation}) — back to Report Validation. Reason: {$reason}");
     }
 
-    /** Audit trail via SubconJobLog, spec §3 — job_type "official_report:{operation}". */
+    /**
+     * Quiet undo of a send — mirrors SubconAdminController::
+     * recallToReportValidation()'s QC-session recall, for this row type:
+     * any subcon admin pulling a report back to Report Validation because
+     * it was sent by mistake, not a Director decision (no reason, no
+     * email, no revision_count bump — unlike applyDirectorDecline()). The
+     * HO signature is wiped, not kept, since pending_ho means "not yet
+     * approved" under the merged send+HO-approve model (send()'s
+     * docblock) — leaving it would make the status/signature pair
+     * self-contradictory.
+     */
+    public function recallToHo(SubconOfficialReport $report, string $actor): void
+    {
+        if (! $report->isPendingDirector()) {
+            throw new \RuntimeException('This report is no longer awaiting Director authorization.');
+        }
+
+        DB::transaction(function () use ($report) {
+            $report->status = SubconOfficialReport::STATUS_PENDING_HO;
+            $report->ho_approval_signature = null;
+            $report->ho_approved_at = null;
+            $report->save();
+        });
+
+        $this->logResult($report, 'recalled', "Recalled back to Report Validation by {$actor}.");
+    }
+
+    /**
+     * Audit trail via SubconJobLog, spec §3 — job_type "official_report:{operation}".
+     * The Add Process PO/vendor (matched_po_number/matched_po_vendor_name) is a
+     * *different* PO than the group's main CMT PO (see SubconProductionService::
+     * addProcessPurchaseOrdersForGroup()) — display the report's own matched PO,
+     * not the CMT order's, or this shows the wrong work order number. order_id
+     * still links to the CMT SubconOrder when one exists (the AddPro PO itself
+     * has no local SubconOrder row), since that's what the portal page resolves.
+     */
     private function logResult(SubconOfficialReport $report, string $status, string $message): void
     {
-        $order = SubconOrder::where('production_group', $report->production_group)->first();
+        $cmtOrder = SubconOrder::where('production_group', $report->production_group)->first();
 
         SubconJobLog::create([
-            'order_id' => $order?->id,
-            'order_number' => $order?->order_number ?? $report->production_group,
+            'order_id' => $cmtOrder?->id,
+            'order_number' => $report->matched_po_number ?? $report->production_group,
             'job_type' => "official_report:{$report->operation}",
             'status' => $status,
             'message' => $message,
+        ]);
+    }
+
+    /**
+     * Mirrors logResult() but writes to SubconApprovalLog with gate='director'
+     * so an Official Report's Director decision shows up in the Director
+     * Approvals tab's "Recent Director decisions" panel alongside the
+     * QC/HO/Director workflow's — that panel reads SubconApprovalLog only,
+     * and this feature previously logged exclusively to SubconJobLog, so its
+     * Director decisions were invisible there even though they'd happened.
+     */
+    private function logDirectorDecision(SubconOfficialReport $report, string $decision, string $actor, string $note): void
+    {
+        $cmtOrder = SubconOrder::where('production_group', $report->production_group)->first();
+
+        SubconApprovalLog::record([
+            'order_id' => $cmtOrder?->id,
+            'order_number' => $report->matched_po_number ?? $report->production_group,
+            'vendor_name' => $report->matched_po_vendor_name ?? $cmtOrder?->vendor?->name,
+            'gate' => 'director',
+            'decision' => $decision,
+            'actor' => $actor,
+            'source' => 'portal',
+            'note' => $note,
         ]);
     }
 }

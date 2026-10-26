@@ -6,15 +6,27 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
 
 /**
- * The PC contract header. Status machine and freeze mechanics are
- * documented in the PC Phase 2 plan. Deliberately carries no transition
- * methods with side effects (audit log, mail, number issuance, PDF) —
- * those live in PcContractApprovalService/PcContractController so they
- * stay testable and TOTP-gated at the right layer. Only pure state
- * predicates live here, matching SubconOrder::canEditCutting()'s idiom.
+ * The PC contract header.
+ * Canonical status machine:
+ * draft -> pending_approval -> approved -> sent_to_supplier -> confirmed
+ * Additional paths:
+ *   pending_approval -> draft (rejected by approver with reason)
+ *   sent_to_supplier -> supplier_queried (vendor query with reason)
+ *   revisions: approved/sent_to_supplier/supplier_queried/confirmed -> superseded (when new rev confirmed)
+ *   cancellation: any live status -> cancelled (staff-only with reason)
  */
 class PcContract extends Model
 {
+    public const STATUS_DRAFT = 'draft';
+    public const STATUS_PENDING_APPROVAL = 'pending_approval';
+    public const STATUS_APPROVED = 'approved';
+    public const STATUS_SENT_TO_SUPPLIER = 'sent_to_supplier';
+    public const STATUS_CONFIRMED = 'confirmed';
+    public const STATUS_SUPPLIER_QUERIED = 'supplier_queried';
+    public const STATUS_REJECTED = 'rejected';
+    public const STATUS_SUPERSEDED = 'superseded';
+    public const STATUS_CANCELLED = 'cancelled';
+
     protected $keyType = 'string';
 
     public $incrementing = false;
@@ -177,27 +189,47 @@ class PcContract extends Model
 
     public function isEditableByPreparer(): bool
     {
-        return $this->status === 'draft';
-    }
-
-    public function isAwaitingVendor(): bool
-    {
-        return $this->status === 'pending_vendor_review';
+        return $this->status === self::STATUS_DRAFT;
     }
 
     public function isAwaitingApproval(): bool
     {
-        return $this->status === 'pending_final_approval';
+        return $this->status === self::STATUS_PENDING_APPROVAL;
+    }
+
+    public function isApproved(): bool
+    {
+        return $this->status === self::STATUS_APPROVED;
+    }
+
+    public function isSentToSupplier(): bool
+    {
+        return $this->status === self::STATUS_SENT_TO_SUPPLIER;
     }
 
     public function isConfirmed(): bool
     {
-        return $this->status === 'confirmed';
+        return $this->status === self::STATUS_CONFIRMED;
+    }
+
+    public function isQueried(): bool
+    {
+        return $this->status === self::STATUS_SUPPLIER_QUERIED;
     }
 
     public function isLive(): bool
     {
-        return ! in_array($this->status, ['cancelled', 'superseded'], true);
+        return ! in_array($this->status, [self::STATUS_CANCELLED, self::STATUS_SUPERSEDED], true);
+    }
+
+    public function canBeRevised(): bool
+    {
+        return in_array($this->status, [
+            self::STATUS_APPROVED,
+            self::STATUS_SENT_TO_SUPPLIER,
+            self::STATUS_SUPPLIER_QUERIED,
+            self::STATUS_CONFIRMED,
+        ], true);
     }
 
     public function canBeCancelledBy(User $user): bool

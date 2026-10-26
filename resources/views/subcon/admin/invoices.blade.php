@@ -5,12 +5,20 @@
 @php
     $statusColors = ['waiting' => 'secondary', 'processing' => 'info', 'completed' => 'success', 'failed' => 'danger'];
     $hasFilters = $filters['q'] !== '' || $filters['status'] !== '' || $filters['checked'] !== '';
+    // Drop 'dir' too when there's no active sort column, so a plain Export
+    // click doesn't tack an inert ?dir=asc onto the URL.
+    $exportParams = array_filter($filters, fn ($v, $k) => $v !== '' && ! ($k === 'dir' && $filters['sort'] === ''), ARRAY_FILTER_USE_BOTH);
 @endphp
 
 @section('content')
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h4 class="mb-0"><i class="fas fa-file-invoice me-2"></i>Invoices</h4>
-    <span class="text-muted small">As of {{ now('Asia/Jakarta')->format('d M Y H:i') }} WIB &mdash; {{ $rows->total() }} total</span>
+    <div class="d-flex align-items-center gap-3">
+        <a href="{{ route('subcon.admin.invoices.export', $exportParams) }}" class="btn btn-sm btn-outline-success">
+            <i class="fas fa-file-excel me-1"></i>Export Excel
+        </a>
+        <span class="text-muted small">As of {{ now('Asia/Jakarta')->format('d M Y H:i') }} WIB &mdash; {{ $rows->total() }} total</span>
+    </div>
 </div>
 
 <form method="GET" action="{{ route('subcon.admin.invoices') }}" class="card border-0 shadow-sm mb-3">
@@ -53,14 +61,15 @@
         <table class="table table-hover align-middle mb-0">
             <thead class="table-light">
                 <tr>
-                    <th>PO</th>
-                    <th>Vendor</th>
-                    <th>Style</th>
-                    <th>Status</th>
+                    <x-sortable-th route="subcon.admin.invoices" :filters="$filters" col="po">PO</x-sortable-th>
+                    <x-sortable-th route="subcon.admin.invoices" :filters="$filters" col="vendor">Vendor</x-sortable-th>
+                    <x-sortable-th route="subcon.admin.invoices" :filters="$filters" col="style">Style</x-sortable-th>
+                    <x-sortable-th route="subcon.admin.invoices" :filters="$filters" col="status">Status</x-sortable-th>
                     <th>Reason</th>
-                    <th>Updated</th>
+                    <x-sortable-th route="subcon.admin.invoices" :filters="$filters" col="submission">Submission</x-sortable-th>
+                    <x-sortable-th route="subcon.admin.invoices" :filters="$filters" col="updated">Updated</x-sortable-th>
                     <th>Report</th>
-                    <th>Checked</th>
+                    <x-sortable-th route="subcon.admin.invoices" :filters="$filters" col="checked">Checked</x-sortable-th>
                 </tr>
             </thead>
             <tbody>
@@ -87,6 +96,7 @@
                                 &mdash;
                             @endif
                         </td>
+                        <td>{{ \Illuminate\Support\Carbon::parse($row->created_at)->timezone('Asia/Jakarta')->format('d M Y H:i') }}</td>
                         <td>{{ \Illuminate\Support\Carbon::parse($row->updated_at)->timezone('Asia/Jakarta')->format('d M Y H:i') }}</td>
                         <td>
                             @if ($row->has_report)
@@ -108,7 +118,7 @@
                     </tr>
                 @empty
                     <tr>
-                        <td colspan="8" class="text-center text-muted py-5">No invoices match{{ $hasFilters ? ' these filters' : '' }}.</td>
+                        <td colspan="9" class="text-center text-muted py-5">No invoices match{{ $hasFilters ? ' these filters' : '' }}.</td>
                     </tr>
                 @endforelse
             </tbody>

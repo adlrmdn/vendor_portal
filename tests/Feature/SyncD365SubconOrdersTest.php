@@ -111,8 +111,8 @@ class SyncD365SubconOrdersTest extends TestCase
                 'value' => [
                     [
                         'PurchaseOrderNumber' => 'MPG/PO/2605/12345',
-                        'ItemNumber' => 'ITEM-001',
-                        'LineDescription' => 'CMT Service Item 1',
+                        'ItemNumber' => '2312000100000',
+                        'LineDescription' => 'Item Jasa CMT',
                         'OrderedPurchaseQuantity' => 100.0,
                         'PurchaseUnitSymbol' => 'PCS',
                     ],
@@ -150,7 +150,7 @@ class SyncD365SubconOrdersTest extends TestCase
 
         // Verify items were synced
         $this->assertCount(1, $order->items);
-        $this->assertEquals('ITEM-001', $order->items->first()->item_number);
+        $this->assertEquals('2312000100000', $order->items->first()->item_number);
         $this->assertEquals(100.0, (float) $order->items->first()->quantity);
     }
 
@@ -214,7 +214,17 @@ class SyncD365SubconOrdersTest extends TestCase
                     ],
                 ],
             ], 200),
-            'https://test.dynamics.com/data/PurchaseOrderLinesV2*' => Http::response(['value' => []], 200),
+            'https://test.dynamics.com/data/PurchaseOrderLinesV2*' => Http::response([
+                'value' => [
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/2606/99999',
+                        'ItemNumber' => '2312000100000',
+                        'LineDescription' => 'Item Jasa CMT',
+                        'OrderedPurchaseQuantity' => 1.0,
+                        'PurchaseUnitSymbol' => 'PCS',
+                    ],
+                ],
+            ], 200),
             'https://test.dynamics.com/data/TOC_DT*' => Http::response(['value' => []], 200),
         ]);
 
@@ -332,7 +342,17 @@ class SyncD365SubconOrdersTest extends TestCase
                     ],
                 ],
             ], 200),
-            'https://test.dynamics.com/data/PurchaseOrderLinesV2*' => Http::response(['value' => []], 200),
+            'https://test.dynamics.com/data/PurchaseOrderLinesV2*' => Http::response([
+                'value' => [
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/2607/00817',
+                        'ItemNumber' => '2312000100000',
+                        'LineDescription' => 'Item Jasa CMT',
+                        'OrderedPurchaseQuantity' => 1.0,
+                        'PurchaseUnitSymbol' => 'PCS',
+                    ],
+                ],
+            ], 200),
             'https://test.dynamics.com/data/TOC_DT*' => Http::response(['value' => []], 200),
             'https://test.dynamics.com/data/JobTransactionHeaders*' => Http::response([
                 'value' => [
@@ -375,6 +395,95 @@ class SyncD365SubconOrdersTest extends TestCase
         $this->assertNull($order->cutting_approved_by);
     }
 
+    /**
+     * Regression test for the live incident on MPG/PRG/2607/000255: an Add
+     * Process PO (e.g. "Item Jasa Add Process Washing") shared a production
+     * group with the real CMT cutting PO for the same style. Without a line-
+     * item classification check, the AddPro PO got ingested here as a second
+     * CMT work order and the vendor ran the cutting/gramasi workflow against
+     * it instead of the real one — see memory
+     * subcon-addpro-po-ingested-as-cmt-order.md. PurchPoolId on the header is
+     * NOT used to decide this (confirmed live to be unreliable — blank or
+     * mismatched on some genuine CMT/AddPro POs); only the line's ItemNumber
+     * (2312000100000 = "Item Jasa CMT") does.
+     */
+    public function test_sync_excludes_add_process_po_sharing_a_production_group()
+    {
+        $this->withoutExceptionHandling();
+
+        $vendor = new Vendor([
+            'vendor_code' => 'V-MIXED',
+            'name' => 'Mixed Pool Vendor',
+            'type' => 'subcon',
+            'group' => 'subcon',
+            'email' => 'mixed@subcon.com',
+            'phone' => '123456',
+            'address' => 'Test Address',
+            'city' => 'Test City',
+            'is_active' => true,
+        ]);
+        $vendor->id = (string) \Illuminate\Support\Str::uuid();
+        $vendor->save();
+
+        Http::fake([
+            'https://login.microsoftonline.com/*' => Http::response([
+                'access_token' => 'mock-token',
+                'expires_in' => 3600,
+            ], 200),
+            'https://test.dynamics.com/data/PurchaseOrderHeadersV2*' => Http::response([
+                'value' => [
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/2608/00582',
+                        'OrderVendorAccountNumber' => 'V-MIXED',
+                        'DocumentApprovalStatus' => 'Confirmed',
+                        'CreatedDateTime1' => '2026-06-12T00:00:00Z',
+                        'RequestedDeliveryDate' => '2026-06-20T00:00:00Z',
+                    ],
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/2608/00583',
+                        'OrderVendorAccountNumber' => 'V-MIXED',
+                        'DocumentApprovalStatus' => 'Confirmed',
+                        'CreatedDateTime1' => '2026-06-12T00:00:00Z',
+                        'RequestedDeliveryDate' => '2026-06-20T00:00:00Z',
+                    ],
+                ],
+            ], 200),
+            'https://test.dynamics.com/data/PurchaseOrderLinesV2*' => Http::response([
+                'value' => [
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/2608/00582',
+                        'ItemNumber' => '2312000100000',
+                        'LineDescription' => 'Item Jasa CMT',
+                        'OrderedPurchaseQuantity' => 2701.0,
+                        'PurchaseUnitSymbol' => 'PCS',
+                    ],
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/2608/00583',
+                        'ItemNumber' => '2312000100004',
+                        'LineDescription' => 'Item Jasa Add Process Washing',
+                        'OrderedPurchaseQuantity' => 2701.0,
+                        'PurchaseUnitSymbol' => 'PCS',
+                    ],
+                ],
+            ], 200),
+            'https://test.dynamics.com/data/TOC_DT*' => Http::response(['value' => []], 200),
+        ]);
+
+        $exitCode = \Illuminate\Support\Facades\Artisan::call('d365:sync-subcon-orders', [
+            '--days' => 10,
+            '--company' => 'mpg',
+            '--vendor' => ['V-MIXED'],
+        ]);
+
+        if ($exitCode !== 0) {
+            echo "ARTISAN OUTPUT:\n".\Illuminate\Support\Facades\Artisan::output()."\n";
+        }
+        $this->assertEquals(0, $exitCode);
+
+        $this->assertNotNull(SubconOrder::where('order_number', 'MPG/PO/2608/00582')->first());
+        $this->assertNull(SubconOrder::where('order_number', 'MPG/PO/2608/00583')->first());
+    }
+
     public function test_sync_subcon_vendors()
     {
         // 1. Arrange: Create an old dummy subcon vendor and associated user
@@ -397,11 +506,34 @@ class SyncD365SubconOrdersTest extends TestCase
         $oldUser->id = (string) \Illuminate\Support\Str::uuid();
         $oldUser->save();
 
-        // Mock HTTP requests for D365 token and VendorsV2 query
+        // Mock HTTP requests for D365 token, the CMT PO-header rebuild
+        // source (fetchRecords('PurchaseOrderHeadersV2', ...) — the command
+        // aborts with no DB changes if this comes back empty, its
+        // accidental-flush guard), and the VendorsV2 detail query.
         Http::fake([
             'https://login.microsoftonline.com/*' => Http::response([
                 'access_token' => 'mock-token',
                 'expires_in' => 3600,
+            ], 200),
+            'https://test.dynamics.com/data/PurchaseOrderHeadersV2*' => Http::response([
+                'value' => [
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/TEST/VENDORSYNC01',
+                        'OrderVendorAccountNumber' => 'V0054',
+                        'CreatedDateTime1' => now()->toIso8601String(),
+                    ],
+                ],
+            ], 200),
+            // Strict classification (the command's default) only counts a PO
+            // carrying this exact "Item Jasa CMT" line — see
+            // SyncD365SubconVendors::CMT_CORE_ITEM.
+            'https://test.dynamics.com/data/PurchaseOrderLinesV2*' => Http::response([
+                'value' => [
+                    [
+                        'PurchaseOrderNumber' => 'MPG/PO/TEST/VENDORSYNC01',
+                        'ItemNumber' => '2312000100000',
+                    ],
+                ],
             ], 200),
             'https://test.dynamics.com/data/VendorsV2*' => Http::response([
                 'value' => [
@@ -419,7 +551,11 @@ class SyncD365SubconOrdersTest extends TestCase
         ]);
 
         // 2. Act: Run the Artisan command
-        $exitCode = \Illuminate\Support\Facades\Artisan::call('d365:sync-subcon-vendors');
+        // --min-vendors lowered from the real default (15) — this fixture
+        // deliberately resolves exactly one CMT vendor, below the command's
+        // real-world safety floor, which exists to catch an accidental
+        // empty/thin D365 fetch, not to constrain a test fixture.
+        $exitCode = \Illuminate\Support\Facades\Artisan::call('d365:sync-subcon-vendors', ['--min-vendors' => 1, '--force' => true]);
 
         // 3. Assert
         $this->assertEquals(0, $exitCode);

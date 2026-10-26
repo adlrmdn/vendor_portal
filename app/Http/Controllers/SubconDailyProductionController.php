@@ -41,7 +41,7 @@ class SubconDailyProductionController extends Controller
         $vendorId = Auth::user()->vendor_id;
         $date = $this->resolveDate($request);
 
-        $orders = SubconOrder::where('vendor_id', $vendorId)
+        $orders = SubconOrder::forVendor($vendorId)
             ->where('status', '!=', 'cancelled')
             ->orderBy('created_at', 'desc')
             ->get();
@@ -248,7 +248,7 @@ class SubconDailyProductionController extends Controller
             'order_id' => ['required', 'string'],
             'date' => ['nullable', 'date'],
         ]);
-        $order = SubconOrder::where('vendor_id', Auth::user()->vendor_id)->findOrFail($data['order_id']);
+        $order = SubconOrder::forVendor(Auth::user()->vendor_id)->findOrFail($data['order_id']);
 
         try {
             $service->activateStyle($order, Auth::user());
@@ -291,7 +291,7 @@ class SubconDailyProductionController extends Controller
         $saved = false;
 
         foreach ((array) ($data['entries'] ?? []) as $orderId => $byStage) {
-            $order = SubconOrder::where('vendor_id', $vendorId)->where('id', $orderId)->first();
+            $order = SubconOrder::forVendor($vendorId)->where('id', $orderId)->first();
             if (! $order) {
                 continue;
             }
@@ -338,7 +338,7 @@ class SubconDailyProductionController extends Controller
 
         if ($request->has('notes')) {
             foreach ((array) ($data['notes'] ?? []) as $orderId => $noteText) {
-                $order = SubconOrder::where('vendor_id', $vendorId)->where('id', $orderId)->first();
+                $order = SubconOrder::forVendor($vendorId)->where('id', $orderId)->first();
                 if ($order) {
                     try {
                         $service->saveStyleDayNote($order, $entryDate, $noteText, $user);
@@ -397,7 +397,7 @@ class SubconDailyProductionController extends Controller
         $vendorId = Auth::user()->vendor_id;
         $date = now()->toDateString(); // export is always "as of now" — see isVisibleOnBoard()
 
-        $orders = SubconOrder::where('vendor_id', $vendorId)
+        $orders = SubconOrder::forVendor($vendorId)
             ->where('status', '!=', 'cancelled')
             ->orderBy('created_at', 'desc')
             ->get();
@@ -538,7 +538,7 @@ class SubconDailyProductionController extends Controller
 
     public function close(string $id, SubconDailyProductionService $service)
     {
-        $order = SubconOrder::where('vendor_id', Auth::user()->vendor_id)->findOrFail($id);
+        $order = SubconOrder::forVendor(Auth::user()->vendor_id)->findOrFail($id);
 
         try {
             $service->closeStyle($order, Auth::user());
@@ -553,7 +553,7 @@ class SubconDailyProductionController extends Controller
 
     public function reopen(string $id, SubconDailyProductionService $service)
     {
-        $order = SubconOrder::where('vendor_id', Auth::user()->vendor_id)->findOrFail($id);
+        $order = SubconOrder::forVendor(Auth::user()->vendor_id)->findOrFail($id);
 
         try {
             $service->reopenStyle($order);

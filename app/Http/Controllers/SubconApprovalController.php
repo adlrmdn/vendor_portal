@@ -353,6 +353,10 @@ class SubconApprovalController extends Controller
      */
     private function applyCuttingApproval(SubconOrder $order, array $fabrics, string $approver, string $source = 'in_app'): array
     {
+        if ($order->isAddProcess()) {
+            return ['ok' => false, 'message' => $order->order_number.' is an Add Process PO ('.$order->add_process_operation.'), not a CMT cutting work order — it cannot be approved through this workflow.'];
+        }
+
         if ($order->workflow_stage !== SubconOrder::STAGE_CUTTING_REVIEW) {
             return ['ok' => false, 'message' => 'This request is no longer awaiting approval (current stage: '.$order->stageLabel().').'];
         }
@@ -394,6 +398,10 @@ class SubconApprovalController extends Controller
     {
         if (! in_array($gate, ['cutting', 'gramasi'], true)) {
             return ['ok' => false, 'message' => 'Unknown approval stage.'];
+        }
+
+        if ($order->isAddProcess()) {
+            return ['ok' => false, 'message' => $order->order_number.' is an Add Process PO ('.$order->add_process_operation.'), not a CMT cutting work order — it cannot be approved through this workflow.'];
         }
 
         $expected = $gate === 'cutting' ? SubconOrder::STAGE_CUTTING_REVIEW : SubconOrder::STAGE_GRAMASI_REVIEW;
@@ -438,6 +446,10 @@ class SubconApprovalController extends Controller
     {
         if (! in_array($gate, ['cutting', 'gramasi'], true)) {
             return ['ok' => false, 'message' => 'Unknown approval stage.'];
+        }
+
+        if ($order->isAddProcess()) {
+            return ['ok' => false, 'message' => $order->order_number.' is an Add Process PO ('.$order->add_process_operation.'), not a CMT cutting work order — it cannot be declined through this workflow.'];
         }
 
         $expected = $gate === 'cutting' ? SubconOrder::STAGE_CUTTING_REVIEW : SubconOrder::STAGE_GRAMASI_REVIEW;

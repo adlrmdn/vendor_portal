@@ -1,15 +1,15 @@
 {{--
-    Renders the contract's position in the real 4-step sequence
-    (draft -> pending_vendor_review -> pending_final_approval -> confirmed)
-    as connected segments, or a flat strip for the two dead-end states
-    (cancelled/superseded) where "progress" no longer means anything.
+    Renders the contract's position in the 4-step sequence:
+    draft -> pending_approval -> approved -> sent_to_supplier -> confirmed
+    or a flat strip for side/terminal states (rejected, cancelled, superseded, supplier_queried).
     Expects $status.
 --}}
 @php
     $stages = [
         'draft' => 'Draft',
-        'pending_vendor_review' => 'Vendor Review',
-        'pending_final_approval' => 'Approval',
+        'pending_approval' => 'Approval',
+        'approved' => 'Approved',
+        'sent_to_supplier' => 'Vendor Review',
         'confirmed' => 'Confirmed',
     ];
     $order = array_keys($stages);
@@ -17,8 +17,17 @@
 @endphp
 
 @if ($currentIndex === false)
-    <span class="pc-stage-tracker pc-stage-flat {{ $status === 'superseded' ? 'is-superseded' : '' }}">
-        {{ $status === 'superseded' ? 'Superseded by a later revision' : 'Cancelled' }}
+    @php
+        $sideLabels = [
+            'rejected' => ['Rejected (returned to draft)', ''],
+            'supplier_queried' => ['Vendor queried (action required)', ''],
+            'superseded' => ['Superseded by a later revision', 'is-superseded'],
+            'cancelled' => ['Cancelled', ''],
+        ];
+        [$sideLabel, $sideClass] = $sideLabels[$status] ?? [ucfirst(str_replace('_', ' ', $status)), ''];
+    @endphp
+    <span class="pc-stage-tracker pc-stage-flat {{ $sideClass }}">
+        {{ $sideLabel }}
     </span>
 @else
     <div class="pc-stage-tracker">

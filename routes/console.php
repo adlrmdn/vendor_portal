@@ -46,3 +46,7 @@ Schedule::command('pc:sync-fabric-items --company=mpg')->everyFourHours();
 // hourly; the PC admin sync screen also offers a manual "refresh now" for
 // anything more urgent.
 Schedule::command('pc:sync-plm-refs')->hourly();
+
+// PC module — Daily Analysis Export (Spec v4 Section 11)
+// Generates pc_contract_lines.csv, pc_contracts.csv, manifest.json daily at 06:00 WIB
+Schedule::command('pc:export-analysis')->dailyAt('06:00')->timezone('Asia/Jakarta');

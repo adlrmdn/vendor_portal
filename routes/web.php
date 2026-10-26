@@ -160,11 +160,13 @@ Route::middleware(['auth', 'role:admin,fabric_admin'])->prefix('admin')->name('a
         Route::post('/contracts/{contract}/submit', [PcContractController::class, 'submit'])->name('contracts.submit');
         Route::post('/contracts/{contract}/approve', [PcContractController::class, 'approve'])->name('contracts.approve');
         Route::post('/contracts/{contract}/reject', [PcContractController::class, 'reject'])->name('contracts.reject');
+        Route::post('/contracts/{contract}/send-to-supplier', [PcContractController::class, 'sendToSupplier'])->name('contracts.send-to-supplier');
         Route::post('/contracts/{contract}/cancel', [PcContractController::class, 'cancel'])->name('contracts.cancel');
         Route::post('/contracts/{contract}/revise', [PcContractController::class, 'revise'])->name('contracts.revise');
         Route::get('/contracts/{contract}/pdf', [PcContractController::class, 'pdf'])->name('contracts.pdf');
 
         Route::get('/search/fabric-items', [PcContractSearchController::class, 'searchFabricItems'])->name('search.fabric-items');
+        Route::get('/search/item-details', [PcContractSearchController::class, 'itemDetails'])->name('search.item-details');
         Route::get('/search/plm-refs', [PcContractSearchController::class, 'searchPlmRefs'])->name('search.plm-refs');
         Route::get('/search/fdr-lookup', [PcContractSearchController::class, 'fdrLookup'])->name('search.fdr-lookup');
     });
