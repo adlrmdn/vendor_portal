@@ -88,6 +88,7 @@ class SubconOfficialReportFlowTest extends TestCase
         ]);
         DB::connection('vsm')->table('po_lines')->insert([
             'PurchaseOrderNumber' => $this->poNumber, 'LineNumber' => 1, 'LineDescription' => 'Item Jasa Add Process Washing',
+            'ItemNumber' => '2312000100004',
         ]);
     }
 

@@ -591,16 +591,40 @@ class SubconProductionService
     }
 
     /**
+     * The core CMT service item ("Item Jasa CMT") — mirrors
+     * SyncD365SubconOrders::CMT_CORE_ITEM / SyncD365SubconVendors::CMT_CORE_ITEM.
+     * Kept as its own constant since none of these share a base class.
+     */
+    private const CMT_CORE_ITEM = '2312000100000';
+
+    /**
+     * The "Jasa Subkon" service-item family prefix (23120001000NN) — CMT
+     * (…00000) plus its Add Process siblings (…00001-4: Sablon/Embro/
+     * Washing/Pleating).
+     */
+    private const JASA_FAMILY_PREFIX = '23120001000';
+
+    /**
      * The commercial PO(s) an add-process step is actually billed under — a
      * DIFFERENT purchase order/vendor than the production group's main CMT
      * PO, confirmed live: PLM/25/11/00089 has `MPG/PO/2608/01328` (Item Jasa
      * CMT, vendor V0246) for cutting/sewing AND a separate
      * `MPG/PO/2608/01329` (Item Jasa Add Process Washing, vendor V0312) for
      * the add-process work — same PLM/ProductionGroup, two independent POs.
-     * `PurchPoolId = 'AddPro'` is the D365 pool for these service lines
-     * (`Item Jasa Add Process Washing/Embro/Sablon/Pleating`, item numbers
-     * 2312000100001-4), mirroring how CMT POs use `PurchPoolId = 'CMT'` and
-     * item 2312000100000 ("Item Jasa CMT").
+     *
+     * Classified by `po_lines.ItemNumber` (any item in the Jasa Subkon
+     * family except the CMT core item), NOT `PurchPoolId` — a line-level
+     * header field in D365 was tried first (`PurchPoolId = 'AddPro'`,
+     * mirroring how CMT POs use `PurchPoolId = 'CMT'`) but confirmed live to
+     * be unreliable: some genuine CMT POs are tagged `AddPro`, and at least
+     * one real Add Process PO was tagged `CMT`. Same item-number classifier
+     * `d365:sync-subcon-orders` already uses to keep Add Process POs out of
+     * `subcon_orders` — see CLAUDE.md and memory
+     * subcon-addpro-po-ingested-as-cmt-order.md for the live incidents this
+     * guards against (an Add Process PO item-number-mistagged into the CMT
+     * flow, and — the mirror case — a real CMT PO surfacing a second time as
+     * an "Add Process" row on the Work Orders list because it was mistagged
+     * `AddPro`).
      *
      * Read-only/informational — the add-process vendor is NOT registered as a
      * portal Vendor and no SubconOrder is created for this PO; the admin
@@ -654,7 +678,8 @@ class SubconProductionService
                     DB::connection('vsm')->table('po_lines as l')
                         ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
                         ->whereIn('l.PLMId', $plmIds)
-                        ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                        ->where('l.ItemNumber', 'like', self::JASA_FAMILY_PREFIX.'%')
+                        ->where('l.ItemNumber', '!=', self::CMT_CORE_ITEM)
                         ->where('h.DocumentApprovalStatus', 'Confirmed')
                         ->get(['l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate'])
                 );
@@ -669,7 +694,8 @@ class SubconProductionService
                     DB::connection('vsm')->table('po_lines as l')
                         ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
                         ->where('l.PurchaseOrderNumber', $standalonePoNumber)
-                        ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                        ->where('l.ItemNumber', 'like', self::JASA_FAMILY_PREFIX.'%')
+                        ->where('l.ItemNumber', '!=', self::CMT_CORE_ITEM)
                         ->where('h.DocumentApprovalStatus', 'Confirmed')
                         ->get(['l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate'])
                 );
@@ -718,7 +744,8 @@ class SubconProductionService
             $plmLines = DB::connection('vsm')->table('po_lines as l')
                 ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
                 ->join('plm_activity as a', 'a.PLMId', '=', 'l.PLMId')
-                ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                ->where('l.ItemNumber', 'like', self::JASA_FAMILY_PREFIX.'%')
+                ->where('l.ItemNumber', '!=', self::CMT_CORE_ITEM)
                 ->where('h.DocumentApprovalStatus', 'Confirmed')
                 ->whereNotNull('a.ProductionGroup')
                 ->get(['a.ProductionGroup', 'l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate']);
@@ -737,11 +764,13 @@ class SubconProductionService
             // — production_groups.PONumber is the only local record of their AddPro
             // PO. Won't collide with the PLM-based rows above: a group with a real
             // CMT work order has its PONumber pointing at the CMT-pool PO instead,
-            // so it simply fails the PurchPoolId filter here and contributes nothing.
+            // so it fails the ItemNumber filter here (that PO's line carries the
+            // CMT core item, not an Add Process one) and contributes nothing.
             $standaloneLines = DB::connection('vsm')->table('po_lines as l')
                 ->join('po_headers as h', 'h.PurchaseOrderNumber', '=', 'l.PurchaseOrderNumber')
                 ->join('production_groups as g', 'g.PONumber', '=', 'l.PurchaseOrderNumber')
-                ->where('h.PurchPoolId', 'ilike', 'AddPro%')
+                ->where('l.ItemNumber', 'like', self::JASA_FAMILY_PREFIX.'%')
+                ->where('l.ItemNumber', '!=', self::CMT_CORE_ITEM)
                 ->where('h.DocumentApprovalStatus', 'Confirmed')
                 ->get(['g.ProductionGroup', 'l.PurchaseOrderNumber', 'l.LineDescription', 'h.OrderVendorAccountNumber', 'h.PurchaseOrderStatus', 'h.RequestedDeliveryDate']);
 

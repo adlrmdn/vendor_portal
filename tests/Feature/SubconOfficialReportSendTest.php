@@ -63,6 +63,7 @@ class SubconOfficialReportSendTest extends TestCase
         ]);
         DB::connection('vsm')->table('po_lines')->insert([
             'PurchaseOrderNumber' => $this->poNumber, 'LineNumber' => 1, 'LineDescription' => 'Item Jasa Add Process Washing',
+            'ItemNumber' => '2312000100004',
         ]);
 
         $mockD365 = $this->mock(\App\Services\D365JobTransactionService::class);
@@ -99,6 +100,7 @@ class SubconOfficialReportSendTest extends TestCase
         ]);
         DB::connection('vsm')->table('po_lines')->insert([
             'PurchaseOrderNumber' => $this->poNumber, 'LineNumber' => 1, 'LineDescription' => 'Item Jasa Add Process Washing',
+            'ItemNumber' => '2312000100004',
         ]);
         DB::connection('vsm')->table('plm_activity')->insert([
             'PLMId' => $this->plmId, 'ProductionGroup' => $this->prg,
