@@ -7,6 +7,7 @@ use App\Exports\SubconCuttingReportExport;
 use App\Jobs\SyncSubconOrdersJob;
 use App\Models\SubconAddProcessReport;
 use App\Models\SubconCuttingReport;
+use App\Models\SubconOfficialReport;
 use App\Models\SubconOrder;
 use App\Models\User;
 use App\Models\Vendor;
@@ -621,7 +622,13 @@ class SubconAdminController extends Controller
             return $this->addProcessOrdersList($request, $production);
         }
 
-        $query = SubconOrder::with('vendor');
+        // Rows flagged add_process_operation (a PO ingested as a CMT work
+        // order before d365:sync-subcon-orders' ItemNumber guard existed —
+        // see migration 2026_10_20_000001) are not real cutting work orders;
+        // every other add_process_operation read in this controller already
+        // excludes them, this listing was the one gap. They still surface
+        // via the "Add Process Only" tab / search merge (buildAddProcessRows()).
+        $query = SubconOrder::with('vendor')->whereNull('add_process_operation');
 
         if ($request->filled('vendor_id')) {
             $query->where('vendor_id', $request->vendor_id);
@@ -751,10 +758,21 @@ class SubconAdminController extends Controller
         }
         $rows = collect(array_values($seen));
 
-        $reportedKeys = SubconAddProcessReport::where(function ($q) {
+        // Two distinct, independent signals — don't conflate them: a row can
+        // have qty filled in with no Official Report sent yet, or (in theory)
+        // an Official Report row with the qty since revised. "Reported" means
+        // the Official Report (Berita Acara) was actually sent
+        // (SubconOfficialReport row exists, any status); "qty filled" only
+        // means the vendor/admin entered a quantity on the Add Process report
+        // (SubconAddProcessReport), which is merely a precondition for sending.
+        $qtyFilledKeys = SubconAddProcessReport::where(function ($q) {
             $q->where('qty', '>', 0)->orWhere('reject_qty', '>', 0);
         })
             ->get(['production_group', 'operation'])
+            ->map(fn ($r) => strtolower($r->production_group).'|'.strtolower($r->operation))
+            ->flip();
+
+        $officialReportSentKeys = SubconOfficialReport::get(['production_group', 'operation'])
             ->map(fn ($r) => strtolower($r->production_group).'|'.strtolower($r->operation))
             ->flip();
 
@@ -766,8 +784,10 @@ class SubconAdminController extends Controller
         // with no confirmed PO yet, or vice versa.
         $addProcessPosByGroup = $production->addProcessPurchaseOrdersByGroup();
 
-        $rows = $rows->map(function ($r) use ($reportedKeys, $addProcessPosByGroup, $production) {
-            $r['reported'] = isset($reportedKeys[strtolower($r['production_group']).'|'.strtolower($r['operation'])]);
+        $rows = $rows->map(function ($r) use ($qtyFilledKeys, $officialReportSentKeys, $addProcessPosByGroup, $production) {
+            $key = strtolower($r['production_group']).'|'.strtolower($r['operation']);
+            $r['qty_filled'] = isset($qtyFilledKeys[$key]);
+            $r['reported'] = isset($officialReportSentKeys[$key]);
             $groupPos = $addProcessPosByGroup[$r['production_group']] ?? [];
             $r['addpro_pos'] = $groupPos;
             // Matched per THIS row's own operation, not just "the group has
@@ -785,8 +805,12 @@ class SubconAdminController extends Controller
         $search = trim((string) $search);
         if ($search !== '') {
             $term = strtolower($search);
+            // Also match the row's commercial AddPro PO number — searching the
+            // PO itself (e.g. from a D365 reference) otherwise finds nothing,
+            // even though the row and its matched_po are perfectly valid.
             $rows = $rows->filter(fn ($r) => str_contains(strtolower($r['production_group']), $term)
-                || str_contains(strtolower($r['operation']), $term));
+                || str_contains(strtolower($r['operation']), $term)
+                || str_contains(strtolower((string) ($r['matched_po']['po_number'] ?? '')), $term));
         }
 
         $groups = $rows->pluck('production_group')->unique()->values();

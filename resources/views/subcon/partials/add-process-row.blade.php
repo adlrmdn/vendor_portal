@@ -53,7 +53,13 @@
         {{ $addProcessDueDate?->format('d M Y') ?? '—' }}
     </td>
     <td><span class="badge bg-primary-subtle text-primary border">{{ $order['operation'] }}</span></td>
-    <td><span class="badge-workflow bg-{{ $order['reported'] ? 'success' : 'secondary' }}">{{ $order['reported'] ? 'Reported' : 'Not reported' }}</span></td>
+    <td>
+        <span class="badge-workflow bg-{{ $order['reported'] ? 'success' : 'secondary' }}">{{ $order['reported'] ? 'Reported' : 'Not reported' }}</span>
+        {{-- "Reported" = Official Report (Berita Acara) actually sent; qty being
+             filled in is only a precondition for that, shown separately so the
+             two don't get read as the same thing. --}}
+        <div class="text-muted small mt-1">{{ $order['qty_filled'] ? 'Qty filled' : 'Qty not filled' }}</div>
+    </td>
     <td class="text-end">
         <a href="{{ route('subcon.admin.add-process.index', ['prg' => $order['production_group']]) }}" class="btn btn-sm btn-outline-primary rounded-pill px-3">
             <i class="fas fa-eye me-1"></i> View
