@@ -98,7 +98,11 @@ class QcProjectValidator
         // A multi-CMT project stores its POs comma-joined; one match means it is still valid.
         $stored = array_values(array_filter(array_map('trim', explode(',', $storedPo))));
 
-        $orders = SubconOrder::where('production_group', $group)->pluck('order_number')->all();
+        // cmtOnly(): an Add Process PO sharing the group is never a real
+        // candidate — including it here would turn an otherwise-unambiguous
+        // single-CMT-order group into a false "ambiguous" warning (count()
+        // === 2 instead of 1) and block the healing this method exists to do.
+        $orders = SubconOrder::cmtOnly()->where('production_group', $group)->pluck('order_number')->all();
         if ($orders) {
             if (array_intersect($stored, $orders)) {
                 return null;
@@ -136,7 +140,7 @@ class QcProjectValidator
             // VSM unreachable — fall through to the portal's own vendor record.
         }
         if (! $expected) {
-            $order = SubconOrder::with('vendor')->where('production_group', $group)->where('order_number', $pos[0])->first();
+            $order = SubconOrder::with('vendor')->cmtOnly()->where('production_group', $group)->where('order_number', $pos[0])->first();
             $expected = $order?->vendor?->name;
         }
 

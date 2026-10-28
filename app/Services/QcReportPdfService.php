@@ -1040,7 +1040,7 @@ class QcReportPdfService
                 return null;
             }
 
-            return SubconOrder::where('production_group', $productionGroup)->first();
+            return SubconOrder::cmtOnly()->where('production_group', $productionGroup)->first();
         } catch (\Throwable $e) {
             Log::warning('QC report PDF: subcon order resolve failed', ['error' => $e->getMessage()]);
 

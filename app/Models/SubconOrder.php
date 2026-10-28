@@ -371,6 +371,21 @@ class SubconOrder extends Model
         return $query->where('vendor_id', $vendorId)->whereNull('add_process_operation');
     }
 
+    /**
+     * Excludes isAddProcess() rows — use this whenever resolving "the CMT
+     * work order" for a production group (or any other non-vendor-scoped
+     * lookup) rather than a bare where(). A production group can legitimately
+     * have both a real CMT order and an Add Process one (same group, two POs
+     * — see addProcessPurchaseOrdersForGroup()'s docblock); without this, a
+     * plain ->first() has no orderBy and a UUID PK, so which row comes back
+     * is unspecified, not merely "probably fine" — confirmed live for
+     * MPG/PRG/2607/000207 (see memory subcon-addpro-po-ingested-as-cmt-order.md).
+     */
+    public function scopeCmtOnly($query)
+    {
+        return $query->whereNull('add_process_operation');
+    }
+
     /** Vendor may edit/submit the cutting report (qty per size). */
     public function canEditCutting(): bool
     {

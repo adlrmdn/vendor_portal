@@ -2402,7 +2402,11 @@ class QcApprovalController extends Controller
         // publisher, and fabricLinesWithData() all type-hint the model.
         $subcon = null;
         if ($productionGroup) {
-            $candidates = SubconOrder::where('production_group', $productionGroup)->get();
+            // cmtOnly() first: an Add Process PO sharing the group (see
+            // SubconOrder::scopeCmtOnly()'s docblock) is never a valid
+            // candidate here, so it's excluded before the tie-break below
+            // ever runs — it isn't just "another sibling" po_info might pick.
+            $candidates = SubconOrder::cmtOnly()->where('production_group', $productionGroup)->get();
             // Two work orders can share one production_group (same style/cutting
             // ticket split across POs) — an unordered ->first() over just the
             // group can silently bind this session to the WRONG sibling order

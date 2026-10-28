@@ -55,8 +55,7 @@ class SubconAddProcessController extends Controller
             // (see SubconOrder::isAddProcess()'s docblock) — this group can
             // have one of those alongside its real CMT order, and only the
             // real one belongs in the "CMT (Subcontracted)" section below.
-            $cmtOrder = SubconOrder::with('vendor')->where('production_group', $prg)
-                ->whereNull('add_process_operation')
+            $cmtOrder = SubconOrder::with('vendor')->cmtOnly()->where('production_group', $prg)
                 ->first();
             // Already Confirmed-only (see addProcessPurchaseOrdersForGroup()'s
             // docblock) — a Draft/InReview/Rejected PO simply won't appear

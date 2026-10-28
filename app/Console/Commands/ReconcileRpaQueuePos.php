@@ -51,7 +51,7 @@ class ReconcileRpaQueuePos extends Command
                 continue;
             }
 
-            $order = SubconOrder::where('production_group', $project->production_group)->first();
+            $order = SubconOrder::cmtOnly()->where('production_group', $project->production_group)->first();
             if (! $order) {
                 continue;
             }

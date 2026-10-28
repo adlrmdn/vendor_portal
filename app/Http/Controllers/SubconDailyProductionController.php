@@ -573,6 +573,7 @@ class SubconDailyProductionController extends Controller
         $date = $this->resolveDate($request);
 
         $orders = SubconOrder::with('vendor')
+            ->cmtOnly()
             ->where('status', '!=', 'cancelled')
             ->when($request->filled('vendor_id'), fn ($q) => $q->where('vendor_id', $request->query('vendor_id')))
             ->orderBy('created_at', 'desc')
@@ -619,6 +620,7 @@ class SubconDailyProductionController extends Controller
         $date = now()->toDateString(); // export is always "as of now" — see isVisibleOnBoard()
 
         $orders = SubconOrder::with('vendor')
+            ->cmtOnly()
             ->where('status', '!=', 'cancelled')
             ->when($request->filled('vendor_id'), fn ($q) => $q->where('vendor_id', $request->query('vendor_id')))
             ->orderBy('created_at', 'desc')

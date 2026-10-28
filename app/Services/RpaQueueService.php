@@ -568,7 +568,7 @@ class RpaQueueService
                 return true;
             }
 
-            $order = SubconOrder::where('production_group', $productionGroup)->first();
+            $order = SubconOrder::cmtOnly()->where('production_group', $productionGroup)->first();
             if (! $order) {
                 return true;
             }

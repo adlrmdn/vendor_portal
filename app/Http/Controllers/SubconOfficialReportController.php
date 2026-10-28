@@ -101,8 +101,7 @@ class SubconOfficialReportController extends Controller
 
         return view('subcon.official-report-ho-confirm', [
             'report' => $model,
-            'style' => \App\Models\SubconOrder::where('production_group', $model->production_group)
-                ->whereNull('add_process_operation')
+            'style' => \App\Models\SubconOrder::cmtOnly()->where('production_group', $model->production_group)
                 ->value('title'),
             'yield' => $this->reports->yieldMatrix($model->production_group, $model->operation),
             'submitUrl' => url(URL::signedRoute('subcon.official-report.ho-approve.submit', ['report' => $model->id], absolute: false)),
@@ -176,8 +175,7 @@ class SubconOfficialReportController extends Controller
 
         return view('subcon.official-report-director-confirm', [
             'report' => $model,
-            'style' => \App\Models\SubconOrder::where('production_group', $model->production_group)
-                ->whereNull('add_process_operation')
+            'style' => \App\Models\SubconOrder::cmtOnly()->where('production_group', $model->production_group)
                 ->value('title'),
             'yield' => $this->reports->yieldMatrix($model->production_group, $model->operation),
             'submitUrl' => url(URL::signedRoute('subcon.official-report.director-approve.submit', ['report' => $model->id], absolute: false)),

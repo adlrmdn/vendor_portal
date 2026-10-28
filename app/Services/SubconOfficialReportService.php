@@ -54,8 +54,7 @@ class SubconOfficialReportService
         // real reject qty. whereNull('add_process_operation') excludes an
         // Add Process PO flagged onto subcon_orders itself — see
         // SubconOrder::isAddProcess()'s docblock.
-        $cmtOrder = SubconOrder::where('production_group', $productionGroup)
-            ->whereNull('add_process_operation')
+        $cmtOrder = SubconOrder::cmtOnly()->where('production_group', $productionGroup)
             ->first();
         if ($cmtOrder) {
             $localCutQuantities = SubconCuttingReport::where('order_id', $cmtOrder->id)
@@ -97,8 +96,7 @@ class SubconOfficialReportService
         $lines = collect($groups)->flatMap(fn ($g) => collect($g['lines'] ?? []))->values();
         $cutQuantities = $this->production->cutQuantitiesForGroup($productionGroup);
 
-        $cmtOrder = SubconOrder::where('production_group', $productionGroup)
-            ->whereNull('add_process_operation')
+        $cmtOrder = SubconOrder::cmtOnly()->where('production_group', $productionGroup)
             ->first();
         if ($cmtOrder) {
             $localCutQuantities = SubconCuttingReport::where('order_id', $cmtOrder->id)
@@ -178,8 +176,7 @@ class SubconOfficialReportService
         // SubconOrder::isAddProcess()'s docblock) — this group can have one
         // of those alongside its real CMT order, and gating on the wrong
         // one's workflow_stage would misjudge whether cutting is approved.
-        $cmtOrder = SubconOrder::where('production_group', $productionGroup)
-            ->whereNull('add_process_operation')
+        $cmtOrder = SubconOrder::cmtOnly()->where('production_group', $productionGroup)
             ->first();
 
         // Gated on actual cutting OUTPUT existing — the same cut_qty
@@ -546,7 +543,11 @@ class SubconOfficialReportService
      */
     private function logResult(SubconOfficialReport $report, string $status, string $message): void
     {
-        $cmtOrder = SubconOrder::where('production_group', $report->production_group)->first();
+        // cmtOnly(): without it, a group with both a real CMT order and an
+        // Add Process one can attach this log to the wrong order_id — the
+        // exact mixup fixed by hand for MPG/PO/2608/00587's own logs (see
+        // memory subcon-addpro-po-ingested-as-cmt-order.md).
+        $cmtOrder = SubconOrder::cmtOnly()->where('production_group', $report->production_group)->first();
 
         SubconJobLog::create([
             'order_id' => $cmtOrder?->id,
@@ -567,7 +568,8 @@ class SubconOfficialReportService
      */
     private function logDirectorDecision(SubconOfficialReport $report, string $decision, string $actor, string $note): void
     {
-        $cmtOrder = SubconOrder::where('production_group', $report->production_group)->first();
+        // cmtOnly(): same reasoning as logResult() above.
+        $cmtOrder = SubconOrder::cmtOnly()->where('production_group', $report->production_group)->first();
 
         SubconApprovalLog::record([
             'order_id' => $cmtOrder?->id,

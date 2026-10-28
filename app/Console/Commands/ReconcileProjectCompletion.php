@@ -49,7 +49,7 @@ class ReconcileProjectCompletion extends Command
             }
 
             $affected++;
-            $order = SubconOrder::where('production_group', $project->production_group)->first();
+            $order = SubconOrder::cmtOnly()->where('production_group', $project->production_group)->first();
             $label = $order->order_number ?? $project->po_info ?? $project->project_id;
 
             if ($fix) {

@@ -956,8 +956,7 @@ class SubconAdminController extends Controller
                 // Same source as pendingValidateSends()'s $order->title —
                 // the CMT order carries the synced style name, which this
                 // row has no field of its own for.
-                'style' => \App\Models\SubconOrder::where('production_group', $r->production_group)
-                    ->whereNull('add_process_operation')
+                'style' => \App\Models\SubconOrder::cmtOnly()->where('production_group', $r->production_group)
                     ->value('title'),
                 'vendor' => $r->matched_po_vendor_name,
                 'ho_signature' => $r->ho_approval_signature,
@@ -1189,7 +1188,7 @@ class SubconAdminController extends Controller
             $pgs = array_values(array_filter(array_unique(array_values($pgByProject))));
             $ordersByPg = empty($pgs)
                 ? collect()
-                : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
+                : SubconOrder::with('vendor')->cmtOnly()->whereIn('production_group', $pgs)->get()->keyBy('production_group');
 
             // Material Flow status per order — one batched read, best-effort
             // (an unreachable `wms` connection just leaves the badge off).
@@ -1360,8 +1359,7 @@ class SubconAdminController extends Controller
                 // mapping — no SubconOrder to link to, so every identifier
                 // in this row points at the Add Process tab's own page.
                 'add_process_url' => route('subcon.admin.add-process.index', ['prg' => $r->production_group]),
-                'style' => \App\Models\SubconOrder::where('production_group', $r->production_group)
-                    ->whereNull('add_process_operation')
+                'style' => \App\Models\SubconOrder::cmtOnly()->where('production_group', $r->production_group)
                     ->value('title'),
                 'vendor' => $r->matched_po_vendor_name,
                 'ho_signature' => $r->ho_approval_signature,
@@ -1478,7 +1476,7 @@ class SubconAdminController extends Controller
         if (Schema::connection('qms')->hasTable('packaging_projects')) {
             $pg = DB::connection('qms')->table('packaging_projects')->where('project_id', $row->project_id)->value('production_group');
         }
-        $subcon = $pg ? SubconOrder::where('production_group', $pg)->first() : null;
+        $subcon = $pg ? SubconOrder::cmtOnly()->where('production_group', $pg)->first() : null;
 
         $actor = Auth::user()->name ?: Auth::user()->email;
         \App\Models\SubconApprovalLog::record([
@@ -1551,7 +1549,7 @@ class SubconAdminController extends Controller
             $pgs = array_values(array_filter(array_unique(array_values($pgByProject))));
             $ordersByPg = empty($pgs)
                 ? collect()
-                : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
+                : SubconOrder::with('vendor')->cmtOnly()->whereIn('production_group', $pgs)->get()->keyBy('production_group');
 
             // Live RAF run status per project — same batched read as
             // pendingValidateSends(). Normally Completed by this stage (RAF is
@@ -1709,7 +1707,7 @@ class SubconAdminController extends Controller
             $pgs = array_values(array_filter(array_unique(array_values($pgByProject))));
             $ordersByPg = empty($pgs)
                 ? collect()
-                : SubconOrder::with('vendor')->whereIn('production_group', $pgs)->get()->keyBy('production_group');
+                : SubconOrder::with('vendor')->cmtOnly()->whereIn('production_group', $pgs)->get()->keyBy('production_group');
 
             return $sessions->map(function ($s) use ($pgByProject, $ordersByPg) {
                 $pg = $pgByProject[$s->project_id] ?? null;
