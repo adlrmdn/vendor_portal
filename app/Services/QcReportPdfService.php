@@ -220,6 +220,14 @@ class QcReportPdfService
             ->where('project_id', $projectId)
             ->orderBy('line_no')->orderBy('global_display_order')->get();
         $baseLines = $allLines->whereNull('session_id')->values();
+        // A merged project (an extra production group attached to the same order —
+        // see SubconOrderExtraProductionGroup) can have more than one baseline row
+        // per size, one per job transaction/production group. Cut Qty must be the
+        // SUM across them, not whichever row happens to come first — Order Qty
+        // (below, read straight off the session's own line) intentionally stays
+        // un-combined.
+        $baseGoodQtyBySize = $baseLines->groupBy(fn ($b) => (string) ($b->size_val ?? ''))
+            ->map(fn ($group) => (int) $group->sum('total_good_qty'));
         $linesBySession = $allLines->whereNotNull('session_id')->groupBy('session_id');
 
         $reportLines = ($linesBySession[$sessionId] ?? collect())
@@ -269,8 +277,7 @@ class QcReportPdfService
 
         foreach ($reportLines as $line) {
             $size = (string) ($line->size_val ?? '');
-            $baseLine = $baseLines->first(fn ($b) => ($b->size_val ?? null) === $size);
-            $cuttingQty = (int) ($baseLine->total_good_qty ?? 0);
+            $cuttingQty = (int) ($baseGoodQtyBySize[$size] ?? 0);
 
             $rBahan = $cumulative('reject_bahan', $size);
             $rCutting = $cumulative('reject_cutting', $size);
@@ -993,6 +1000,12 @@ class QcReportPdfService
             return $empty;
         }
 
+        // See the same fix in context() above: sum total_good_qty per size across
+        // every baseline row (one per production group/job once an extra group is
+        // merged onto the order), not just whichever row comes first.
+        $baseGoodQtyBySize = $baseLines->groupBy(fn ($b) => (string) ($b->size_val ?? ''))
+            ->map(fn ($group) => (int) $group->sum('total_good_qty'));
+
         $penaltyPrice = (float) ($project->sales_price ?? 0) * 0.70;
         $sumRejProd = 0;
         $sumCutQty = 0;
@@ -1001,8 +1014,7 @@ class QcReportPdfService
             $sumRejProd += (int) ($line->reject_cutting ?? 0) + (int) ($line->reject_sewing ?? 0)
                 + (int) ($line->reject_finishing ?? 0) + (int) ($line->reject_printing ?? 0)
                 + (int) ($line->reject_embro ?? 0) + (int) ($line->reject_washing ?? 0);
-            $baseLine = $baseLines->first(fn ($b) => ($b->size_val ?? null) === ($line->size_val ?? null));
-            $sumCutQty += (int) ($baseLine->total_good_qty ?? 0);
+            $sumCutQty += (int) ($baseGoodQtyBySize[(string) ($line->size_val ?? '')] ?? 0);
             $sumBarangHilang += (int) ($line->barang_hilang ?? 0);
         }
         $allowedLimit = (int) floor($sumCutQty * 0.01);

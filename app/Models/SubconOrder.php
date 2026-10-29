@@ -607,4 +607,9 @@ class SubconOrder extends Model
     {
         return $this->hasMany(SubconJobLog::class, 'order_id');
     }
+
+    public function extraProductionGroups()
+    {
+        return $this->hasMany(SubconOrderExtraProductionGroup::class, 'subcon_order_id');
+    }
 }

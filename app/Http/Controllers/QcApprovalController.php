@@ -726,10 +726,18 @@ class QcApprovalController extends Controller
         // trigger itself below; see $productionGroup / isFinishedInProductionVsm().
         $productionGroup = null;
         try {
+            $hasActiveGroup = Schema::connection('qms')->hasColumn('packaging_projects', 'active_production_group');
             $project = DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', (string) ($row->project_id ?? ''))
-                ->first(['status', 'production_group']);
-            $productionGroup = $project->production_group ?? null;
+                ->first(array_filter(['status', 'production_group', $hasActiveGroup ? 'active_production_group' : null]));
+            // Prefer active_production_group (the literal group most recently
+            // downloaded) over the merge-pinned production_group — this gate only
+            // skips RAF when VSM already shows THIS batch finished, so it must
+            // check the batch this approval is actually for. See
+            // RpaQueueService::queueJobTransRaf()'s matching preference.
+            $productionGroup = ! empty($project->active_production_group ?? null)
+                ? $project->active_production_group
+                : ($project->production_group ?? null);
             $status = (string) ($project->status ?? '');
             if (in_array($status, SubconOrder::QMS_INACTIVE_PROJECT_STATUSES, true)) {
                 return view('qc.approval-result', [

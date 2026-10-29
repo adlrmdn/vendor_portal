@@ -755,16 +755,27 @@ class SubconVendorController extends Controller
                             }
                         }
 
-                        // Fallback: match by Size
+                        // Fallback: match by Size — but ONLY when exactly one line across
+                        // every production group on this order has that size. An order with
+                        // an extra production group attached (see SubconOrderExtraProductionGroup)
+                        // can have more than one line sharing the same size label, one per
+                        // group; applying a single uploaded qty to all of them silently wrote
+                        // one group's quantity onto another's production lines. Ambiguous here
+                        // means "can't tell which group this row is for" — skip it rather than
+                        // guess, same as a row matching zero lines.
                         if (empty($matchedProdIds) && ! empty($sizeVal)) {
+                            $sizeMatches = [];
                             foreach ($productionGroups as $g) {
                                 if (! empty($g['lines'])) {
                                     foreach ($g['lines'] as $line) {
                                         if (strcasecmp($line->Size ?: '', $sizeVal) === 0) {
-                                            $matchedProdIds[] = $line->ProdId;
+                                            $sizeMatches[] = $line->ProdId;
                                         }
                                     }
                                 }
+                            }
+                            if (count($sizeMatches) === 1) {
+                                $matchedProdIds = $sizeMatches;
                             }
                         }
 

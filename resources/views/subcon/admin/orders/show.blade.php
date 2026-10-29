@@ -95,6 +95,45 @@
     </div>
 @endif
 
+{{-- Extra production groups: pins another D365 production group (e.g. a second
+     cutting batch) onto this same order/PO so cutting-report, gramasi, and D365
+     sync treat them as one combined work order. See SubconOrderExtraProductionGroup. --}}
+<div class="card mb-4">
+    <div class="card-header"><h6 class="mb-0">Extra Production Groups</h6></div>
+    <div class="card-body">
+        @if($order->extraProductionGroups->isNotEmpty())
+            <table class="table table-sm mb-3">
+                <thead>
+                    <tr><th>Production Group</th><th>Added By</th><th>Added</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @foreach($order->extraProductionGroups as $extra)
+                        <tr>
+                            <td><code>{{ $extra->production_group }}</code></td>
+                            <td>{{ $extra->added_by ?: '—' }}</td>
+                            <td>{{ $extra->created_at?->format('d M Y H:i') }}</td>
+                            <td class="text-end">
+                                <form method="POST" action="{{ route('subcon.admin.orders.extra-production-group.detach', ['id' => $order->id, 'extraGroupId' => $extra->id]) }}" class="d-inline" onsubmit="return confirm('Detach {{ $extra->production_group }} from this order?');">
+                                    @csrf
+                                    @method('DELETE')
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Detach</button>
+                                </form>
+                            </td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        @else
+            <p class="text-muted small mb-3">No extra production groups attached. Use this when the same PO/work order spans more than one D365 production group (e.g. a second cutting batch for the same style) — attaching it here merges its sizes/qty into this order's cutting report, gramasi, and D365 sync.</p>
+        @endif
+        <form method="POST" action="{{ route('subcon.admin.orders.extra-production-group.attach', $order->id) }}" class="d-flex gap-2">
+            @csrf
+            <input type="text" name="production_group" class="form-control form-control-sm" placeholder="e.g. MPG/PRG/2610/000021" style="max-width: 280px;" required>
+            <button type="submit" class="btn btn-sm btn-outline-primary">Attach</button>
+        </form>
+    </div>
+</div>
+
 <div class="row g-4">
     <div class="col-lg-9">
         {{-- Items --}}

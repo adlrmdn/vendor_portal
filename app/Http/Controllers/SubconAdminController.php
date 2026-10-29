@@ -2644,6 +2644,8 @@ class SubconAdminController extends Controller
             ['added_by' => Auth::user()->name]
         );
 
+        $this->publishExtraGroupLink($productionGroup, (string) $order->production_group);
+
         return back()->with('success', "Attached {$productionGroup} to this order.");
     }
 
@@ -2652,7 +2654,61 @@ class SubconAdminController extends Controller
         $extra = \App\Models\SubconOrderExtraProductionGroup::where('subcon_order_id', $id)->findOrFail($extraGroupId);
         $extra->delete();
 
+        $this->unpublishExtraGroupLink($extra->production_group);
+
         return back()->with('success', "Detached {$extra->production_group} from this order.");
+    }
+
+    /**
+     * Tells the QC Console (via the shared `qms` DB) that $extraGroup is really
+     * the same PO as $primaryGroup, so it resolves both to one packaging_projects
+     * row instead of creating a second, independent inspection/approval/invoice
+     * for what is one PO. See packaging_project_group_links migration + the
+     * console's resolve_canonical_production_group() in src-tauri/src/db.rs.
+     *
+     * Best-effort: never blocks the attach — an unreachable/un-migrated QMS just
+     * logs and skips, same as SubconFabricLinePublisher.
+     */
+    private function publishExtraGroupLink(string $extraGroup, string $primaryGroup): void
+    {
+        if ($primaryGroup === '') {
+            return;
+        }
+
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_group_links')) {
+                return;
+            }
+
+            DB::connection('qms')->table('packaging_project_group_links')->updateOrInsert(
+                ['production_group' => $extraGroup],
+                ['primary_production_group' => $primaryGroup, 'created_at' => now()]
+            );
+        } catch (\Throwable $e) {
+            Log::error('Failed to publish extra-production-group link to QMS', [
+                'extra_group' => $extraGroup,
+                'primary_group' => $primaryGroup,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function unpublishExtraGroupLink(string $extraGroup): void
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_group_links')) {
+                return;
+            }
+
+            DB::connection('qms')->table('packaging_project_group_links')
+                ->where('production_group', $extraGroup)
+                ->delete();
+        } catch (\Throwable $e) {
+            Log::error('Failed to remove extra-production-group link from QMS', [
+                'extra_group' => $extraGroup,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     public function printPackagingLabels(Request $request, string $id, SubconLabelService $labels)

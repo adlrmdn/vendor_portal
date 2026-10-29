@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\SubconOrder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -87,14 +88,28 @@ class RpaQueueService
     public function queueJobTransRaf(string $projectId): bool
     {
         try {
+            $hasActiveGroup = Schema::connection('qms')->hasColumn('packaging_projects', 'active_production_group');
             $project = DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', $projectId)
-                ->first(['production_group', 'cmt_pak_job_id', 'po_info']);
+                ->first(array_filter(['production_group', $hasActiveGroup ? 'active_production_group' : null, 'cmt_pak_job_id', 'po_info']));
             if (! $project) {
                 Log::warning('RPA raf: project not found', ['project' => $projectId]);
 
                 return false;
             }
+
+            // active_production_group tracks the LITERAL group most recently
+            // downloaded/refreshed in the console — unlike production_group,
+            // which (once an extra-production-group link exists — see
+            // SubconOrderExtraProductionGroup / packaging_project_group_links)
+            // is pinned to the merge's primary group regardless of which batch
+            // this specific approval is actually for. Preferring it here means
+            // "the final just approved" queues RAF against "the group just
+            // downloaded for it", not always the primary group. Falls back to
+            // production_group on an older/un-migrated QMS schema or an empty value.
+            $productionGroup = (string) ($project->active_production_group ?? '') !== ''
+                ? (string) $project->active_production_group
+                : (string) ($project->production_group ?? '');
 
             // The stored cmt_pak_job_id is a snapshot from whenever the console
             // first downloaded the project — D365 can reissue job transaction
@@ -104,7 +119,6 @@ class RpaQueueService
             // exists. Re-resolve from D365 every time and self-heal the column
             // when it drifts; best-effort — fall back to the stored value if
             // D365 is unreachable rather than blocking the queue.
-            $productionGroup = (string) ($project->production_group ?? '');
             $pakJobId = $project->cmt_pak_job_id;
             if ($productionGroup !== '') {
                 $resolved = $this->d365->resolveJobTransactionIds($productionGroup);
