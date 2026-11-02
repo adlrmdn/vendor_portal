@@ -515,8 +515,8 @@
                             <thead class="table-light text-secondary small">
                                 <tr>
                                     <th class="ps-3">{{ __('Stage') }}</th>
-                                    @foreach($dailyProductionSummary['sizes'] as $prodId => $sizeName)
-                                        <th class="text-center">{{ $sizeName }}</th>
+                                    @foreach($dailyProductionSummary['sizes'] as $s)
+                                        <th class="text-center">{{ $s['size'] }}</th>
                                     @endforeach
                                     <th class="text-end pe-3">{{ __('Total') }}</th>
                                 </tr>
@@ -528,8 +528,8 @@
                                         <td class="ps-3 fw-semibold text-dark">
                                             {{ ucfirst(str_replace('_', ' ', $stageKey)) }}
                                         </td>
-                                        @foreach($dailyProductionSummary['sizes'] as $prodId => $sizeName)
-                                            <td class="text-center">{{ number_format($sizeMap[$prodId] ?? 0) }}</td>
+                                        @foreach($dailyProductionSummary['sizes'] as $s)
+                                            <td class="text-center">{{ number_format($sizeMap[$s['prod_id']] ?? 0) }}</td>
                                         @endforeach
                                         <td class="text-end pe-3 fw-bold text-primary">{{ number_format($stageTotal) }} pcs</td>
                                     </tr>
