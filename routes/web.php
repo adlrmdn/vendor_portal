@@ -349,6 +349,7 @@ Route::post('/qc/ho-send/{token}', [App\Http\Controllers\QcApprovalController::c
 // (Final Approval and Report Validation both render it). POST-only, human
 // button-click behind the rendered page — same safety shape as every other
 // mutation here (see the GET/POST split note on qc.ho-decline below).
+Route::post('/qc/ho-approve/{token}/qty-correction', [App\Http\Controllers\QcApprovalController::class, 'saveQcReportLineAdjustments'])->name('qc.ho-approve.qty-correction');
 Route::post('/qc/ho-approve/{token}/material-return', [App\Http\Controllers\QcApprovalController::class, 'uploadMaterialReturnSigned'])->name('qc.ho-approve.material-return');
 Route::post('/qc/ho-approve/{token}/material-return/{attachment}/delete', [App\Http\Controllers\QcApprovalController::class, 'deleteMaterialReturnSigned'])->name('qc.ho-approve.material-return.delete');
 Route::post('/qc/ho-approve/{token}/material-return/dispatch', [App\Http\Controllers\QcApprovalController::class, 'dispatchMaterialReturnTaskSigned'])->name('qc.ho-approve.material-return.dispatch');

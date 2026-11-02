@@ -121,12 +121,12 @@
                                  (so they can sit visually after Material Flow) but still
                                  submit with it via form="approval-form". --}}
                             <form id="approval-form" method="POST"
-                                  action="{{ $validateMode ? route('qc.ho-send.submit', ['token' => $token]) : route('qc.ho-approve.submit', ['token' => $token]) }}"
-                                  onsubmit="return confirm('{{ $materialFlowPending
+                                  data-confirm-message="{{ $materialFlowPending
                                       ? 'Save your entered figures now? This cannot be sent to the Director yet — Material Flow still needs to check the returned material.'
                                       : ($validateMode
                                           ? 'Send this approval to the Director for final authorization? Any revised figures will be recalculated and saved first.'
-                                          : 'Approve and sign this inspection? The entered consumption will be recalculated and saved, and the RAF production run queued. The Director is notified only after the separate Validate & Send step.') }}');">
+                                          : 'Approve and sign this inspection? The entered consumption will be recalculated and saved, and the RAF production run queued. The Director is notified only after the separate Validate & Send step.') }}"
+                                  action="{{ $validateMode ? route('qc.ho-send.submit', ['token' => $token]) : route('qc.ho-approve.submit', ['token' => $token]) }}">
                                 @csrf
                                 {{-- Recipient marker from the per-approver email link — attributes the signature. --}}
                                 @if(request('as'))<input type="hidden" name="as" value="{{ request('as') }}">@endif
@@ -140,6 +140,82 @@
                                     'qcSizeOrderQty' => $qcSizeOrderQty ?? [],
                                     'mode' => 'view',
                                 ])
+
+                                {{-- Inspection qty correction: the QC Console's own good/reject counts for
+                                     this session, editable by MD Production any time before Report
+                                     Validation is sent — same window as Material Flow below. Total Reject
+                                     is never typed directly, only its categories (what the penalty calc
+                                     actually reads) — see QcApprovalController::persistQcReportLineAdjustments(). --}}
+                                @if(($qcReportLines ?? collect())->isNotEmpty())
+                                    <div class="card mb-3">
+                                        <div class="card-header bg-light" role="button" data-bs-toggle="collapse" data-bs-target="#qc-report-lines-collapse" aria-expanded="false" aria-controls="qc-report-lines-collapse" style="cursor:pointer;">
+                                            <i class="fas fa-chevron-right me-1 small qc-collapse-chevron"></i>
+                                            <strong>Inspection Qty Correction</strong>
+                                            <span class="text-muted small">— good qty &amp; reject breakdown, as reported by QC. Editable until Report Validation is sent. Click to expand.</span>
+                                        </div>
+                                        <div class="collapse" id="qc-report-lines-collapse">
+                                        <div class="card-body table-responsive">
+                                            <table class="table table-sm table-bordered align-middle mb-0" id="qc-report-lines-table">
+                                                <thead class="table-light small">
+                                                    <tr>
+                                                        <th>Size</th>
+                                                        <th>Cut Qty</th>
+                                                        <th>Good Qty</th>
+                                                        <th>Bahan</th>
+                                                        <th>Cutting</th>
+                                                        <th>Sewing</th>
+                                                        <th>Finishing</th>
+                                                        <th>Printing</th>
+                                                        <th>Embro</th>
+                                                        <th>Washing</th>
+                                                        <th>BTJ</th>
+                                                        <th>Barang Hilang</th>
+                                                        <th>Total Reject</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {{-- Cut Qty is read-only reference data (the baseline/cutting-stage
+                                                         figure — see resolveQcCutQtyBySize()); it is never itself
+                                                         edited here. Good Qty + Total Reject must equal it — enforced
+                                                         server-side (persistQcReportLineAdjustments()) and mirrored
+                                                         live here (qc-balance-ok / qc-balance-bad) so a mismatch is
+                                                         visible before submit, not just after a rejected save. --}}
+                                                    @foreach($qcReportLines as $l)
+                                                        @php $cutQty = $qcCutQtyBySize[$l->size_val] ?? null; @endphp
+                                                        <tr class="qc-report-line-row" data-cut-qty="{{ $cutQty ?? '' }}">
+                                                            <td class="fw-semibold">{{ $l->size_val }}</td>
+                                                            <td class="text-end qc-cut-qty">{{ $cutQty !== null ? number_format($cutQty) : '—' }}</td>
+                                                            <td><input type="number" min="0" step="1" class="form-control form-control-sm qc-good-qty" name="qc_report_lines[{{ $l->report_id }}][good_qty]" value="{{ (int) round((float) $l->session_qty) }}"></td>
+                                                            @foreach($qcRejectCategoryFields as $col)
+                                                                <td><input type="number" min="0" step="1" class="form-control form-control-sm qc-reject-cat" name="qc_report_lines[{{ $l->report_id }}][{{ $col }}]" value="{{ $l->{$col} }}"></td>
+                                                            @endforeach
+                                                            <td class="text-end fw-semibold qc-total-reject">{{ number_format($l->total_reject_qty) }}</td>
+                                                        </tr>
+                                                    @endforeach
+                                                </tbody>
+                                            </table>
+                                            <div class="form-text text-danger d-none" id="qc-balance-warning">
+                                                <i class="fas fa-triangle-exclamation me-1"></i>Good Qty + Total Reject must equal Cut Qty for every size with a highlighted row before this can be saved.
+                                            </div>
+                                            <div class="d-flex justify-content-between align-items-center mt-2">
+                                                <div class="form-text mb-0">Total Reject recalculates automatically from the categories above when you save.</div>
+                                                {{-- Submits this SAME form (so these values are also carried whenever
+                                                     the main Approve/Validate & Send button is used instead) but to
+                                                     the standalone save-and-requeue-RAF endpoint — see
+                                                     QcApprovalController::saveQcReportLineAdjustments(). data-role
+                                                     flags it to the submit listener below so it skips the big
+                                                     Approve/Send confirmation dialog. --}}
+                                                <button type="submit" id="qc-qty-save-btn" data-role="qty-save"
+                                                        formaction="{{ route('qc.ho-approve.qty-correction', array_filter(['token' => $token, 'as' => request('as')])) }}"
+                                                        formmethod="POST"
+                                                        class="btn btn-sm btn-outline-primary">
+                                                    <i class="fas fa-save me-1"></i> Save &amp; re-queue RAF
+                                                </button>
+                                            </div>
+                                        </div>
+                                        </div>
+                                    </div>
+                                @endif
 
                                 {{-- Consumption inputs (calculation+approval), same engine at both steps.
                                      Also carries the Accessory return-quantity sub-section (editable here,
@@ -301,6 +377,71 @@ document.addEventListener('DOMContentLoaded', function () {
         const btn = e.target.closest('.remove-deduction');
         if (btn) btn.closest('.row').remove();
     });
+
+    // Approve/Validate & Send confirmation — moved off the <form>'s inline
+    // onsubmit so the qty-correction Save button (same <form>, different
+    // formaction, see the button's data-role) can skip it entirely: that's
+    // a separate, smaller action and its own confirm would be misleading
+    // ("Approve and sign this inspection?" on a button that only saves
+    // qty corrections and re-queues RAF).
+    const approvalForm = document.getElementById('approval-form');
+    if (approvalForm) {
+        approvalForm.addEventListener('submit', function (e) {
+            if (e.submitter && e.submitter.dataset.role === 'qty-save') {
+                return; // no confirm — saveQcReportLineAdjustments() has its own, smaller side effects
+            }
+            if (! confirm(approvalForm.dataset.confirmMessage)) {
+                e.preventDefault();
+            }
+        });
+    }
+
+    // Collapsed-by-default card header: rotate the chevron with the actual
+    // expand/collapse state (not just the click), so it stays correct if
+    // something else ever toggles the collapse programmatically.
+    const qcCollapseEl = document.getElementById('qc-report-lines-collapse');
+    if (qcCollapseEl) {
+        const chevron = document.querySelector('.qc-collapse-chevron');
+        qcCollapseEl.addEventListener('show.bs.collapse', function () {
+            if (chevron) chevron.classList.replace('fa-chevron-right', 'fa-chevron-down');
+        });
+        qcCollapseEl.addEventListener('hide.bs.collapse', function () {
+            if (chevron) chevron.classList.replace('fa-chevron-down', 'fa-chevron-right');
+        });
+    }
+
+    // Inspection qty correction — live-recompute Total Reject from the
+    // category inputs on this row, and flag the row red when Good Qty +
+    // Total Reject doesn't match Cut Qty (data-cut-qty, blank for a size
+    // with no resolvable baseline — never flagged). Display only: the
+    // server is the authoritative check and will refuse the save/approve/
+    // send outright on a mismatch — see
+    // QcApprovalController::persistQcReportLineAdjustments().
+    const qcTable = document.getElementById('qc-report-lines-table');
+    const qcWarning = document.getElementById('qc-balance-warning');
+    if (qcTable) {
+        const recalcRow = function (row) {
+            let totalReject = 0;
+            row.querySelectorAll('.qc-reject-cat').forEach(function (input) {
+                totalReject += parseInt(input.value, 10) || 0;
+            });
+            row.querySelector('.qc-total-reject').textContent = totalReject.toLocaleString('en-US');
+
+            const cutQtyRaw = row.dataset.cutQty;
+            const goodQty = parseInt(row.querySelector('.qc-good-qty').value, 10) || 0;
+            const balanced = cutQtyRaw === '' || (parseInt(cutQtyRaw, 10) === goodQty + totalReject);
+            row.classList.toggle('table-danger', ! balanced);
+
+            if (qcWarning) {
+                qcWarning.classList.toggle('d-none', ! qcTable.querySelector('.qc-report-line-row.table-danger'));
+            }
+        };
+
+        qcTable.addEventListener('input', function (e) {
+            if (! e.target.classList.contains('qc-reject-cat') && ! e.target.classList.contains('qc-good-qty')) return;
+            recalcRow(e.target.closest('.qc-report-line-row'));
+        });
+    }
 });
 </script>
 @endsection

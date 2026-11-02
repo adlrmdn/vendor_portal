@@ -37,6 +37,18 @@ class QcApprovalController extends Controller
     private const TABLE = 'packaging_project_sessions';
 
     /**
+     * packaging_project_reports' reject category columns — what
+     * QcReportPdfService::calculateDeductions() actually sums for the
+     * penalty calc (total_reject_qty is just their cached sum, never read
+     * there). Kept in one place so persistQcReportLineAdjustments() and any
+     * future caller stay in lockstep with that formula.
+     */
+    private const QC_REJECT_CATEGORY_FIELDS = [
+        'reject_bahan', 'reject_cutting', 'reject_sewing', 'reject_finishing',
+        'reject_printing', 'reject_embro', 'reject_washing', 'btj', 'barang_hilang',
+    ];
+
+    /**
      * Tag prepended to every WhatsApp notification this controller sends, so
      * a recipient can tell it apart from other bots/systems that may share
      * the same WhatsApp number (the channel bot is a shared internal service,
@@ -480,6 +492,31 @@ class QcApprovalController extends Controller
         // Step-2 extras: live RAF run status (best-effort, remote RPA DB).
         $rafStatus = $validateMode ? $this->rafJobStatus((string) $row->project_id) : null;
 
+        // This session's own inspection report lines (good qty + reject
+        // breakdown) — editable by MD Production any time between Final
+        // Approval and Report Validation being sent (same window as
+        // SubconOrder::materialReturnAdminWindowOpen()), i.e. exactly the
+        // window hoApprovalForm renders at all. See
+        // persistQcReportLineAdjustments() for why total_reject_qty isn't
+        // directly editable. Best-effort: console-owned table.
+        $qcReportLines = collect();
+        try {
+            if (Schema::connection('qms')->hasTable('packaging_project_reports')) {
+                $qcReportLines = DB::connection('qms')->table('packaging_project_reports')
+                    ->where('project_id', (string) $row->project_id)
+                    ->where('session_id', (string) $row->session_id)
+                    ->orderBy('line_no')
+                    ->orderBy('global_display_order')
+                    ->get();
+            }
+        } catch (\Throwable $e) {
+            // Leave empty — the card just doesn't render.
+        }
+        // Read-only reference column + the same figure
+        // persistQcReportLineAdjustments() guards Good Qty + Total Reject
+        // against — see resolveQcCutQtyBySize().
+        $qcCutQtyBySize = $this->resolveQcCutQtyBySize((string) $row->project_id);
+
         // Existing deduction rows — prefill the editable rows in both modes
         // (step 1 sees them again after a Director rejection, step 2 can revise
         // them before sending). Best-effort: the table is console-owned.
@@ -594,7 +631,9 @@ class QcApprovalController extends Controller
             }
         }
 
-        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'materialAccessoryLines', 'materialAccessoryRecon', 'materialAccessoryGoodsReceive', 'materialAccessoryIssue', 'accessoryClaimByLabel', 'accessoryClaimTotal'));
+        $qcRejectCategoryFields = self::QC_REJECT_CATEGORY_FIELDS;
+
+        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'materialAccessoryLines', 'materialAccessoryRecon', 'materialAccessoryGoodsReceive', 'materialAccessoryIssue', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'qcReportLines', 'qcRejectCategoryFields', 'qcCutQtyBySize'));
     }
 
     /**
@@ -776,9 +815,36 @@ class QcApprovalController extends Controller
             'accessories_recon.*.unit' => 'nullable|string|max:20',
             // MD Production's own remarks — distinct from the vendor's/QC's.
             'ho_remarks' => 'required|string|max:2000',
+            // Inspection qty correction (good + reject breakdown) — see
+            // persistQcReportLineAdjustments(). Keyed by report_id.
+            'qc_report_lines' => 'nullable|array',
+            'qc_report_lines.*.good_qty' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_bahan' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_cutting' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_sewing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_finishing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_printing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_embro' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_washing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.btj' => 'nullable|integer|min:0',
+            'qc_report_lines.*.barang_hilang' => 'nullable|integer|min:0',
         ]);
 
         [$subcon] = $this->subconContext($row);
+        $hoActor = $this->actorLabel($request, self::HO_SIGNER);
+
+        // MD Production's correction to the QC Console's own inspection counts
+        // — saved up front, same reasoning as the consumption persist just
+        // below: a submit must never discard a typed correction just because
+        // a later gate blocks the approval itself. Unlike that later gate
+        // though, an UNBALANCED correction (Good + Reject != Cut Qty) blocks
+        // the approval itself too — nothing below this point may sign off on
+        // numbers that don't add up.
+        $qcLineErrors = $this->persistQcReportLineAdjustments($request, $row, $hoActor);
+        if (! empty($qcLineErrors)) {
+            return redirect()->route('qc.ho-approve', array_filter(['token' => $token, 'as' => $request->input('as')]))
+                ->with('error', 'Could not approve — the inspection qty correction does not balance: '.implode(' ', $qcLineErrors));
+        }
 
         // HO gate = calculation+approval: recompute + OVERWRITE the cutting snapshot
         // from HO's (possibly revised) inputs using the same engine as the cutting
@@ -816,7 +882,6 @@ class QcApprovalController extends Controller
             app(\App\Services\SubconRemarksPublisher::class)->publish($subcon);
         }
 
-        $hoActor = $this->actorLabel($request, self::HO_SIGNER);
         $signature = 'Digitally Signed: '.$hoActor
             .' [UTC+07:00: '.now('Asia/Jakarta')->format('Y-m-d H:i:s').']';
 
@@ -1056,10 +1121,32 @@ class QcApprovalController extends Controller
             'accessories_recon.*.unit' => 'nullable|string|max:20',
             // MD Production's own remarks — distinct from the vendor's/QC's.
             'ho_remarks' => 'required|string|max:2000',
+            // Inspection qty correction (good + reject breakdown) — see
+            // persistQcReportLineAdjustments(). Keyed by report_id.
+            'qc_report_lines' => 'nullable|array',
+            'qc_report_lines.*.good_qty' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_bahan' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_cutting' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_sewing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_finishing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_printing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_embro' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_washing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.btj' => 'nullable|integer|min:0',
+            'qc_report_lines.*.barang_hilang' => 'nullable|integer|min:0',
         ]);
 
         [$subcon, , $productionGroup] = $this->subconContext($row);
         $actor = $this->actorLabel($request, self::HO_SIGNER);
+
+        // Same correction + balance guard as hoApprove() — see
+        // persistQcReportLineAdjustments(). An unbalanced correction blocks
+        // the send too, same as the Material Flow/Delivery Note gates below.
+        $qcLineErrors = $this->persistQcReportLineAdjustments($request, $row, $actor);
+        if (! empty($qcLineErrors)) {
+            return redirect()->route('qc.ho-approve', array_filter(['token' => $token, 'as' => $request->input('as')]))
+                ->with('error', 'Could not send to the Director — the inspection qty correction does not balance: '.implode(' ', $qcLineErrors));
+        }
 
         // Persist whatever MD Production entered BEFORE the Material Flow gate
         // below (and before the send-claim) — a submit must never discard
@@ -1228,6 +1315,26 @@ class QcApprovalController extends Controller
                     : ''),
         ]);
 
+        // Re-queue job_trans_raf so the RPA bot's run reflects whatever MD
+        // Production's numbers stand at NOW — hoApprove() only queues this
+        // once, at Final Approval; if the qty correction above (or the
+        // on-demand Save button, saveQcReportLineAdjustments()) changed
+        // anything since, this is the only other point before the Director
+        // sees the paperwork where it gets pushed. queueJobTransRaf() is a
+        // safe upsert either way: it refreshes the payload if the job is
+        // still 'pending', or starts a fresh run if the prior one already
+        // finished — see its docblock. Same skip-if-already-finished guard
+        // as hoApprove().
+        if ($this->isFinishedInProductionVsm($productionGroup)) {
+            Log::info('QC HO send: skipping job_trans_raf requeue — style already reported finished in production (VSM)', [
+                'token' => $token,
+                'project_id' => $row->project_id,
+                'production_group' => $productionGroup,
+            ]);
+        } else {
+            app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
+        }
+
         // Re-render the document at SEND time so the Director's attachment
         // carries the numbers as they stand now (post-RAF), not as of the
         // approve click. Best-effort — the emails fall back to the stored copy.
@@ -1257,6 +1364,77 @@ class QcApprovalController extends Controller
             'message' => 'Approval sent — the Director has been notified for final authorization.',
             'signature' => $signature,
         ]);
+    }
+
+    /**
+     * On-demand save for the "Inspection Qty Correction" card — a separate,
+     * smaller <form> from the main Approve/Validate & Send one (the page
+     * can't nest <form> inside <form>, same reason the Material Flow/Delivery
+     * Note actions below are their own forms), so MD Production can correct
+     * the QC Console's counts without re-running (or being blocked by) the
+     * full approval submit. Same window as the card itself — Final Approval
+     * through Report Validation — re-checked here too, since a stale tab
+     * could still POST after that window closed.
+     *
+     * Always re-queues job_trans_raf after saving (the whole point of this
+     * button — see the matching comment in hoSendApproval()), and refreshes
+     * the signed PDF so a console/admin re-check reflects the correction
+     * immediately rather than waiting for the next signature milestone. Runs
+     * both inline rather than deferring to a queued job like the other
+     * signature-triggered refreshes: this is a deliberate, low-frequency
+     * click, not part of the main submit's response-time budget.
+     */
+    public function saveQcReportLineAdjustments(Request $request, string $token)
+    {
+        $row = $this->findByToken($token);
+        if (! $row) {
+            return view('qc.approval-result', [
+                'state' => 'invalid',
+                'message' => 'This approval link is invalid or has expired.',
+            ]);
+        }
+
+        if (trim((string) ($row->ho_validation_signature ?? '')) !== ''
+            || trim((string) ($row->director_approval_signature ?? '')) !== '') {
+            return redirect()->route('qc.ho-approve', array_filter(['token' => $token, 'as' => $request->input('as')]))
+                ->with('error', 'Report Validation has already been sent — the inspection qty correction can no longer be saved here.');
+        }
+
+        $request->validate([
+            'qc_report_lines' => 'nullable|array',
+            'qc_report_lines.*.good_qty' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_bahan' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_cutting' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_sewing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_finishing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_printing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_embro' => 'nullable|integer|min:0',
+            'qc_report_lines.*.reject_washing' => 'nullable|integer|min:0',
+            'qc_report_lines.*.btj' => 'nullable|integer|min:0',
+            'qc_report_lines.*.barang_hilang' => 'nullable|integer|min:0',
+        ]);
+
+        $actor = $this->actorLabel($request, self::HO_SIGNER);
+        $qcLineErrors = $this->persistQcReportLineAdjustments($request, $row, $actor);
+        if (! empty($qcLineErrors)) {
+            return redirect()->route('qc.ho-approve', array_filter(['token' => $token, 'as' => $request->input('as')]))
+                ->with('error', 'Not saved — the inspection qty correction does not balance: '.implode(' ', $qcLineErrors));
+        }
+
+        [, , $productionGroup] = $this->subconContext($row);
+        if ($this->isFinishedInProductionVsm($productionGroup)) {
+            Log::info('QC qty correction save: skipping job_trans_raf requeue — style already reported finished in production (VSM)', [
+                'token' => $token,
+                'project_id' => $row->project_id,
+            ]);
+        } else {
+            app(RpaQueueService::class)->queueJobTransRaf((string) $row->project_id);
+        }
+
+        $this->refreshVerifiedDoc($row);
+
+        return redirect()->route('qc.ho-approve', array_filter(['token' => $token, 'as' => $request->input('as')]))
+            ->with('success', 'Inspection qty correction saved and the production RAF job re-queued.');
     }
 
     /**
@@ -1996,6 +2174,210 @@ class QcApprovalController extends Controller
             }
         } catch (\Throwable $e) {
             Log::warning('QC verified_doc refresh failed', ['project' => $row->project_id ?? null, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * MD Production may correct the QC Console's own inspection counts (good
+     * qty + the reject category breakdown) for this session's report lines,
+     * any time between Final Approval and Report Validation being sent —
+     * same window as SubconOrder::materialReturnAdminWindowOpen(). Called
+     * from hoApprove(), hoSendApproval(), AND the standalone on-demand
+     * saveQcReportLineAdjustments() action, same placement as the
+     * consumption persist: before any gate, so a submit never discards a
+     * correction just because sending is blocked.
+     *
+     * "Good Qty" writes to `session_qty`, NOT `total_good_qty` — confirmed
+     * against QcReportPdfService::context() ($goodGarments reads
+     * $line->session_qty) and RpaQueueService::queueJobTransRaf() (its
+     * good_qty aggregation is also session_qty). total_good_qty on a
+     * session-specific row is a different, unrelated figure (the BASELINE
+     * row's total_good_qty — session_id IS NULL — is what's actually read
+     * elsewhere, as the cutting-qty denominator for the 1% reject-tolerance
+     * calc); editing it here would silently do nothing visible anywhere.
+     *
+     * Writes straight into the console-owned packaging_project_reports rows
+     * — nothing else keeps a separate copy of this data — and keeps
+     * total_reject_qty consistent with the edited categories, since the PDF/
+     * penalty calc (QcReportPdfService::calculateDeductions) reads the
+     * categories, not the flat total; the two must never disagree.
+     *
+     * Logged to SubconApprovalLog (before -> after per changed field) since
+     * this overwrites data normally entered by the inspector on the factory
+     * floor — useful if the vendor or inspector later disputes the numbers.
+     *
+     * Best-effort: a missing table or an empty submission is a silent no-op
+     * (empty array returned). A report_id that doesn't belong to this
+     * session is likewise silently skipped — not a user-caused error.
+     *
+     * Guard: Good Qty + Total Reject must equal Cut Qty (resolveQcCutQtyBySize())
+     * for that size — the three must always balance (every cut piece is
+     * either a good garment or some kind of reject). Validated across ALL
+     * submitted lines FIRST, with nothing written; if any line fails, the
+     * whole correction is rejected and the caller must abort the signature/
+     * send it was about to record, same as any other submit-blocking gate
+     * on this form (Material Flow, Delivery Note). A size with no resolvable
+     * Cut Qty (no baseline row) skips the check rather than blocking —
+     * best-effort, same philosophy as every other reference lookup here.
+     *
+     * @return list<string> human-readable mismatch errors; empty means every
+     *                       submitted line balanced and has been persisted
+     */
+    private function persistQcReportLineAdjustments(Request $request, object $row, string $actor): array
+    {
+        $input = $request->input('qc_report_lines', []);
+        if (empty($input) || ! is_array($input)) {
+            return [];
+        }
+
+        if (! Schema::connection('qms')->hasTable('packaging_project_reports')) {
+            return [];
+        }
+
+        $cutQtyBySize = $this->resolveQcCutQtyBySize((string) $row->project_id);
+
+        // Pass 1 — compute every line's new values and validate the Cut Qty
+        // balance before writing anything.
+        $planned = [];
+        $errors = [];
+        foreach ($input as $reportId => $fields) {
+            if (! is_array($fields)) {
+                continue;
+            }
+
+            try {
+                $line = DB::connection('qms')->table('packaging_project_reports')
+                    ->where('report_id', (string) $reportId)
+                    ->where('session_id', (string) $row->session_id)
+                    ->first();
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            if (! $line) {
+                continue; // doesn't belong to this session — ignore, not a user-facing error
+            }
+
+            $newGood = isset($fields['good_qty']) && $fields['good_qty'] !== ''
+                ? max(0, (int) $fields['good_qty'])
+                : (int) round((float) ($line->session_qty ?? 0));
+
+            $newCategories = [];
+            $totalReject = 0;
+            foreach (self::QC_REJECT_CATEGORY_FIELDS as $col) {
+                $val = isset($fields[$col]) && $fields[$col] !== ''
+                    ? max(0, (int) $fields[$col])
+                    : (int) ($line->{$col} ?? 0);
+                $newCategories[$col] = $val;
+                $totalReject += $val;
+            }
+
+            $size = (string) ($line->size_val ?? '');
+            $cutQty = $cutQtyBySize[$size] ?? null;
+            if ($cutQty !== null && $newGood + $totalReject !== $cutQty) {
+                $errors[] = "Size {$size}: Good Qty ({$newGood}) + Total Reject ({$totalReject}) = "
+                    .($newGood + $totalReject)." — must equal Cut Qty ({$cutQty}).";
+
+                continue;
+            }
+
+            $planned[] = ['reportId' => $reportId, 'line' => $line, 'newGood' => $newGood, 'newCategories' => $newCategories, 'totalReject' => $totalReject];
+        }
+
+        if (! empty($errors)) {
+            return $errors; // nothing written — caller must abort the signature/send too
+        }
+
+        // Pass 2 — every line balanced; now actually write + log.
+        [$subcon] = $this->subconContext($row);
+
+        foreach ($planned as $p) {
+            ['reportId' => $reportId, 'line' => $line, 'newGood' => $newGood, 'newCategories' => $newCategories, 'totalReject' => $totalReject] = $p;
+
+            $update = [];
+            $changes = [];
+            if ($newGood !== (int) round((float) ($line->session_qty ?? 0))) {
+                $update['session_qty'] = $newGood;
+                $changes[] = 'Good Qty '.((int) round((float) ($line->session_qty ?? 0)))." -> {$newGood}";
+            }
+            foreach ($newCategories as $col => $val) {
+                if ($val !== (int) ($line->{$col} ?? 0)) {
+                    $update[$col] = $val;
+                    $changes[] = "{$col} ".((int) ($line->{$col} ?? 0))." -> {$val}";
+                }
+            }
+            if ($totalReject !== (int) ($line->total_reject_qty ?? 0)) {
+                $update['total_reject_qty'] = $totalReject;
+                $changes[] = 'Total Reject '.((int) ($line->total_reject_qty ?? 0))." -> {$totalReject}";
+            }
+
+            if (empty($update)) {
+                continue;
+            }
+
+            try {
+                DB::connection('qms')->table('packaging_project_reports')
+                    ->where('report_id', (string) $reportId)
+                    ->update($update);
+            } catch (\Throwable $e) {
+                Log::error('QC report line adjustment write failed', ['report_id' => $reportId, 'error' => $e->getMessage()]);
+
+                continue;
+            }
+
+            Log::info('QC report line adjusted by MD Production', [
+                'report_id' => $reportId,
+                'session_id' => $row->session_id,
+                'actor' => $actor,
+                'changes' => $changes,
+            ]);
+
+            \App\Models\SubconApprovalLog::record([
+                'order_id' => $subcon->id ?? null,
+                'order_number' => $subcon->order_number ?? ($row->project_id ?? null),
+                'vendor_name' => $subcon?->vendor?->name,
+                'gate' => 'final',
+                'decision' => 'adjusted',
+                'actor' => $actor,
+                'source' => $request->user() ? 'portal' : 'email',
+                'note' => "Inspection qty corrected for size {$line->size_val} (report {$reportId}): ".implode(', ', $changes),
+            ]);
+        }
+
+        return [];
+    }
+
+    /**
+     * Cut Qty per size — the BASELINE rows' (session_id IS NULL) total_good_qty,
+     * summed per size. Same figure QcReportPdfService::context() calls
+     * `cuttingQty` ($baseGoodQtyBySize) for the yield-matrix PDF: summed, not
+     * first(), because a merged project (an extra production group attached
+     * to the same order) can have more than one baseline row per size.
+     *
+     * Shown as a read-only reference column on the Inspection Qty Correction
+     * card and used by persistQcReportLineAdjustments() to guard Good Qty +
+     * Total Reject against it. Best-effort: [] on any qms hiccup, so the
+     * column just shows "—" and the guard skips (never blocks on missing
+     * reference data).
+     *
+     * @return array<string,int> size_val => cut qty
+     */
+    private function resolveQcCutQtyBySize(string $projectId): array
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_reports')) {
+                return [];
+            }
+
+            return DB::connection('qms')->table('packaging_project_reports')
+                ->where('project_id', $projectId)
+                ->whereNull('session_id')
+                ->get(['size_val', 'total_good_qty'])
+                ->groupBy(fn ($r) => (string) ($r->size_val ?? ''))
+                ->map(fn ($group) => (int) $group->sum('total_good_qty'))
+                ->all();
+        } catch (\Throwable $e) {
+            return [];
         }
     }
 
