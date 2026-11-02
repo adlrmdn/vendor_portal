@@ -176,13 +176,23 @@
                                                 <tbody>
                                                     {{-- Cut Qty is read-only reference data (the baseline/cutting-stage
                                                          figure — see resolveQcCutQtyBySize()); it is never itself
-                                                         edited here. Good Qty + Total Reject must equal it — enforced
-                                                         server-side (persistQcReportLineAdjustments()) and mirrored
-                                                         live here (qc-balance-ok / qc-balance-bad) so a mismatch is
-                                                         visible before submit, not just after a rejected save. --}}
+                                                         edited here. Summed across every size, Good Qty + Total Reject
+                                                         must equal it — a TOTALS-only check (see
+                                                         persistQcReportLineAdjustments()'s docblock for why, not
+                                                         per-size), mirrored live below the table. --}}
                                                     @foreach($qcReportLines as $l)
-                                                        @php $cutQty = $qcCutQtyBySize[$l->size_val] ?? null; @endphp
-                                                        <tr class="qc-report-line-row" data-cut-qty="{{ $cutQty ?? '' }}">
+                                                        @php
+                                                            $cutQty = $qcCutQtyBySize[$l->size_val] ?? null;
+                                                            $other = $qcOtherCyclesBySize[$l->size_val] ?? ['good' => 0, 'reject' => 0];
+                                                        @endphp
+                                                        {{-- data-other-good/reject: this size's good/reject from every
+                                                             OTHER inspection cycle, folded into the live totals below so
+                                                             the preview matches the server's cumulative guard (see
+                                                             QcApprovalController::resolveQcCumulativeGoodAndRejectBySize()) —
+                                                             without them, a normal mid-cycle correction (this cycle alone
+                                                             is short of Cut Qty by design, the rest is WIP) would show a
+                                                             false "doesn't balance" warning. --}}
+                                                        <tr class="qc-report-line-row" data-cut-qty="{{ $cutQty ?? '' }}" data-other-good="{{ (int) round((float) $other['good']) }}" data-other-reject="{{ (int) $other['reject'] }}">
                                                             <td class="fw-semibold">{{ $l->size_val }}</td>
                                                             <td class="text-end qc-cut-qty">{{ $cutQty !== null ? number_format($cutQty) : '—' }}</td>
                                                             <td><input type="number" min="0" step="1" class="form-control form-control-sm qc-good-qty" name="qc_report_lines[{{ $l->report_id }}][good_qty]" value="{{ (int) round((float) $l->session_qty) }}"></td>
@@ -194,8 +204,14 @@
                                                     @endforeach
                                                 </tbody>
                                             </table>
+                                            {{-- Totals-only balance — see QcApprovalController::
+                                                 persistQcReportLineAdjustments()'s docblock for why this is
+                                                 checked across all sizes together, not per-size. --}}
+                                            <div class="form-text d-flex justify-content-between align-items-center mt-2" id="qc-balance-summary">
+                                                <span>Totals: Good Qty <strong class="qc-sum-good">0</strong> + Total Reject <strong class="qc-sum-reject">0</strong> = <strong class="qc-sum-combined">0</strong> / Cut Qty <strong class="qc-sum-cutqty">0</strong></span>
+                                            </div>
                                             <div class="form-text text-danger d-none" id="qc-balance-warning">
-                                                <i class="fas fa-triangle-exclamation me-1"></i>Good Qty + Total Reject must equal Cut Qty for every size with a highlighted row before this can be saved.
+                                                <i class="fas fa-triangle-exclamation me-1"></i>Good Qty + Total Reject totals must equal the Cut Qty total before this can be saved.
                                             </div>
                                             <div class="d-flex justify-content-between align-items-center mt-2">
                                                 <div class="form-text mb-0">Total Reject recalculates automatically from the categories above when you save.</div>
@@ -410,37 +426,62 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Inspection qty correction — live-recompute Total Reject from the
-    // category inputs on this row, and flag the row red when Good Qty +
-    // Total Reject doesn't match Cut Qty (data-cut-qty, blank for a size
-    // with no resolvable baseline — never flagged). Display only: the
-    // server is the authoritative check and will refuse the save/approve/
-    // send outright on a mismatch — see
-    // QcApprovalController::persistQcReportLineAdjustments().
+    // Inspection qty correction — live-recompute each row's Total Reject
+    // from its category inputs, then the grand totals across every row.
+    // The balance check is TOTALS-only (summed Good Qty + summed Total
+    // Reject vs. summed Cut Qty), not per-row — see
+    // QcApprovalController::persistQcReportLineAdjustments()'s docblock for
+    // why. Display only: the server is the authoritative check and will
+    // refuse the save/approve/send outright on a mismatch.
     const qcTable = document.getElementById('qc-report-lines-table');
     const qcWarning = document.getElementById('qc-balance-warning');
     if (qcTable) {
-        const recalcRow = function (row) {
-            let totalReject = 0;
-            row.querySelectorAll('.qc-reject-cat').forEach(function (input) {
-                totalReject += parseInt(input.value, 10) || 0;
-            });
-            row.querySelector('.qc-total-reject').textContent = totalReject.toLocaleString('en-US');
+        const recalcTotals = function () {
+            let sumGood = 0;
+            let sumReject = 0;
+            let sumCutQty = 0;
+            let anyCutQtyKnown = false;
 
-            const cutQtyRaw = row.dataset.cutQty;
-            const goodQty = parseInt(row.querySelector('.qc-good-qty').value, 10) || 0;
-            const balanced = cutQtyRaw === '' || (parseInt(cutQtyRaw, 10) === goodQty + totalReject);
-            row.classList.toggle('table-danger', ! balanced);
+            qcTable.querySelectorAll('.qc-report-line-row').forEach(function (row) {
+                let rowReject = 0;
+                row.querySelectorAll('.qc-reject-cat').forEach(function (input) {
+                    rowReject += parseInt(input.value, 10) || 0;
+                });
+                row.querySelector('.qc-total-reject').textContent = rowReject.toLocaleString('en-US');
+
+                const cutQtyRaw = row.dataset.cutQty;
+                if (cutQtyRaw === '') return; // excluded from the totals entirely — no resolvable Cut Qty
+
+                anyCutQtyKnown = true;
+                // Fold in every OTHER inspection cycle's good/reject for this
+                // size (data-other-good/reject) — this cycle's own row is
+                // normally only part of Cut Qty, the rest already inspected
+                // in a prior cycle. Mirrors the server-side guard exactly.
+                sumGood += (parseInt(row.querySelector('.qc-good-qty').value, 10) || 0) + (parseInt(row.dataset.otherGood, 10) || 0);
+                sumReject += rowReject + (parseInt(row.dataset.otherReject, 10) || 0);
+                sumCutQty += parseInt(cutQtyRaw, 10) || 0;
+            });
+
+            const summary = document.getElementById('qc-balance-summary');
+            if (summary) {
+                summary.querySelector('.qc-sum-good').textContent = sumGood.toLocaleString('en-US');
+                summary.querySelector('.qc-sum-reject').textContent = sumReject.toLocaleString('en-US');
+                summary.querySelector('.qc-sum-combined').textContent = (sumGood + sumReject).toLocaleString('en-US');
+                summary.querySelector('.qc-sum-cutqty').textContent = sumCutQty.toLocaleString('en-US');
+            }
 
             if (qcWarning) {
-                qcWarning.classList.toggle('d-none', ! qcTable.querySelector('.qc-report-line-row.table-danger'));
+                const balanced = ! anyCutQtyKnown || sumGood + sumReject === sumCutQty;
+                qcWarning.classList.toggle('d-none', balanced);
             }
         };
 
         qcTable.addEventListener('input', function (e) {
             if (! e.target.classList.contains('qc-reject-cat') && ! e.target.classList.contains('qc-good-qty')) return;
-            recalcRow(e.target.closest('.qc-report-line-row'));
+            recalcTotals();
         });
+
+        recalcTotals(); // initial totals on page load
     }
 });
 </script>

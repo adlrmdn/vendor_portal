@@ -516,6 +516,11 @@ class QcApprovalController extends Controller
         // persistQcReportLineAdjustments() guards Good Qty + Total Reject
         // against — see resolveQcCutQtyBySize().
         $qcCutQtyBySize = $this->resolveQcCutQtyBySize((string) $row->project_id);
+        // Other cycles' good/reject per size, folded into the live balance
+        // preview the same way the server-side guard folds them in — see
+        // resolveQcCumulativeGoodAndRejectBySize()'s docblock for why a
+        // single cycle's own row is normally short of Cut Qty.
+        $qcOtherCyclesBySize = $this->resolveQcCumulativeGoodAndRejectBySize($row);
 
         // Existing deduction rows — prefill the editable rows in both modes
         // (step 1 sees them again after a Director rejection, step 2 can revise
@@ -633,7 +638,7 @@ class QcApprovalController extends Controller
 
         $qcRejectCategoryFields = self::QC_REJECT_CATEGORY_FIELDS;
 
-        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'materialAccessoryLines', 'materialAccessoryRecon', 'materialAccessoryGoodsReceive', 'materialAccessoryIssue', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'qcReportLines', 'qcRejectCategoryFields', 'qcCutQtyBySize'));
+        return view('qc.ho-approval-form', compact('token', 'row', 'subcon', 'totalCut', 'productionGroup', 'fabricLines', 'productionGroups', 'cuttingReports', 'qcSizeOrderQty', 'validateMode', 'rafStatus', 'deductionLines', 'directorRejectReason', 'materialReturns', 'materialReturnTask', 'materialReturnPending', 'materialReturnAutoApproved', 'materialAccessoryLines', 'materialAccessoryRecon', 'materialAccessoryGoodsReceive', 'materialAccessoryIssue', 'accessoryClaimByLabel', 'accessoryClaimTotal', 'qcReportLines', 'qcRejectCategoryFields', 'qcCutQtyBySize', 'qcOtherCyclesBySize'));
     }
 
     /**
@@ -2210,18 +2215,23 @@ class QcApprovalController extends Controller
      * (empty array returned). A report_id that doesn't belong to this
      * session is likewise silently skipped — not a user-caused error.
      *
-     * Guard: Good Qty + Total Reject must equal Cut Qty (resolveQcCutQtyBySize())
-     * for that size — the three must always balance (every cut piece is
-     * either a good garment or some kind of reject). Validated across ALL
-     * submitted lines FIRST, with nothing written; if any line fails, the
-     * whole correction is rejected and the caller must abort the signature/
-     * send it was about to record, same as any other submit-blocking gate
-     * on this form (Material Flow, Delivery Note). A size with no resolvable
-     * Cut Qty (no baseline row) skips the check rather than blocking —
-     * best-effort, same philosophy as every other reference lookup here.
+     * Guard: summed across every submitted size, Good Qty + Total Reject
+     * must equal Cut Qty (resolveQcCutQtyBySize()) — deliberately a TOTAL
+     * check, not per-size: QcReportPdfService::calculateDeductions() itself
+     * only ever sums the reject categories and Cut Qty across ALL sizes for
+     * the penalty calc, never per-size, so a per-size imbalance that nets
+     * out overall (e.g. a size mis-keyed on the QC Console) is not actually
+     * wrong for anything this guards. Checked BEFORE anything is written;
+     * if it fails, the whole correction is rejected and the caller must
+     * abort the signature/send it was about to record, same as any other
+     * submit-blocking gate on this form (Material Flow, Delivery Note). A
+     * size with no resolvable Cut Qty (no baseline row) is excluded from
+     * the totals entirely rather than blocking — best-effort, same
+     * philosophy as every other reference lookup here.
      *
-     * @return list<string> human-readable mismatch errors; empty means every
-     *                       submitted line balanced and has been persisted
+     * @return list<string> human-readable mismatch errors; empty means the
+     *                       total balanced and every submitted line has
+     *                       been persisted
      */
     private function persistQcReportLineAdjustments(Request $request, object $row, string $actor): array
     {
@@ -2235,6 +2245,16 @@ class QcApprovalController extends Controller
         }
 
         $cutQtyBySize = $this->resolveQcCutQtyBySize((string) $row->project_id);
+        // Every OTHER cycle's good/reject for this project, per size — the
+        // guard compares CUMULATIVE good+reject (this session's edited
+        // values PLUS every prior cycle's) against Cut Qty, not this
+        // session's row alone. A single inspection cycle only ever covers
+        // part of the cut quantity (the rest is WIP, still to be inspected
+        // in a later cycle) — confirmed live: this session's own row was
+        // ~500pcs short of Cut Qty even though the order's actual cumulative
+        // totals across its 4 cycles balanced exactly. See
+        // resolveQcCumulativeGoodAndRejectBySize()'s docblock.
+        $otherCyclesBySize = $this->resolveQcCumulativeGoodAndRejectBySize($row);
 
         // Pass 1 — compute every line's new values and validate the Cut Qty
         // balance before writing anything.
@@ -2272,20 +2292,42 @@ class QcApprovalController extends Controller
                 $totalReject += $val;
             }
 
-            $size = (string) ($line->size_val ?? '');
-            $cutQty = $cutQtyBySize[$size] ?? null;
-            if ($cutQty !== null && $newGood + $totalReject !== $cutQty) {
-                $errors[] = "Size {$size}: Good Qty ({$newGood}) + Total Reject ({$totalReject}) = "
-                    .($newGood + $totalReject)." — must equal Cut Qty ({$cutQty}).";
-
-                continue;
-            }
-
             $planned[] = ['reportId' => $reportId, 'line' => $line, 'newGood' => $newGood, 'newCategories' => $newCategories, 'totalReject' => $totalReject];
         }
 
-        if (! empty($errors)) {
-            return $errors; // nothing written — caller must abort the signature/send too
+        // Totals-only balance check — see this method's docblock for why
+        // per-size isn't the right granularity. Only sizes with a resolvable
+        // Cut Qty count toward either side, so an unresolvable size can
+        // never itself cause a false mismatch. Each size's contribution is
+        // CUMULATIVE: this session's (just-edited) values plus every other
+        // cycle's — see resolveQcCumulativeGoodAndRejectBySize() above.
+        $sumGood = 0;
+        $sumReject = 0;
+        $sumCutQty = 0;
+        $anyCutQtyKnown = false;
+        foreach ($planned as $p) {
+            $size = (string) ($p['line']->size_val ?? '');
+            $cutQty = $cutQtyBySize[$size] ?? null;
+            if ($cutQty === null) {
+                continue;
+            }
+            $anyCutQtyKnown = true;
+            $other = $otherCyclesBySize[$size] ?? ['good' => 0.0, 'reject' => 0];
+            $sumGood += $p['newGood'] + $other['good'];
+            $sumReject += $p['totalReject'] + $other['reject'];
+            $sumCutQty += $cutQty;
+        }
+        // session_qty (this session's + every other cycle's "good") is a
+        // float column — round before comparing/displaying so a strict
+        // numeric mismatch can never come from float vs. int typing alone.
+        $sumGood = (int) round($sumGood);
+        $sumReject = (int) round($sumReject);
+
+        if ($anyCutQtyKnown && $sumGood + $sumReject !== $sumCutQty) {
+            return [
+                "Totals don't balance: Good Qty ({$sumGood}) + Total Reject ({$sumReject}) = "
+                    .($sumGood + $sumReject)." — must equal Cut Qty ({$sumCutQty}).",
+            ]; // nothing written — caller must abort the signature/send too
         }
 
         // Pass 2 — every line balanced; now actually write + log.
@@ -2376,6 +2418,69 @@ class QcApprovalController extends Controller
                 ->groupBy(fn ($r) => (string) ($r->size_val ?? ''))
                 ->map(fn ($group) => (int) $group->sum('total_good_qty'))
                 ->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Every OTHER inspection cycle's good qty (session_qty) + reject total
+     * for this project, summed per size — "other" meaning every session
+     * except $row's own, with cycle_number <= $row's cycle (mirrors
+     * QcReportPdfService::context()'s $priorSessions/$otherGood/$cumulative()
+     * logic, which is what actually feeds the inspection PDF's "Good
+     * Garments"/reject figures).
+     *
+     * Exists because a single inspection cycle normally covers only part of
+     * the cut quantity — the rest is WIP, inspected in a later cycle — so
+     * this session's own row being short of Cut Qty is the NORMAL case, not
+     * a correction error. Confirmed live: MPG/PRG/2608/000134's cycle-4
+     * session row alone was ~500pcs short of Cut Qty, while summing good+
+     * reject across all 4 of its cycles matched Cut Qty exactly, per size
+     * AND in total. persistQcReportLineAdjustments() folds this in before
+     * comparing against Cut Qty, so the guard reflects the true cumulative
+     * figure, not just whatever this one cycle happened to inspect.
+     *
+     * Best-effort: [] on any qms hiccup (same effect as every size being
+     * "no other cycles" — the guard then just checks this session's own
+     * values, which is wrong only in the same rare case the hiccup already
+     * degrades everything else on this page).
+     *
+     * @return array<string,array{good:float,reject:int}>
+     */
+    private function resolveQcCumulativeGoodAndRejectBySize(object $row): array
+    {
+        try {
+            if (! Schema::connection('qms')->hasTable('packaging_project_reports')) {
+                return [];
+            }
+
+            $otherSessionIds = DB::connection('qms')->table('packaging_project_sessions')
+                ->where('project_id', (string) $row->project_id)
+                ->where('cycle_number', '<=', (int) $row->cycle_number)
+                ->where('session_id', '!=', (string) $row->session_id)
+                ->pluck('session_id');
+
+            if ($otherSessionIds->isEmpty()) {
+                return [];
+            }
+
+            $lines = DB::connection('qms')->table('packaging_project_reports')
+                ->where('project_id', (string) $row->project_id)
+                ->whereIn('session_id', $otherSessionIds)
+                ->get();
+
+            $out = [];
+            foreach ($lines as $l) {
+                $size = (string) ($l->size_val ?? '');
+                $out[$size] ??= ['good' => 0.0, 'reject' => 0];
+                $out[$size]['good'] += (float) ($l->session_qty ?? 0);
+                foreach (self::QC_REJECT_CATEGORY_FIELDS as $col) {
+                    $out[$size]['reject'] += (int) ($l->{$col} ?? 0);
+                }
+            }
+
+            return $out;
         } catch (\Throwable $e) {
             return [];
         }
