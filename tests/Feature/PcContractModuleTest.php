@@ -148,6 +148,7 @@ class PcContractModuleTest extends TestCase
                     'fabric_item_id' => $this->fabricItem->id,
                     'plm_ref_id' => $this->plmRef->id,
                     'hs_code_id' => $this->hsCode->id,
+                    'lot_id' => $this->lot->id,
                     'qty' => '1000',
                     'unit_price' => '2.50',
                 ],
@@ -437,6 +438,11 @@ class PcContractModuleTest extends TestCase
         $vendorResp = $this->actingAs($this->vendorUser)->get(route('vendor.pc.contracts.pdf', $contract));
         $vendorResp->assertOk();
         $this->assertSame('application/pdf', $vendorResp->headers->get('Content-Type'));
+
+        // 5. Admin can regenerate the official PDF
+        $regenResp = $this->actingAs($this->preparer)->post(route('admin.pc.contracts.regenerate-pdf', $contract));
+        $regenResp->assertRedirect();
+        $regenResp->assertSessionHas('success');
     }
 
     public function test_approvals_hub_renders_and_lists_pending_pc_contracts(): void
@@ -522,6 +528,7 @@ class PcContractModuleTest extends TestCase
                     'fabric_item_id' => $this->fabricItem->id,
                     'plm_ref_id' => $this->plmRef->id,
                     'hs_code_id' => $this->hsCode->id,
+                    'lot_id' => $this->lot->id,
                     'qty' => '500',
                     'unit_price' => '3.50',
                 ],
@@ -646,6 +653,68 @@ class PcContractModuleTest extends TestCase
         $this->assertNotNull($details['recommended_plm']);
         $this->assertSame($activePlm->plm_id, $details['recommended_plm']['plm_number']);
         $this->assertFalse($details['recommended_plm']['is_completed']);
+    }
+
+    public function test_local_vendor_does_not_require_hs_code(): void
+    {
+        $localVendor = new Vendor([
+            'name' => 'Local Fabric Mill PT',
+            'vendor_code' => 'V_LOC_1',
+            'type' => 'fabric',
+            'country' => 'IDN',
+            'group' => 'Local',
+            'is_active' => true,
+        ]);
+        $localVendor->id = (string) \Illuminate\Support\Str::uuid();
+        $localVendor->save();
+
+        $contract = PcContract::create([
+            'contract_number' => 'MPG/PC/LOC/26/X/001',
+            'revision_no' => 0,
+            'status' => PcContract::STATUS_DRAFT,
+            'vendor_id' => $localVendor->id,
+            'currency_id' => Currency::where('code', 'USD')->first()->id,
+            'payment_term_id' => $this->paymentTerm->id,
+            'delivery_term_id' => $this->deliveryTerm->id,
+            'transport_mode_id' => $this->transportMode->id,
+            'vat_treatment_id' => $this->vatTreatment->id,
+            'vat_rate' => 0,
+            'season_id' => $this->season->id,
+            'order_type_id' => $this->orderType->id,
+            'contract_date' => now()->toDateString(),
+            'created_by' => $this->preparer->id,
+        ]);
+
+        // Line without hs_code_id
+        $line = $contract->lines()->create([
+            'line_no' => 1,
+            'fabric_item_id' => $this->fabricItem->id,
+            'item_number_snapshot' => $this->fabricItem->item_number,
+            'item_name_snapshot' => $this->fabricItem->item_name,
+            'uom_snapshot' => 'MTR',
+            'plm_ref_id' => $this->plmRef->id,
+            'plm_id_snapshot' => $this->plmRef->plm_id,
+            'hs_code_id' => null,
+            'hs_code_snapshot' => null,
+            'lot_id' => $this->lot->id,
+            'lot_snapshot' => $this->lot->code,
+            'qty' => 100,
+            'unit_price' => 10,
+        ]);
+
+        $contract->deliveries()->create([
+            'contract_line_id' => $line->id,
+            'lot_id' => $this->lot->id,
+            'delivery_qty' => 100,
+            'eta_date' => now()->addDays(30)->toDateString(),
+        ]);
+
+        $validator = app(\App\Services\PcContractValidator::class);
+        $errors = $validator->validateForSubmit($contract);
+
+        // Should not have PC-L16 error for local vendor
+        $hasHsError = collect($errors)->contains(fn ($e) => str_contains($e, 'PC-L16'));
+        $this->assertFalse($hasHsError, 'Local vendor should not require HS code');
     }
 }
 

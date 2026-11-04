@@ -91,13 +91,15 @@ class PcContractValidator
             }
         }
 
-        if (! $contract->payment_term_id) {
-            $errors[] = 'PC-H06: No payment term is configured on this vendor — set one on the vendor record first.';
+        if (! $contract->payment_term_id && $vendor?->payment_term_id) {
+            $contract->payment_term_id = $vendor->payment_term_id;
+            $contract->saveQuietly();
         }
 
-        if (! $contract->fabric_type) {
-            $errors[] = 'PC-H11: Fabric Type (WOVEN/KNIT) is required.';
+        if (! $contract->payment_term_id) {
+            $errors[] = 'PC-H06: Terms of Payment is required — select a payment term for this contract.';
         }
+
 
         $deliveries = $contract->deliveries;
         if ($deliveries->isEmpty()) {
@@ -152,8 +154,12 @@ class PcContractValidator
                 }
             }
 
-            if (! $line->hs_code_id) {
+            if (! $line->hs_code_id && ! $contract->isLocalVendor()) {
                 $errors[] = "PC-L16: Line {$n} HS Code is required.";
+            }
+
+            if (! $line->lot_id) {
+                $errors[] = "PC-L17: Line {$n} Lot is required.";
             }
 
             $key = ($line->fabric_item_id ?? '').'|'.($line->plm_ref_id ?? '');

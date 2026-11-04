@@ -2,33 +2,38 @@
     Module navigation for Preliminary Contract.
     $pcSection: 'dashboard' | 'contracts' | 'data' | 'create' | 'show' | 'edit'
 --}}
-<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4 border-bottom pb-3">
-    <ul class="nav nav-pills gap-1">
-        <li class="nav-item">
-            <a href="{{ route('admin.pc.index') }}" 
-               class="nav-link px-3 py-2 {{ ($pcSection ?? '') === 'dashboard' ? 'active bg-primary' : 'text-secondary' }}">
-                <i class="fas fa-chart-pie me-1"></i> Overview & Pipeline
-            </a>
-        </li>
-        <li class="nav-item">
-            <a href="{{ route('admin.pc.contracts.index') }}" 
-               class="nav-link px-3 py-2 {{ in_array(($pcSection ?? ''), ['contracts', 'show', 'edit']) ? 'active bg-primary' : 'text-secondary' }}">
-                <i class="fas fa-file-contract me-1"></i> Contracts
-            </a>
-        </li>
-        <li class="nav-item">
-            <a href="{{ route('admin.pc.data.index') }}" 
-               class="nav-link px-3 py-2 {{ ($pcSection ?? '') === 'data' ? 'active bg-primary' : 'text-secondary' }}">
-                <i class="fas fa-sliders-h me-1"></i> Master Data & Settings
-            </a>
-        </li>
-    </ul>
+<div class="apple-module-nav">
+    <div class="apple-module-tabs">
+        <a href="{{ route('admin.pc.index') }}" 
+           class="apple-module-tab {{ ($pcSection ?? '') === 'dashboard' ? 'active' : '' }}">
+            <i class="fas fa-chart-pie"></i>
+            <span>Overview &amp; Pipeline</span>
+        </a>
+        <a href="{{ route('admin.pc.contracts.index') }}" 
+           class="apple-module-tab {{ in_array(($pcSection ?? ''), ['contracts', 'show', 'edit', 'create']) ? 'active' : '' }}">
+            <i class="fas fa-file-contract"></i>
+            <span>Contracts</span>
+        </a>
+        <a href="{{ route('admin.pc.data.index') }}" 
+           class="apple-module-tab {{ ($pcSection ?? '') === 'data' ? 'active' : '' }}">
+            <i class="fas fa-sliders-h"></i>
+            <span>Master Data &amp; Settings</span>
+        </a>
+    </div>
     
-    {{-- Breadcrumb or back context when inside a contract view/edit --}}
-    @if(in_array(($pcSection ?? ''), ['show', 'edit', 'create']))
+    {{-- Actions & Context --}}
+    @if(in_array(($pcSection ?? ''), ['edit', 'create']))
         <div>
-            <a href="{{ route('admin.pc.contracts.index') }}" class="btn btn-sm btn-outline-secondary">
-                <i class="fas fa-arrow-left me-1"></i> Back to Contracts
+            <a href="{{ route('admin.pc.contracts.index') }}" class="apple-back-btn">
+                <i class="fas fa-arrow-left"></i>
+                <span>Back to Contracts</span>
+            </a>
+        </div>
+    @else
+        <div class="d-none d-md-block">
+            <a href="{{ route('admin.pc.guidebook.pdf') }}" class="apple-back-btn" target="_blank" title="Download Admin Guidebook PDF">
+                <i class="fas fa-file-pdf text-danger"></i>
+                <span>Admin Guidebook</span>
             </a>
         </div>
     @endif

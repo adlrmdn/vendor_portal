@@ -201,7 +201,7 @@ class PcAnalysisExportService
                     $item?->weight_gsm ? number_format((float) $item->weight_gsm, 2, '.', '') : '',
                     $item?->process ?? '',
                     $item?->finish ?? '',
-                    $line->hs_code_snapshot ?? $hs?->code ?? '',
+                    \App\Models\HsCode::formatCode($line->hs_code_snapshot ?? $hs?->code ?? ''),
                     number_format($qty, 4, '.', ''),
                     $line->uom_snapshot ?? $item?->uom_code ?? 'MTR',
                     number_format($price, 4, '.', ''),

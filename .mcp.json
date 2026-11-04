@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "fabric-vendor-portal": {
+      "command": "/usr/bin/python3",
+      "args": [
+        "/home/ubuntu/webservice/vendor_portal/.agents/mcp/fabric_portal_mcp/server.py"
+      ],
+      "env": {
+        "PORTAL_READONLY": "true"
+      }
+    }
+  }
+}

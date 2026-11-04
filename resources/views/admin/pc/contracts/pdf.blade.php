@@ -19,11 +19,14 @@
         table {
             border-collapse: collapse;
             width: 100%;
+            table-layout: fixed;
         }
         .tbl-grid th, .tbl-grid td {
             border: 0.75pt solid #000;
-            padding: 2.5pt 4pt;
+            padding: 2.5pt 3pt;
             vertical-align: top;
+            box-sizing: border-box;
+            word-wrap: break-word;
         }
         .bg-grey {
             background-color: #D9D9D9;
@@ -40,6 +43,69 @@
             background-color: #D9D9D9;
             font-weight: bold;
             font-size: 9.5pt;
+        }
+        .sig-badge-signed {
+            display: inline-block;
+            border: 1.5pt solid #059669;
+            border-radius: 4pt;
+            background-color: #ECFDF5;
+            color: #047857;
+            font-size: 10pt;
+            font-weight: bold;
+            padding: 4pt 16pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5pt;
+        }
+        .sig-badge-rejected {
+            display: inline-block;
+            border: 1.5pt solid #DC2626;
+            border-radius: 4pt;
+            background-color: #FEF2F2;
+            color: #B91C1C;
+            font-size: 10pt;
+            font-weight: bold;
+            padding: 4pt 16pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5pt;
+        }
+        .sig-badge-pending {
+            display: inline-block;
+            border: 1.5pt solid #94A3B8;
+            border-radius: 4pt;
+            background-color: #F1F5F9;
+            color: #1E293B;
+            font-size: 9.5pt;
+            font-weight: bold;
+            padding: 4pt 16pt;
+            text-transform: uppercase;
+            letter-spacing: 0.4pt;
+        }
+        .sig-badge-queried {
+            display: inline-block;
+            border: 1.5pt solid #D97706;
+            border-radius: 4pt;
+            background-color: #FEF3C7;
+            color: #B45309;
+            font-size: 9.5pt;
+            font-weight: bold;
+            padding: 4pt 16pt;
+            text-transform: uppercase;
+            letter-spacing: 0.4pt;
+        }
+        .sig-email {
+            font-size: 8.5pt;
+            color: #334155;
+            font-weight: 500;
+            margin-top: 3pt;
+            line-height: 1.2;
+        }
+        .sig-role {
+            font-size: 8pt;
+            color: #64748B;
+            font-weight: normal;
+            text-transform: uppercase;
+            margin-top: 2pt;
+            letter-spacing: 0.3pt;
         }
         .watermark {
             position: fixed;
@@ -137,10 +203,19 @@
         </tr>
         <tr>
             <td style="height: 48pt;">
-                <div class="fw-bold" style="font-size: 10.5pt;">{{ $snap['vendor_name'] ?? $contract->vendor?->name ?? '' }}</div>
-                <div style="font-size: 9pt; margin-top: 2pt;">
-                    {{ $snap['vendor_address'] ?? $contract->vendor?->address ?? '' }}
+                @php
+                    $vendorCode = $snap['vendor_code'] ?? $contract->vendor?->code ?? '';
+                    $vendorName = $snap['vendor_name'] ?? $contract->vendor?->name ?? '';
+                    $vendorAddress = $snap['vendor_address'] ?? $contract->vendor?->address ?? '';
+                @endphp
+                <div class="fw-bold" style="font-size: 10.5pt;">
+                    {{ $vendorCode ? $vendorCode . ' - ' : '' }}{{ $vendorName }}
                 </div>
+                @if ($vendorAddress)
+                    <div style="font-size: 8.5pt; margin-top: 2pt; color: #333; line-height: 1.25;">
+                        {{ $vendorAddress }}
+                    </div>
+                @endif
             </td>
             <td style="padding: 0; vertical-align: top;">
                 <table style="width: 100%;">
@@ -175,7 +250,7 @@
         </tr>
         <tr>
             <td class="fw-bold">{{ $snap['transport_mode_label'] ?? $contract->transportMode?->code ?? '' }}</td>
-            <td class="fw-bold">{{ $snap['payment_term_label'] ?? $contract->paymentTerm?->code ?? '' }}</td>
+            <td class="fw-bold">{{ $snap['payment_term_label'] ?? $contract->paymentTerm?->code ?? $contract->vendor?->paymentTerm?->code ?? '' }}</td>
         </tr>
     </table>
 
@@ -189,30 +264,49 @@
         </tr>
     </table>
 
-    {{-- 20-Column Line Items Table --}}
-    <table class="tbl-grid" style="width: 1570pt; margin-bottom: 0;">
+    <table class="tbl-grid" style="width: 1570pt; margin-bottom: 0; table-layout: fixed;">
+        <colgroup>
+            <col style="width: 1.90%;">
+            <col style="width: 10.00%;">
+            <col style="width: 6.50%;">
+            <col style="width: 1.80%;">
+            <col style="width: 19.00%;">
+            <col style="width: 5.50%;">
+            <col style="width: 5.50%;">
+            <col style="width: 3.20%;">
+            <col style="width: 3.30%;">
+            <col style="width: 3.30%;">
+            <col style="width: 3.40%;">
+            <col style="width: 3.40%;">
+            <col style="width: 3.00%;">
+            <col style="width: 4.40%;">
+            <col style="width: 4.20%;">
+            <col style="width: 4.60%;">
+            <col style="width: 2.20%;">
+            <col style="width: 6.50%;">
+            <col style="width: 8.30%;">
+        </colgroup>
         <thead>
             <tr class="header-cell text-center" style="font-size: 9pt;">
-                <th style="width: 28pt;">No.</th>
-                <th style="width: 130pt;">Brand/Style</th>
-                <th style="width: 82pt;">PLM ID</th>
-                <th style="width: 40pt;">LOT</th>
-                <th style="width: 98pt;">Item No</th>
-                <th style="width: 160pt;">Item Name</th>
-                <th style="width: 138pt;">Composition</th>
-                <th style="width: 120pt;">Construction</th>
-                <th style="width: 70pt;">Weave</th>
-                <th style="width: 52pt;">Full<br>Width</th>
-                <th style="width: 52pt;">Cutt<br>Width</th>
-                <th style="width: 48pt;">Weight</th>
-                <th style="width: 72pt;">Process</th>
-                <th style="width: 72pt;">Finish</th>
-                <th style="width: 78pt;">HS Code</th>
-                <th style="width: 70pt;">Quantity</th>
-                <th style="width: 66pt;">Price</th>
-                <th style="width: 38pt;">UOM</th>
-                <th style="width: 92pt;">TTL Value</th>
-                <th style="width: 64pt;">Remarks</th>
+                <th style="width: 1.90%;">No.</th>
+                <th style="width: 10.00%;">Brand/Style</th>
+                <th style="width: 6.50%;">PLM ID<br>Item No</th>
+                <th style="width: 1.80%;">LOT</th>
+                <th style="width: 19.00%;">Item Name</th>
+                <th style="width: 5.50%;">Composition</th>
+                <th style="width: 5.50%;">Construction</th>
+                <th style="width: 3.20%;">Weave</th>
+                <th style="width: 3.30%;">Full<br>Width</th>
+                <th style="width: 3.30%;">Cutt<br>Width</th>
+                <th style="width: 3.40%;">Weight</th>
+                <th style="width: 3.40%;">Process</th>
+                <th style="width: 3.00%;">Finish</th>
+                <th style="width: 4.40%;">HS Code</th>
+                <th style="width: 4.20%;">Quantity</th>
+                <th style="width: 4.60%;">Price</th>
+                <th style="width: 2.20%;">UOM</th>
+                <th style="width: 6.50%;">TTL Value</th>
+                <th style="width: 8.30%;">Remarks</th>
             </tr>
         </thead>
         <tbody>
@@ -231,27 +325,29 @@
                     $uom = $line->uom_snapshot ?? $line->fabricItem?->uom ?? 'MTR';
                     $uomTotals[$uom] = ($uomTotals[$uom] ?? 0) + $q;
                 @endphp
-                <tr style="font-size: 8.5pt;">
+                <tr style="font-size: 8pt;">
                     <td class="text-center">{{ $line->line_no }}</td>
-                    <td>{{ $line->plmRef?->article_name ?? $line->plm_article_name_snapshot ?? '' }}</td>
-                    <td>{{ $line->plm_id_snapshot }}</td>
-                    <td class="text-center">{{ $line->deliveries->first()?->lot?->label ?? $line->deliveries->first()?->lot?->code ?? '' }}</td>
-                    <td class="fw-bold">{{ $line->item_number_snapshot }}</td>
-                    <td>{{ $line->item_name_snapshot }}</td>
-                    <td>{{ $line->fabricItem?->composition }}</td>
-                    <td>{{ $line->fabricItem?->construction }}</td>
-                    <td>{{ $line->fabricItem?->weave }}</td>
-                    <td class="text-center">{{ $line->fabricItem?->full_width }}</td>
-                    <td class="text-center">{{ $line->fabricItem?->cut_width }}</td>
-                    <td class="text-center">{{ $line->fabricItem?->weight_gsm ? $line->fabricItem->weight_gsm . ' GSM' : '' }}</td>
-                    <td>{{ $line->fabricItem?->process }}</td>
-                    <td>{{ $line->fabricItem?->finish }}</td>
-                    <td>{{ $line->hs_code_snapshot }}</td>
+                    <td style="word-break: break-word;">{{ $line->plmRef?->article_name ?? $line->plm_article_name_snapshot ?? '' }}</td>
+                    <td class="text-center" style="white-space: nowrap; font-size: 7.5pt; padding: 2pt 1pt;">
+                        <div>{{ $line->plm_id_snapshot }}</div>
+                        <div class="fw-bold" style="margin-top: 2pt;">{{ $line->item_number_snapshot }}</div>
+                    </td>
+                    <td class="text-center" style="white-space: nowrap;">{{ $line->lot_snapshot ? str_replace('Lot ', '', $line->lot_snapshot) : ($line->lot?->label ?? $line->lot?->code ?? ($line->deliveries->first()?->lot?->label ?? $line->deliveries->first()?->lot?->code ?? '')) }}</td>
+                    <td style="word-break: break-word;">{{ $line->item_name_snapshot }}</td>
+                    <td class="text-center" style="word-break: break-word;">{{ $line->resolved_composition ?? $line->fabricItem?->composition }}</td>
+                    <td class="text-center" style="white-space: nowrap;">{{ $line->resolved_construction ?? $line->fabricItem?->construction }}</td>
+                    <td class="text-center">{{ $line->resolved_weave ?? $line->fabricItem?->weave }}</td>
+                    <td class="text-center" style="white-space: nowrap;">{{ $line->resolved_full_width ?? $line->fabricItem?->full_width }}</td>
+                    <td class="text-center" style="white-space: nowrap;">{{ $line->resolved_cut_width ?? $line->fabricItem?->cut_width }}</td>
+                    <td class="text-center" style="white-space: nowrap;">{{ $line->resolved_weight ?? ($line->fabricItem?->weight_gsm ? $line->fabricItem->weight_gsm . ' GSM' : '') }}</td>
+                    <td class="text-center">{{ $line->resolved_process ?? $line->fabricItem?->process }}</td>
+                    <td class="text-center">{{ $line->resolved_finish ?? $line->fabricItem?->finish }}</td>
+                    <td class="text-center" style="white-space: nowrap;">{{ $line->hs_code_snapshot ? \App\Models\HsCode::formatCode($line->hs_code_snapshot) : '—' }}</td>
                     <td class="text-right fw-bold">{{ number_format($q, $q == (int)$q ? 0 : 2) }}</td>
-                    <td class="text-right">{{ $currencySymbol }} {{ number_format($p, 2) }}</td>
+                    <td class="text-right" style="white-space: nowrap;">{{ $currencySymbol }}&nbsp;{{ number_format($p, 2) }}</td>
                     <td class="text-center">{{ $uom }}</td>
-                    <td class="text-right fw-bold">{{ $currencySymbol }} {{ number_format($lineTotal, 2) }}</td>
-                    <td>{{ $line->remarks }}</td>
+                    <td class="text-right fw-bold" style="white-space: nowrap; font-size: 7.5pt;">{{ $currencySymbol }}&nbsp;{{ number_format($lineTotal, 2) }}</td>
+                    <td style="word-break: break-word; font-size: 7.5pt;">{{ $line->remarks }}</td>
                 </tr>
             @endforeach
         </tbody>
@@ -267,29 +363,31 @@
         $vatCode = $snap['vat_treatment_code'] ?? $contract->vatTreatment?->code ?? 'EXCLUDE';
         $vatLabel = $vatCode === 'INCLUDE' ? "INCLUDE (PPN " . ($snap['vat_rate'] ?? $contract->vat_rate ?? 11) . "%)" : "EXCLUDE";
     @endphp
-    <table class="tbl-grid" style="width: 1570pt; margin-top: -0.75pt; margin-bottom: 8pt;">
+    <table class="tbl-grid" style="width: 1570pt; margin-top: -0.75pt; margin-bottom: 8pt; table-layout: fixed;">
+        <colgroup>
+            <col style="width: 74.20%;">
+            <col style="width: 4.20%;">
+            <col style="width: 6.80%;">
+            <col style="width: 6.50%;">
+            <col style="width: 8.30%;">
+        </colgroup>
         <tr>
-            <td class="header-cell text-right" style="width: 1210pt;">TOTAL QUANTITY</td>
-            <td class="text-right fw-bold" style="width: 70pt; font-size: 9.5pt;">
-                {{ $qtySummaryText }}
-            </td>
-            <td style="width: 104pt;"></td>
-            <td class="text-right fw-bold" style="width: 92pt; font-size: 9.5pt;">
-                {{ $currencySymbol }} {{ number_format($totalVal, 2) }}
-            </td>
-            <td style="width: 94pt;"></td>
+            <td class="header-cell text-right fw-bold" style="width: 74.20%;">TOTAL QUANTITY</td>
+            <td class="text-right fw-bold" style="width: 4.20%; font-size: 9pt;">{{ $qtySummaryText }}</td>
+            <td style="width: 6.80%;"></td>
+            <td style="width: 6.50%;"></td>
+            <td style="width: 8.30%;"></td>
         </tr>
         <tr>
-            <td class="header-cell text-right">TOTAL VALUE</td>
-            <td colspan="4" class="fw-bold" style="font-size: 10pt;">
-                {{ $currencySymbol }} {{ number_format($totalVal, 2) }}
-            </td>
+            <td class="header-cell text-right fw-bold" style="width: 74.20%;">TOTAL VALUE</td>
+            <td style="width: 4.20%;"></td>
+            <td style="width: 6.80%;"></td>
+            <td class="text-right fw-bold" style="width: 6.50%; font-size: 9pt; white-space: nowrap;">{{ $currencySymbol }}&nbsp;{{ number_format($totalVal, 2) }}</td>
+            <td style="width: 8.30%;"></td>
         </tr>
         <tr>
-            <td class="header-cell text-right">VAT/PPN</td>
-            <td colspan="4" class="fw-bold">
-                {{ $vatLabel }}
-            </td>
+            <td class="header-cell text-right fw-bold" style="width: 74.20%;">VAT/PPN</td>
+            <td colspan="4" class="fw-bold" style="font-size: 9pt; width: 25.80%;">{{ $vatLabel }}</td>
         </tr>
     </table>
 
@@ -300,7 +398,7 @@
         </tr>
         <tr>
             <td style="padding: 5pt 8pt; font-size: 8.5pt; line-height: 1.3;">
-                @forelse ($contract->notes as $note)
+                @forelse ($contract->notes->sortBy('clause_number') as $note)
                     <div style="margin-bottom: 2pt;" class="{{ in_array($note->clause_number, [7, 8, 9]) || $note->emphasis ? 'text-red' : '' }}">
                         {{ $note->clause_number }}. {{ $note->body }}
                     </div>
@@ -314,11 +412,12 @@
                     <div style="margin-bottom: 2pt;" class="text-red">7. ANY LATE TIMELINE/DELIVERY FROM COMMITMENT - AIR SHIPMENT MAY APPLY</div>
                     <div style="margin-bottom: 2pt;" class="text-red">8. SHIPMENT TOLERANCE TO BE FOLLOWED. SHORTAGE MORE THAN DECLARED % - ACCESSORIES AND OR OTHER RELATED TRIMMING CLAIM WILL APPLY</div>
                     <div style="margin-bottom: 2pt;" class="text-red">9. THIS CONTRACT IS ONLY VALID AFTER QUALITY IS APPROVED ONLY</div>
+                    @if($contract->additional_notes)
+                        <div style="margin-bottom: 2pt;">10. {{ trim($contract->additional_notes) }}</div>
+                    @endif
                 @endforelse
-                @if($contract->internal_remarks)
-                    <div style="margin-top: 4pt; font-style: italic;">
-                        Special Instructions: {{ $contract->internal_remarks }}
-                    </div>
+                @if($contract->notes->isNotEmpty() && $contract->additional_notes && !$contract->notes->contains('body', trim($contract->additional_notes)))
+                    <div style="margin-bottom: 2pt;">{{ ($contract->notes->max('clause_number') ?? 9) + 1 }}. {{ trim($contract->additional_notes) }}</div>
                 @endif
             </td>
         </tr>
@@ -361,53 +460,103 @@
 
     {{-- Electronic Signatures Block --}}
     @php
-        $preparedName = $contract->creator?->name ?? 'Leon Oscar';
+        $preparedName = $contract->creator?->name ?? 'Fabric Admin';
+        $preparedEmail = $contract->creator?->email ?? '';
         $preparedAt = $contract->created_at ? \Carbon\Carbon::parse($contract->created_at)->timezone('Asia/Jakarta')->format('d-m-Y H:i') . ' WIB' : '—';
-        $approvedName = $contract->approver?->name ?? ($isApprovedOrConfirmed ? 'Aslam Akbany' : 'Pending Approval');
-        $approvedAt = $contract->approval_decision_at ? \Carbon\Carbon::parse($contract->approval_decision_at)->timezone('Asia/Jakarta')->format('d-m-Y H:i') . ' WIB' : ($isApprovedOrConfirmed ? 'Approved' : '—');
+
+        $isApproved = !empty($contract->approval_decision_at) || $isApprovedOrConfirmed;
+        $approvedName = $contract->approver?->name ?? ($isApproved ? 'Aslam Akbany' : 'Pending Approval');
+        $approvedEmail = $contract->approver?->email ?? '';
+        $approvedAt = $contract->approval_decision_at ? \Carbon\Carbon::parse($contract->approval_decision_at)->timezone('Asia/Jakarta')->format('d-m-Y H:i') . ' WIB' : ($isApproved ? 'Approved' : '—');
+
         $isConfirmed = $contract->status === \App\Models\PcContract::STATUS_CONFIRMED;
         $vendorName = $snap['vendor_name'] ?? $contract->vendor?->name ?? 'Supplier';
+        $vendorEmail = $contract->vendorUser?->email ?? (is_array($contract->vendor?->contact_info) ? ($contract->vendor->contact_info['email'] ?? '') : '');
         $vendorAt = $contract->vendor_decision_at ?? $contract->confirmed_at;
-        $vendorConfirmedAt = $vendorAt ? \Carbon\Carbon::parse($vendorAt)->timezone('Asia/Jakarta')->format('d-m-Y H:i') . ' WIB' : ($isConfirmed ? 'Confirmed' : 'Pending Supplier');
+        $vendorConfirmedAt = $vendorAt ? \Carbon\Carbon::parse($vendorAt)->timezone('Asia/Jakarta')->format('d-m-Y H:i') . ' WIB' : ($isConfirmed ? 'Confirmed' : '—');
     @endphp
-    <table class="tbl-grid" style="width: 1570pt; margin-bottom: 8pt; font-size: 9pt;">
+    <table class="tbl-grid" style="width: 1570pt; margin-bottom: 8pt; font-size: 9pt; table-layout: fixed;">
+        <colgroup>
+            <col style="width: 8.28%;">
+            <col style="width: 30.57%;">
+            <col style="width: 30.57%;">
+            <col style="width: 30.58%;">
+        </colgroup>
         <tr class="header-cell text-center">
-            <th style="width: 90pt;"></th>
-            <th style="width: 490pt;">Prepared</th>
-            <th style="width: 490pt;">Approved</th>
-            <th style="width: 500pt;">Supplier</th>
+            <th style="width: 8.28%;"></th>
+            <th style="width: 30.57%;">Prepared</th>
+            <th style="width: 30.57%;">Approved</th>
+            <th style="width: 30.58%;">Supplier</th>
         </tr>
         <tr>
-            <td class="header-cell fw-bold text-center" style="height: 48pt; vertical-align: middle;">SIGNATURE</td>
-            <td class="text-center" style="vertical-align: middle;">
-                <div style="color: #198754; font-weight: bold; font-size: 9.5pt;">[ Prepared electronically ]</div>
+            <td class="header-cell fw-bold text-center" style="height: 52pt; vertical-align: middle;">SIGNATURE</td>
+            <td class="text-center" style="vertical-align: middle; height: 52pt; padding: 5pt 6pt;">
+                <div class="sig-badge-signed">
+                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 9pt; height: 9pt; margin-right: 3.5pt; vertical-align: middle; margin-top: -1.5pt; display: inline-block;">
+                    Digitally Signed
+                </div>
+                @if($preparedEmail)
+                    <div class="sig-email">{{ $preparedEmail }}</div>
+                @endif
             </td>
-            <td class="text-center" style="vertical-align: middle;">
+            <td class="text-center" style="vertical-align: middle; height: 52pt; padding: 5pt 6pt;">
                 @if($contract->approval_decision_at || $isApprovedOrConfirmed)
-                    <div style="color: #198754; font-weight: bold; font-size: 9.5pt;">[ Approved electronically ]</div>
+                    <div class="sig-badge-signed">
+                        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 9pt; height: 9pt; margin-right: 3.5pt; vertical-align: middle; margin-top: -1.5pt; display: inline-block;">
+                        Digitally Signed
+                    </div>
+                    @if($approvedEmail)
+                        <div class="sig-email">{{ $approvedEmail }}</div>
+                    @endif
+                @elseif($contract->status === \App\Models\PcContract::STATUS_REJECTED)
+                    <div class="sig-badge-rejected">
+                        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAY0lEQVR4nJWQ0Q0AIQhDxQluKJnaoWSDd18mnKDxSPigtKRFgPKn6i3RVAmCCe7IpkrNwN2Rp3epfjiJ517W0JktfyyE9stsDoJThiDIPK94+JInZ6JPaFNl9RxsAVc9WgMoL8rWaChiYc43AAAAAElFTkSuQmCC" style="width: 9pt; height: 9pt; margin-right: 3.5pt; vertical-align: middle; margin-top: -1.5pt; display: inline-block;">
+                        Rejected
+                    </div>
                 @else
-                    <div style="color: #999; font-style: italic;">[ Awaiting Approval ]</div>
+                    <div class="sig-badge-pending">Awaiting Approval</div>
                 @endif
             </td>
-            <td class="text-center" style="vertical-align: middle;">
+            <td class="text-center" style="vertical-align: middle; height: 52pt; padding: 5pt 6pt;">
                 @if($isConfirmed)
-                    <div style="color: #198754; font-weight: bold; font-size: 9.5pt;">[ Accepted electronically ]</div>
+                    <div class="sig-badge-signed">
+                        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAYAAABWdVznAAAAXklEQVR4nGP8//8/AymAiSTVxGoQ3NUEdwZBDTDFMJpoJ713q2MkqAHZKVidhKwAmQ0znYGBgYERFqzYTENXjGIDugQuMSZCCjDA////MbDAzsb/2MT///+P8AOxAAA4NkZ/eAqFBQAAAABJRU5ErkJggg==" style="width: 9pt; height: 9pt; margin-right: 3.5pt; vertical-align: middle; margin-top: -1.5pt; display: inline-block;">
+                        Digitally Signed
+                    </div>
+                    @if($vendorEmail)
+                        <div class="sig-email">{{ $vendorEmail }}</div>
+                    @endif
+                @elseif($contract->status === \App\Models\PcContract::STATUS_SUPPLIER_QUERIED)
+                    <div class="sig-badge-queried">Queried by Supplier</div>
                 @else
-                    <div style="color: #999; font-style: italic;">[ Pending Supplier Acceptance ]</div>
+                    <div class="sig-badge-pending">Pending Supplier Acceptance</div>
                 @endif
             </td>
         </tr>
         <tr>
-            <td class="header-cell fw-bold text-center" style="vertical-align: middle;">NAME</td>
-            <td class="text-center fw-bold">{{ $preparedName }}</td>
-            <td class="text-center fw-bold">{{ $approvedName }}</td>
-            <td class="text-center fw-bold">{{ $vendorName }}</td>
+            <td class="header-cell fw-bold text-center" style="vertical-align: middle; padding: 5pt 4pt;">NAME</td>
+            <td class="text-center" style="padding: 5pt 4pt; vertical-align: middle;">
+                <div class="fw-bold" style="font-size: 9.5pt; color: #0F172A;">{{ $preparedName }}</div>
+                <div class="sig-role">Fabric Merchandiser</div>
+            </td>
+            <td class="text-center" style="padding: 5pt 4pt; vertical-align: middle;">
+                @if($contract->approval_decision_at || $isApprovedOrConfirmed)
+                    <div class="fw-bold" style="font-size: 9.5pt; color: #0F172A;">{{ $approvedName }}</div>
+                @else
+                    <div style="font-size: 9pt; color: #475569; font-style: italic; font-weight: 600;">Pending Approval</div>
+                @endif
+                <div class="sig-role">Head of Fabric</div>
+            </td>
+            <td class="text-center" style="padding: 5pt 4pt; vertical-align: middle;">
+                <div class="fw-bold" style="font-size: 9.5pt; color: #0F172A;">{{ $vendorName }}</div>
+                <div class="sig-role">Authorized Supplier Representative</div>
+            </td>
         </tr>
         <tr>
-            <td class="header-cell fw-bold text-center" style="vertical-align: middle;">DATE</td>
-            <td class="text-center">{{ $preparedAt }}</td>
-            <td class="text-center">{{ $approvedAt }}</td>
-            <td class="text-center">{{ $vendorConfirmedAt }}</td>
+            <td class="header-cell fw-bold text-center" style="vertical-align: middle; padding: 4pt;">DATE</td>
+            <td class="text-center" style="padding: 4pt; font-size: 9pt; color: #1E293B;">{{ $preparedAt }}</td>
+            <td class="text-center" style="padding: 4pt; font-size: 9pt; color: #1E293B;">{{ $approvedAt }}</td>
+            <td class="text-center" style="padding: 4pt; font-size: 9pt; color: #1E293B;">{{ $vendorConfirmedAt }}</td>
         </tr>
     </table>
 

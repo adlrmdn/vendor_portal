@@ -80,13 +80,25 @@ class PcFdrLookupService
         try {
             $token = $this->getD365Token();
             if ($token) {
-                $filter = "ItemId eq '{$itemNumber}' and VendAccountLines eq '{$vendorCode}'";
+                $filter = "ItemId eq '{$itemNumber}'";
+                if (! empty($vendorCode)) {
+                    $filter .= " and VendAccountLines eq '{$vendorCode}'";
+                }
                 $url = $this->getResource()."/data/TOC_FDRs?\$filter=".rawurlencode($filter).'&cross-company=true';
 
                 $response = Http::withToken($token)->acceptJson()->timeout(15)->get($url);
 
-                if ($response->successful()) {
-                    $rows = $response->json()['value'] ?? [];
+                $rows = $response->successful() ? ($response->json()['value'] ?? []) : [];
+                // If vendor-specific lookup yielded nothing, try item-wide
+                if (empty($rows) && ! empty($vendorCode)) {
+                    $urlFallback = $this->getResource()."/data/TOC_FDRs?\$filter=".rawurlencode("ItemId eq '{$itemNumber}'").'&cross-company=true';
+                    $fallbackResp = Http::withToken($token)->acceptJson()->timeout(15)->get($urlFallback);
+                    if ($fallbackResp->successful()) {
+                        $rows = $fallbackResp->json()['value'] ?? [];
+                    }
+                }
+
+                if (! empty($rows)) {
                     // Prefer a Completed/Approve line if more than one matches.
                     usort($rows, fn ($a, $b) => ($b['ApprovalLines'] === 'Approve' ? 1 : 0) <=> ($a['ApprovalLines'] === 'Approve' ? 1 : 0));
                     $row = $rows[0] ?? null;
@@ -96,6 +108,7 @@ class PcFdrLookupService
                             'fdr_number' => $row['TOC_FDR_IdLines'] ?? $row['TOC_FDR_Id'] ?? '',
                             'composition' => $row['Composition'] ?? null,
                             'construction' => $row['Construction'] ?? null,
+                            'weave' => $row['Weaving'] ?? null,
                             'cut_width' => $row['CutWidth'] ?? null,
                             'full_width' => $row['FullWidth'] ?? null,
                             'fabric_weight' => $row['FabricWeight'] ?? null,
@@ -107,7 +120,7 @@ class PcFdrLookupService
                             'currency' => $row['Currency'] ?? null,
                         ];
                     }
-                } else {
+                } elseif (! $response->successful()) {
                     Log::warning('PC FDR lookup failed. Status: '.$response->status());
                 }
             }

@@ -96,77 +96,88 @@
 </div>
 
 {{-- Recent Contracts Card --}}
-<div class="card mb-4 border">
-    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
-        <h5 class="mb-0 fw-bold fs-6">
-            <i class="fas fa-file-contract text-primary me-2"></i>Recent Preliminary Contracts
-        </h5>
-        <a href="{{ route('admin.pc.contracts.index') }}" class="btn btn-sm btn-outline-primary">
-            View All <i class="fas fa-arrow-right ms-1"></i>
+<div class="apple-card apple-table-container mb-4">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 p-3 border-bottom" style="border-color: #ebebf0 !important;">
+        <div>
+            <h5 class="mb-0 fw-bold fs-6 text-dark">Recent Preliminary Contracts</h5>
+            <span class="small text-muted">Latest procurement contracts across all fabric suppliers</span>
+        </div>
+        <a href="{{ route('admin.pc.contracts.index') }}" class="apple-header-link">
+            <span>View All Contracts</span>
+            <i class="fas fa-chevron-right" style="font-size: 0.7rem;"></i>
         </a>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-                <thead class="table-light">
-                    <tr>
-                        <th class="ps-3" style="width: 25%;">Contract Details</th>
-                        <th style="width: 25%;">Vendor</th>
-                        <th style="width: 15%;">Season</th>
-                        <th class="text-center" style="width: 10%;">Lines</th>
-                        <th style="width: 15%;">Status</th>
-                        <th class="text-end pe-3" style="width: 10%;">Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @forelse ($recentContracts as $contract)
-                        <tr>
-                            <td class="ps-3">
+    <div class="table-responsive">
+        <table class="table apple-table mb-0">
+            <thead>
+                <tr>
+                    <th style="width: 28%;">Contract Details</th>
+                    <th style="width: 25%;">Vendor</th>
+                    <th style="width: 15%;">Season</th>
+                    <th class="text-center" style="width: 10%;">Lines</th>
+                    <th style="width: 14%; text-align: center;">Status</th>
+                    <th class="text-end pe-3" style="width: 8%;">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                @forelse ($recentContracts as $contract)
+                    <tr class="apple-table-row">
+                        <td>
+                            <div class="d-flex flex-column gap-1">
                                 <div class="fw-bold text-dark">
-                                    {{ $contract->contract_number ?? 'Draft (Not Assigned)' }}
+                                    <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="apple-po-number">
+                                        {{ $contract->contract_number ?? 'Draft (Not Assigned)' }}
+                                    </a>
                                     @if($contract->revision_no > 0)
-                                        <span class="badge bg-secondary-subtle text-secondary ms-1">REV {{ $contract->revision_no }}</span>
+                                        <span class="badge bg-secondary-subtle text-secondary ms-1 px-2 py-0" style="font-size: 0.72rem; border-radius: 4px;">REV {{ $contract->revision_no }}</span>
                                     @endif
                                 </div>
                                 <div class="small text-muted">
                                     Created {{ $contract->created_at ? $contract->created_at->format('d M Y, H:i') : '—' }}
                                 </div>
-                            </td>
-                            <td>
-                                <div class="fw-semibold text-dark">{{ $contract->vendor->name ?? '—' }}</div>
-                                <div class="small text-muted">{{ $contract->vendor->code ?? '' }}</div>
-                            </td>
-                            <td>
-                                <span class="badge bg-light text-dark border">
-                                    {{ $contract->season->name ?? $contract->season->code ?? '—' }}
-                                </span>
-                            </td>
-                            <td class="text-center">
-                                <span class="badge bg-secondary rounded-pill">{{ $contract->lines_count ?? 0 }}</span>
-                            </td>
-                            <td>
-                                @include('admin.pc.partials.status-pill', ['status' => $contract->status])
-                            </td>
-                            <td class="text-end pe-3">
-                                <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="btn btn-sm btn-outline-primary">
-                                    View <i class="fas fa-chevron-right ms-1"></i>
-                                </a>
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="6" class="text-center py-5 text-muted">
-                                <i class="fas fa-folder-open fa-2x mb-2 text-secondary opacity-50"></i>
-                                <div>No preliminary contracts recorded yet.</div>
-                                <a href="{{ route('admin.pc.contracts.create') }}" class="btn btn-sm btn-primary mt-2">
+                            </div>
+                        </td>
+                        <td>
+                            <div class="fw-semibold text-dark">{{ $contract->vendor->name ?? '—' }}</div>
+                            <div class="small text-muted">{{ $contract->vendor->code ?? '' }}</div>
+                        </td>
+                        <td>
+                            <span class="apple-sub-tag pc-tag">
+                                {{ $contract->season->name ?? $contract->season->code ?? '—' }}
+                            </span>
+                        </td>
+                        <td class="text-center">
+                            <span class="apple-count-pill" style="padding: 2px 8px; font-size: 0.75rem;">{{ $contract->lines_count ?? 0 }} lines</span>
+                        </td>
+                        <td class="text-center">
+                            @include('admin.pc.partials.status-pill', ['status' => $contract->status])
+                        </td>
+                        <td class="text-end pe-3">
+                            <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="apple-action-btn apple-action-view" title="View Contract">
+                                <i class="fas fa-arrow-right"></i>
+                            </a>
+                        </td>
+                    </tr>
+                @empty
+                    <tr>
+                        <td colspan="6" class="py-5 text-center">
+                            <div class="apple-empty-state">
+                                <div class="apple-empty-icon-circle mb-3">
+                                    <i class="fas fa-folder-open fa-2x"></i>
+                                </div>
+                                <h4 class="apple-empty-title">No Contracts Recorded Yet</h4>
+                                <p class="apple-empty-desc">
+                                    There are no preliminary contracts in the pipeline yet.
+                                </p>
+                                <a href="{{ route('admin.pc.contracts.create') }}" class="apple-btn-primary mt-2">
                                     <i class="fas fa-plus me-1"></i> Create First Contract
                                 </a>
-                            </td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
-        </div>
+                            </div>
+                        </td>
+                    </tr>
+                @endforelse
+            </tbody>
+        </table>
     </div>
 </div>
 

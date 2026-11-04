@@ -64,6 +64,7 @@ class SubconFabricLinePublisher
             $hasPrice = Schema::connection('qms')->hasColumn(self::TABLE, 'fabric_price');
             $hasDed = Schema::connection('qms')->hasColumn(self::TABLE, 'deduction');
             $hasGoodsReceive = Schema::connection('qms')->hasColumn(self::TABLE, 'goods_receive');
+            $hasShortage = Schema::connection('qms')->hasColumn(self::TABLE, 'shortage');
 
             $lines = $this->production->fabricLinesWithData($order);
             // Labels actually backed by a local reconciliation row — used below to
@@ -115,6 +116,9 @@ class SubconFabricLinePublisher
                 if ($hasGoodsReceive) {
                     $vals['goods_receive'] = $f['goods_receive'] !== null ? round((float) $f['goods_receive'], 2) : null;
                     $vals['goods_receive_date'] = $f['goods_receive_date'] ?? null;
+                }
+                if ($hasShortage) {
+                    $vals['shortage'] = round((float) ($f['shortage'] ?? 0), 2);
                 }
 
                 if ($exists) {

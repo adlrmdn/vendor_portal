@@ -16,6 +16,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::connection('vsm')->hasColumn('subcon_daily_production_entries', 'ratio_label')) {
+            return;
+        }
+
         Schema::connection('vsm')->table('subcon_daily_production_entries', function (Blueprint $table) {
             $table->string('ratio_label')->default('')->after('stage');
         });

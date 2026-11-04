@@ -1,33 +1,37 @@
-{{-- PC Audit Log tab-pane content. Data from PcController::index(). --}}
-<h1 class="pc-h1 mb-4"><i class="fas fa-clipboard-list me-2"></i>PC Audit Log</h1>
-
-<div class="pc-card">
-    <div class="pc-card-body">
-        <table class="pc-table mb-0">
+{{-- PC Audit Log tab-pane content --}}
+<div class="apple-card mb-4">
+    <div class="apple-card-header">
+        <div class="apple-card-title">
+            <i class="fas fa-clipboard-list text-info"></i>
+            <span>PC Audit Log</span>
+        </div>
+        <span class="small text-muted">Immutable trail of contract submissions, approvals, revisions, and cancellations</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table apple-table mb-0">
             <thead>
                 <tr>
-                    <th>When</th>
+                    <th class="ps-3">When</th>
                     <th>Actor</th>
                     <th>Role</th>
                     <th>Event</th>
                     <th>Entity</th>
-                    <th>Note</th>
+                    <th class="pe-3">Note</th>
                 </tr>
             </thead>
             <tbody>
-                @foreach ($logs as $log)
-                    <tr>
-                        <td>{{ $log->created_at->timezone('Asia/Jakarta')->format('d M Y H:i') }}</td>
-                        <td>{{ $log->actor }}</td>
-                        <td>{{ $log->actor_role }}</td>
-                        <td><span class="pc-pill pc-pill-neutral">{{ $log->event_type }}</span></td>
-                        <td>{{ $log->entity_label }}</td>
-                        <td>{{ $log->note }}</td>
+                @forelse ($logs as $log)
+                    <tr class="apple-table-row">
+                        <td class="ps-3 fw-semibold">{{ $log->created_at->timezone('Asia/Jakarta')->format('d M Y H:i') }}</td>
+                        <td class="text-dark">{{ $log->actor }}</td>
+                        <td><span class="badge bg-light text-dark border">{{ $log->actor_role }}</span></td>
+                        <td><span class="apple-pill-status pill-neutral">{{ $log->event_type }}</span></td>
+                        <td class="fw-medium text-dark">{{ $log->entity_label }}</td>
+                        <td class="pe-3 text-muted small">{{ $log->note }}</td>
                     </tr>
-                @endforeach
-                @if ($logs->isEmpty())
+                @empty
                     <tr><td colspan="6" class="text-center text-muted py-4">No audit entries yet.</td></tr>
-                @endif
+                @endforelse
             </tbody>
         </table>
     </div>

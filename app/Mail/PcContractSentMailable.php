@@ -26,7 +26,18 @@ class PcContractSentMailable extends Mailable
 
     public function __construct(PcContract $contract)
     {
-        $this->contract = $contract;
+        $this->contract = $contract->loadMissing([
+            'vendor',
+            'currency',
+            'paymentTerm',
+            'deliveryTerm',
+            'transportMode',
+            'season',
+            'lines.hsCode',
+            'deliveries',
+            'notes',
+            'files',
+        ]);
         $this->viewUrl = route('vendor.pc.contracts.show', $contract);
     }
 
@@ -35,7 +46,7 @@ class PcContractSentMailable extends Mailable
         $label = $this->contract->contract_number ?? 'a new Preliminary Contract';
 
         return new Envelope(
-            subject: "Preliminary Contract {$label} — Review Requested",
+            subject: "[ACTION REQUIRED] Preliminary Contract Review: {$label} — PT Mega Perintis Tbk",
         );
     }
 
@@ -44,5 +55,30 @@ class PcContractSentMailable extends Mailable
         return new Content(
             view: 'emails.pc-contract-sent',
         );
+    }
+
+    /**
+     * Attach the approved contract PDF directly to the email for immediate review.
+     *
+     * @return array<int, \Illuminate\Mail\Mailables\Attachment>
+     */
+    public function attachments(): array
+    {
+        $pdfFile = $this->contract->files()
+            ->where('file_type', 'contract_pdf')
+            ->latest('generated_at')
+            ->first();
+
+        if ($pdfFile && \Illuminate\Support\Facades\Storage::disk($pdfFile->disk)->exists($pdfFile->path)) {
+            $filename = str_replace(['/', '\\'], '_', (string) ($this->contract->contract_number ?: 'Preliminary_Contract')) . '.pdf';
+
+            return [
+                \Illuminate\Mail\Mailables\Attachment::fromStorageDisk($pdfFile->disk, $pdfFile->path)
+                    ->as($filename)
+                    ->withMime('application/pdf'),
+            ];
+        }
+
+        return [];
     }
 }

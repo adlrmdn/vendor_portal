@@ -87,11 +87,13 @@ class PcController extends Controller
         $isApprover = $user->isAdmin() || PcAdminController::isPcApproverUser($user);
 
         $totpQrSvg = null;
+        $totpSecret = null;
         if ($isApprover && ! $user->totp_confirmed_at) {
             if (! $user->totp_secret) {
                 $user->totp_secret = $this->totp->generateSecretKey();
                 $user->save();
             }
+            $totpSecret = $user->totp_secret;
             $totpQrSvg = $this->totp->qrCodeSvg($user->email, $user->totp_secret);
         }
 
@@ -126,6 +128,7 @@ class PcController extends Controller
             'isApprover' => $isApprover,
             'totpConfirmed' => (bool) $user->totp_confirmed_at,
             'totpQrSvg' => $totpQrSvg,
+            'totpSecret' => $totpSecret,
         ]);
     }
 }

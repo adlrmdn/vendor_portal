@@ -36,7 +36,8 @@ class PcContractNumberService
                 // insert fail instead of duplicate — catch that and just
                 // re-select (with the lock) the winner's row.
                 try {
-                    $seq = PcNumberSequence::create(['doc_type' => $docType, 'year_yy' => $yy, 'last_number' => 0]);
+                    $initial = ($yy === '26') ? 449 : 0;
+                    $seq = PcNumberSequence::create(['doc_type' => $docType, 'year_yy' => $yy, 'last_number' => $initial]);
                 } catch (\Throwable $e) {
                     // fall through to the re-select below
                 }

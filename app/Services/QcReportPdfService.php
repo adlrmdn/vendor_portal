@@ -350,6 +350,21 @@ class QcReportPdfService
             Log::warning('QC report PDF: fabric lines read failed', ['error' => $e->getMessage()]);
         }
 
+        // Enrichment-only properties — the block below only sets these when
+        // $subcon resolves AND $summaryOnly is false; a project with no
+        // matching local SubconOrder (or a summary-only render) skipped it
+        // entirely, leaving inspection-report-body.blade.php's direct (non-??)
+        // reads of $f->issue_consumption/issue_proposal/issue_all_posted throw
+        // "Undefined property" and the whole PDF render fail. Defaulted here,
+        // unconditionally, so every fabric line always has them regardless of
+        // whether enrichment below actually runs.
+        foreach ($fabricLines as $f) {
+            $f->issue_consumption = null;
+            $f->issue_proposal = null;
+            $f->issue_all_posted = true;
+            $f->ordered_qty = null;
+        }
+
         // Resolve the subcon order behind this project (production_group), the
         // same lookup QcApprovalController::subconContext() does — used below to
         // (a) enrich the fabric lines with the D365 inventory group + raw VSM
@@ -1161,7 +1176,7 @@ class QcReportPdfService
 
             if (extension_loaded('imagick')) {
                 try {
-                    $imagick = new \Imagick();
+                    $imagick = new \Imagick;
                     $imagick->setResolution(150, 150);
                     $imagick->readImage($tmpPdf.'[0]');
                     $imagick->setImageFormat('png');

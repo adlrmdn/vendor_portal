@@ -43,7 +43,7 @@ class PcContract extends Model
         'approval_decision', 'approval_decision_at', 'approval_decision_by', 'approval_decision_reason',
         'confirmed_at', 'confirmed_by',
         'cancelled_at', 'cancelled_by', 'cancel_reason',
-        'header_snapshot', 'pdf_generated_at', 'internal_remarks',
+        'header_snapshot', 'pdf_generated_at', 'internal_remarks', 'additional_notes',
     ];
 
     protected $casts = [
@@ -207,6 +207,11 @@ class PcContract extends Model
         return $this->status === self::STATUS_SENT_TO_SUPPLIER;
     }
 
+    public function isPendingVendor(): bool
+    {
+        return $this->isSentToSupplier();
+    }
+
     public function isConfirmed(): bool
     {
         return $this->status === self::STATUS_CONFIRMED;
@@ -241,5 +246,17 @@ class PcContract extends Model
         return $user->isAdmin()
             || $user->id === $this->created_by
             || \App\Http\Controllers\PcAdminController::isPcApproverUser($user);
+    }
+
+    public function isLocalVendor(): bool
+    {
+        if ($this->vendor) {
+            return $this->vendor->isLocal();
+        }
+        $snap = $this->header_snapshot;
+        if (!empty($snap['supplier_country'])) {
+            return strtoupper((string) $snap['supplier_country']) === 'IDN';
+        }
+        return false;
     }
 }

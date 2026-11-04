@@ -27,6 +27,11 @@ class PcContractPdfService
         'RMB' => '¥',
     ];
 
+    public function __construct(private ?PcFdrLookupService $fdrService = null)
+    {
+        $this->fdrService = $fdrService ?? app(PcFdrLookupService::class);
+    }
+
     /**
      * Compute verification code over frozen contract content.
      */
@@ -66,6 +71,52 @@ class PcContractPdfService
             'notes', 'tolerances',
         ]);
 
+        $vendorCode = $contract->vendor?->code ?? '';
+
+        foreach ($contract->lines as $line) {
+            $item = $line->fabricItem;
+            $fdrData = null;
+
+            if ($line->item_number_snapshot) {
+                try {
+                    $fdrData = $this->fdrService->findForItemAndVendor($line->item_number_snapshot, $vendorCode);
+                } catch (\Throwable $e) {
+                    Log::warning("FDR lookup failed for item {$line->item_number_snapshot}: " . $e->getMessage());
+                }
+            }
+
+            $parsed = $this->parseSpecsFromName($line->item_name_snapshot ?? $item?->item_name ?? '');
+
+            $line->resolved_composition = $item?->composition ?: ($fdrData['composition'] ?? null) ?: ($parsed['composition'] ?? null);
+            $line->resolved_construction = $item?->construction ?: ($fdrData['construction'] ?? null) ?: ($parsed['construction'] ?? null);
+            $line->resolved_weave = $item?->weave ?: ($fdrData['weave'] ?? null) ?: ($parsed['weave'] ?? null);
+            $line->resolved_full_width = $item?->full_width ?: ($fdrData['full_width'] ?? null) ?: ($parsed['full_width'] ?? null);
+            $line->resolved_cut_width = $item?->cut_width ?: ($fdrData['cut_width'] ?? null) ?: ($parsed['cut_width'] ?? null);
+            $line->resolved_weight = ($fdrData['fabric_weight'] ?? null) ?: ($parsed['weight'] ?? null) ?: ($item?->weight_gsm ? $item->weight_gsm . ' GSM' : null);
+            $line->resolved_process = ($fdrData['fabric_process'] ?? null) ?: $item?->process ?: ($parsed['process'] ?? null);
+            $line->resolved_finish = ($fdrData['fabric_finishing'] ?? null) ?: $item?->finish ?: ($parsed['finish'] ?? null);
+
+            // Persist populated specs onto PcFabricItem if it exists and was blank
+            if ($item && empty($item->composition) && ! empty($line->resolved_composition)) {
+                try {
+                    $item->composition = $line->resolved_composition;
+                    $item->construction = $line->resolved_construction;
+                    $item->weave = $line->resolved_weave;
+                    $item->full_width = $line->resolved_full_width;
+                    $item->cut_width = $line->resolved_cut_width;
+                    $item->process = $line->resolved_process;
+                    $item->finish = $line->resolved_finish;
+                    if (empty($item->weight_gsm) && ! empty($line->resolved_weight)) {
+                        $num = (float) filter_var($line->resolved_weight, FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
+                        if ($num > 0) {
+                            $item->weight_gsm = $num;
+                        }
+                    }
+                    $item->save();
+                } catch (\Throwable $e) {}
+            }
+        }
+
         $logoBase64 = null;
         $logoPath = public_path('images/pc_mpg_logo.png');
         if (! file_exists($logoPath)) {
@@ -88,12 +139,75 @@ class PcContractPdfService
             'currencySymbol' => $currencySymbol,
             'verificationCode' => $verificationCode,
         ])
-        ->setPaper([0, 0, 1650, 1275], 'landscape')
+        ->setPaper([0, 0, 1650, 1275], 'portrait')
         ->setOption('isRemoteEnabled', true)
         ->setOption('isHtml5ParserEnabled', true)
         ->setOption('defaultFont', 'Helvetica');
 
         return $pdf->output();
+    }
+
+    /**
+     * Fallback parser to extract specification details from fabric item name.
+     */
+    public function parseSpecsFromName(string $name): array
+    {
+        $specs = [
+            'composition' => null,
+            'construction' => null,
+            'weave' => null,
+            'cut_width' => null,
+            'full_width' => null,
+            'weight' => null,
+            'process' => null,
+            'finish' => null,
+        ];
+
+        if (empty($name)) {
+            return $specs;
+        }
+
+        // Composition: e.g. 100% COTTON, 95% COTTON 5% SPANDEX, 100% POLYESTER
+        if (preg_match('/\b(\d+%\s*[A-Z]+(?:\s+\d+%\s*[A-Z]+)*)\b/i', $name, $m)) {
+            $specs['composition'] = trim($m[1]);
+        }
+
+        // Construction: e.g. 40X40/133X72, 7X6/68X48, 21X21/90X64
+        if (preg_match('/\b(\d+[sS]?\s*[xX]\s*\d+[sS]?\s*\/\s*\d+\s*[xX]\s*\d+)\b/', $name, $m)) {
+            $specs['construction'] = strtoupper(trim($m[1]));
+        }
+
+        // Cut width: e.g. 57/58" CW or 56/57" CW or 57/58 CW
+        if (preg_match('/\b(\d{2}(?:\/\d{2})?(?:[\"”\']|\s*inch)?\s*CW)\b/i', $name, $m)) {
+            $specs['cut_width'] = strtoupper(trim($m[1]));
+        }
+
+        // Full width: e.g. 58/59" FW or 57/58" FW
+        if (preg_match('/\b(\d{2}(?:\/\d{2})?(?:[\"”\']|\s*inch)?\s*FW)\b/i', $name, $m)) {
+            $specs['full_width'] = strtoupper(trim($m[1]));
+        }
+
+        // Weight: e.g. 120 GSM, 13 OZ, 180 G/M2
+        if (preg_match('/\b(\d+(?:\.\d+)?\s*(?:GSM|OZ|G\/M2))\b/i', $name, $m)) {
+            $specs['weight'] = strtoupper(trim($m[1]));
+        }
+
+        // Weave: e.g. TWILL 3/1, TWILL, PLAIN, DOBBY, OXFORD, POPLIN, RIB, SATIN, SATEEN
+        if (preg_match('/\b(TWILL\s*\d\/\d|TWILL|PLAIN|DOBBY|OXFORD|POPLIN|RIB|SATIN|SATEEN|JERSEY|HERRINGBONE)\b/i', $name, $m)) {
+            $specs['weave'] = strtoupper(trim($m[1]));
+        }
+
+        // Process: e.g. YARN DYED, PIECE DYED, PRINTED, SOLID, BLEACHED, GREIGE
+        if (preg_match('/\b(YARN\s*DYED|PIECE\s*DYED|PRINT(?:ED)?|SOLID|BLEACHED|GREIGE)\b/i', $name, $m)) {
+            $specs['process'] = strtoupper(trim($m[1]));
+        }
+
+        // Finish: e.g. SOFT, MERCERIZED, PEACH, SILKY, RESIN
+        if (preg_match('/\b(SOFT(?:\s+[A-Z0-9\-]+)?|MERCERIZED|PEACH(?:ED)?|SILKY|RESIN)\b/i', $name, $m)) {
+            $specs['finish'] = strtoupper(trim($m[1]));
+        }
+
+        return $specs;
     }
 
     /**

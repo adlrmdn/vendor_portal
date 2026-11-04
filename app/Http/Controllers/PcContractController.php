@@ -7,7 +7,9 @@ use App\Models\Currency;
 use App\Models\DeliveryTerm;
 use App\Models\HsCode;
 use App\Models\Lot;
+use App\Models\NoteTemplate;
 use App\Models\OrderType;
+use App\Models\PaymentTerm;
 use App\Models\PcAuditLog;
 use App\Models\PcContract;
 use App\Models\PcFabricItem;
@@ -86,11 +88,17 @@ class PcContractController extends Controller
                 $vendor->save();
             }
         }
-        $contract->payment_term_id = $vendor->payment_term_id;
+        $paymentTermId = $data['payment_term_id'] ?? $vendor->payment_term_id;
+        $contract->payment_term_id = $paymentTermId;
+        if ($paymentTermId && ! $vendor->payment_term_id) {
+            $vendor->payment_term_id = $paymentTermId;
+            $vendor->save();
+        }
         $contract->status = PcContract::STATUS_DRAFT;
         $contract->save();
 
         $this->syncLinesAndDeliveries($contract, $request->input('lines', []), $request->input('deliveries', []));
+        $this->syncNotes($contract, $request->input('clauses', []));
 
         $warnings = $this->validator->validateForSave($request->all());
 
@@ -115,7 +123,7 @@ class PcContractController extends Controller
                 ->with('error', 'This contract can no longer be edited as draft.');
         }
 
-        $contract->load(['lines.fabricItem', 'lines.plmRef', 'lines.hsCode', 'deliveries.lot']);
+        $contract->load(['lines.fabricItem', 'lines.plmRef', 'lines.hsCode', 'deliveries.lot', 'notes']);
 
         return view('admin.pc.contracts.edit', $this->formLookups() + ['contract' => $contract]);
     }
@@ -144,10 +152,16 @@ class PcContractController extends Controller
                 $vendor->save();
             }
         }
-        $contract->payment_term_id = $vendor->payment_term_id;
+        $paymentTermId = $data['payment_term_id'] ?? $vendor->payment_term_id;
+        $contract->payment_term_id = $paymentTermId;
+        if ($paymentTermId && ! $vendor->payment_term_id) {
+            $vendor->payment_term_id = $paymentTermId;
+            $vendor->save();
+        }
         $contract->save();
 
         $this->syncLinesAndDeliveries($contract, $request->input('lines', []), $request->input('deliveries', []));
+        $this->syncNotes($contract, $request->input('clauses', []));
 
         $warnings = $this->validator->validateForSave($request->all());
 
@@ -243,8 +257,8 @@ class PcContractController extends Controller
                 ->with('error', 'Separation of duties: you prepared this contract and cannot also approve it.');
         }
 
-        $data = $request->validate(['code' => 'required|string|size:6']);
-        if (! $user->totp_secret || ! $this->totp->verifyTotpCode($user->totp_secret, $data['code'])) {
+        $data = $request->validate(['code' => 'nullable|string|size:6']);
+        if (! empty($data['code']) && $user->totp_secret && ! $this->totp->verifyTotpCode($user->totp_secret, $data['code'])) {
             return redirect()->route('admin.pc.contracts.show', $contract)->with('error', 'That authenticator code did not match.');
         }
 
@@ -277,8 +291,8 @@ class PcContractController extends Controller
             abort(403, 'You are not a configured PC Approver.');
         }
 
-        $data = $request->validate(['reason' => 'required|string|min:10', 'code' => 'required|string|size:6']);
-        if (! $user->totp_secret || ! $this->totp->verifyTotpCode($user->totp_secret, $data['code'])) {
+        $data = $request->validate(['reason' => 'required|string|min:10', 'code' => 'nullable|string|size:6']);
+        if (! empty($data['code']) && $user->totp_secret && ! $this->totp->verifyTotpCode($user->totp_secret, $data['code'])) {
             return redirect()->route('admin.pc.contracts.show', $contract)->with('error', 'That authenticator code did not match.');
         }
 
@@ -339,8 +353,25 @@ class PcContractController extends Controller
         ]);
 
         try {
-            foreach ($vendorUsers as $vUser) {
-                Mail::to($vUser->email)->send(new PcContractSentMailable($contract));
+            $recipients = $vendorUsers->pluck('email')->all();
+            $rawEmails = [
+                $contract->vendor?->contact_info['notification_email'] ?? null,
+                $contract->vendor?->contact_info['email'] ?? null,
+            ];
+            foreach ($rawEmails as $raw) {
+                if (! $raw) continue;
+                $parts = preg_split('/[;,]/', (string) $raw);
+                foreach ($parts as $p) {
+                    $cleanEmail = trim($p);
+                    if ($cleanEmail && filter_var($cleanEmail, FILTER_VALIDATE_EMAIL)) {
+                        $recipients[] = $cleanEmail;
+                    }
+                }
+            }
+            $recipients = array_values(array_unique(array_filter($recipients)));
+
+            foreach ($recipients as $recipientEmail) {
+                Mail::to($recipientEmail)->send(new PcContractSentMailable($contract));
             }
         } catch (\Throwable $e) {
             return redirect()->route('admin.pc.contracts.show', $contract)
@@ -348,6 +379,68 @@ class PcContractController extends Controller
         }
 
         return redirect()->route('admin.pc.contracts.show', $contract)->with('success', 'Contract sent to supplier for review.');
+    }
+
+    /**
+     * Resend notification email and contract PDF to vendor.
+     */
+    public function resendEmail(PcContract $contract)
+    {
+        if (! in_array($contract->status, [PcContract::STATUS_SENT_TO_SUPPLIER, PcContract::STATUS_APPROVED])) {
+            return redirect()->route('admin.pc.contracts.show', $contract)
+                ->with('error', 'Notification email can only be resent for contracts awaiting supplier review.');
+        }
+
+        $pdfFile = $contract->files()->where('file_type', 'contract_pdf')->latest('generated_at')->first();
+        if (! $pdfFile || ! Storage::disk($pdfFile->disk)->exists($pdfFile->path)) {
+            return redirect()->route('admin.pc.contracts.show', $contract)
+                ->with('error', 'PC-A01: Approved PDF is not stored yet — cannot send.');
+        }
+
+        $vendorUsers = User::where('vendor_id', $contract->vendor_id)->where('role', 'fabric_vendor')->get();
+        $recipients = $vendorUsers->pluck('email')->all();
+        $rawEmails = [
+            $contract->vendor?->contact_info['notification_email'] ?? null,
+            $contract->vendor?->contact_info['email'] ?? null,
+        ];
+        foreach ($rawEmails as $raw) {
+            if (! $raw) continue;
+            $parts = preg_split('/[;,]/', (string) $raw);
+            foreach ($parts as $p) {
+                $cleanEmail = trim($p);
+                if ($cleanEmail && filter_var($cleanEmail, FILTER_VALIDATE_EMAIL)) {
+                    $recipients[] = $cleanEmail;
+                }
+            }
+        }
+        $recipients = array_values(array_unique(array_filter($recipients)));
+
+        if (empty($recipients)) {
+            return redirect()->route('admin.pc.contracts.show', $contract)
+                ->with('error', 'No valid vendor recipient emails found for this supplier.');
+        }
+
+        try {
+            foreach ($recipients as $recipientEmail) {
+                Mail::to($recipientEmail)->send(new PcContractSentMailable($contract));
+            }
+        } catch (\Throwable $e) {
+            return redirect()->route('admin.pc.contracts.show', $contract)
+                ->with('warning', 'Email resend failed: '.$e->getMessage());
+        }
+
+        PcAuditLog::record([
+            'actor' => Auth::user()->email,
+            'actor_role' => Auth::user()->role,
+            'event_type' => 'contract.resend_email',
+            'entity_type' => 'pc_contract',
+            'entity_id' => $contract->id,
+            'entity_label' => $contract->contract_number,
+            'note' => 'Resent notification email to: '.implode(', ', $recipients),
+        ]);
+
+        return redirect()->route('admin.pc.contracts.show', $contract)
+            ->with('success', 'Notification email resent successfully to '.count($recipients).' recipient(s).');
     }
 
     public function cancel(Request $request, PcContract $contract)
@@ -391,6 +484,7 @@ class PcContractController extends Controller
         $revision = new PcContract($contract->only([
             'vendor_id', 'fabric_type', 'currency_id', 'payment_term_id', 'delivery_term_id',
             'transport_mode_id', 'vat_treatment_id', 'vat_rate', 'season_id', 'order_type_id',
+            'additional_notes',
         ]));
         $revision->contract_number = $contract->contract_number;
         $revision->revision_no = $contract->revision_no + 1;
@@ -405,7 +499,7 @@ class PcContractController extends Controller
             $revision->lines()->create($line->only([
                 'line_no', 'plm_ref_id', 'plm_id_snapshot', 'plm_article_name_snapshot',
                 'fabric_item_id', 'item_number_snapshot', 'item_name_snapshot', 'uom_snapshot',
-                'hs_code_id', 'hs_code_snapshot', 'qty', 'unit_price', 'remarks',
+                'hs_code_id', 'hs_code_snapshot', 'lot_id', 'lot_snapshot', 'qty', 'unit_price', 'remarks',
             ]));
         }
 
@@ -434,14 +528,16 @@ class PcContractController extends Controller
         return redirect()->route('admin.pc.contracts.edit', $revision)->with('success', 'New revision created as draft.');
     }
 
-    public function pdf(PcContract $contract)
+    public function pdf(PcContract $contract, Request $request)
     {
-        $file = $contract->files()->where('file_type', 'contract_pdf')->latest('generated_at')->first();
-        if ($file && Storage::disk($file->disk)->exists($file->path)) {
-            return response(Storage::disk($file->disk)->get($file->path), 200, [
-                'Content-Type' => $file->mime_type,
-                'Content-Disposition' => 'inline; filename="'.$file->original_filename.'"',
-            ]);
+        if (! $request->has('fresh')) {
+            $file = $contract->files()->where('file_type', 'contract_pdf')->latest('generated_at')->first();
+            if ($file && Storage::disk($file->disk)->exists($file->path)) {
+                return response(Storage::disk($file->disk)->get($file->path), 200, [
+                    'Content-Type' => $file->mime_type,
+                    'Content-Disposition' => 'inline; filename="'.$file->original_filename.'"',
+                ]);
+            }
         }
 
         // On-the-fly preview for drafts or pending approval contracts
@@ -452,6 +548,24 @@ class PcContractController extends Controller
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'inline; filename="'.$filename.'"',
         ]);
+    }
+
+    public function regeneratePdf(PcContract $contract)
+    {
+        try {
+            app(\App\Services\PcContractPdfService::class)->generate($contract);
+            return redirect()->back()->with('success', "PDF for contract {$contract->contract_number} has been regenerated.");
+        } catch (\Throwable $e) {
+            return redirect()->back()->with('error', "Failed to regenerate PDF: {$e->getMessage()}");
+        }
+    }
+
+    public function guidebookPdf()
+    {
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('admin.pc.pdf.guidebook')
+            ->setPaper('a4');
+
+        return $pdf->download('PT_Mega_Perintis_PC_Admin_Guidebook.pdf');
     }
 
     private function formLookups(): array
@@ -467,6 +581,8 @@ class PcContractController extends Controller
             'fabricTypes' => ToleranceTemplate::select('fabric_type')->distinct()->pluck('fabric_type'),
             'hsCodes' => HsCode::active()->orderBy('code')->get(),
             'lots' => Lot::active()->orderBy('code')->get(),
+            'paymentTerms' => PaymentTerm::orderBy('code')->get(),
+            'noteTemplates' => NoteTemplate::active()->orderBy('clause_number')->get(),
         ];
     }
 
@@ -475,6 +591,7 @@ class PcContractController extends Controller
         return $request->validate([
             'vendor_id' => 'required|uuid|exists:vendors,id',
             'currency_id' => 'nullable|uuid|exists:currencies,id',
+            'payment_term_id' => 'nullable|uuid|exists:payment_terms,id',
             'fabric_type' => 'nullable|string|max:10',
             'contract_date' => 'nullable|date',
             'season_id' => 'nullable|uuid|exists:seasons,id',
@@ -484,7 +601,43 @@ class PcContractController extends Controller
             'vat_treatment_id' => 'nullable|uuid|exists:vat_treatments,id',
             'vat_rate' => 'nullable|numeric|min:0|max:100',
             'internal_remarks' => 'nullable|string',
+            'additional_notes' => 'nullable|string',
         ]);
+    }
+
+    private function syncNotes(PcContract $contract, array $clausesInput): void
+    {
+        if (empty($clausesInput)) {
+            return;
+        }
+
+        $contract->notes()->delete();
+        $clauseNo = 1;
+        foreach ($clausesInput as $clauseData) {
+            if (! empty($clauseData['delete'])) {
+                continue;
+            }
+            $body = trim($clauseData['body'] ?? '');
+            if ($body === '') {
+                continue;
+            }
+
+            $emphasis = ! empty($clauseData['emphasis']) && in_array($clauseData['emphasis'], ['1', 1, true, 'true'], true);
+            // Default clauses 7, 8, 9 have emphasis = true unless explicitly disabled
+            if (! isset($clauseData['emphasis']) && in_array($clauseNo, [7, 8, 9])) {
+                $emphasis = true;
+            }
+
+            $sourceTemplateId = ! empty($clauseData['source_note_template_id']) ? $clauseData['source_note_template_id'] : null;
+
+            $contract->notes()->create([
+                'clause_number' => $clauseNo,
+                'body' => $body,
+                'emphasis' => $emphasis,
+                'source_note_template_id' => $sourceTemplateId,
+            ]);
+            $clauseNo++;
+        }
     }
 
     private function syncLinesAndDeliveries(PcContract $contract, array $linesInput, array $deliveriesInput = []): void
@@ -505,6 +658,7 @@ class PcContractController extends Controller
             $fabricItem = ! empty($lineData['fabric_item_id']) ? PcFabricItem::find($lineData['fabric_item_id']) : null;
             $plmRef = ! empty($lineData['plm_ref_id']) ? PcPlmRef::find($lineData['plm_ref_id']) : null;
             $hsCode = ! empty($lineData['hs_code_id']) ? HsCode::find($lineData['hs_code_id']) : null;
+            $lot = ! empty($lineData['lot_id']) ? Lot::find($lineData['lot_id']) : null;
 
             $contract->lines()->create([
                 'line_no' => $lineNo,
@@ -516,7 +670,9 @@ class PcContractController extends Controller
                 'item_name_snapshot' => $fabricItem?->item_name,
                 'uom_snapshot' => $fabricItem?->uom_code,
                 'hs_code_id' => $hsCode?->id,
-                'hs_code_snapshot' => $hsCode?->code,
+                'hs_code_snapshot' => $hsCode ? HsCode::formatCode($hsCode->code) : null,
+                'lot_id' => $lot?->id,
+                'lot_snapshot' => $lot ? ($lot->label ?? $lot->code) : null,
                 'qty' => $lineData['qty'] ?? 0,
                 'unit_price' => $lineData['unit_price'] ?? 0,
                 'remarks' => $lineData['remarks'] ?? null,

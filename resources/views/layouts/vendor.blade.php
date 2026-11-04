@@ -18,8 +18,21 @@
                         </a>
                     </li>
                     <li>
-                        <a href="{{ route('vendor.purchase-orders') }}" class="nav-link {{ request()->routeIs('vendor.purchase-orders') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="My Orders">
+                        <a href="{{ route('vendor.purchase-orders') }}" class="nav-link {{ request()->routeIs('vendor.purchase-orders*') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="My Orders">
                             <i class="fas fa-shopping-cart me-2"></i> <span>My Orders</span>
+                        </a>
+                    </li>
+                    @php
+                        $vendorPendingContractsCount = auth()->user()->vendor_id
+                            ? \App\Models\PcContract::forVendor(auth()->user()->vendor_id)->where('status', \App\Models\PcContract::STATUS_SENT_TO_SUPPLIER)->count()
+                            : 0;
+                    @endphp
+                    <li>
+                        <a href="{{ route('vendor.pc.contracts.index') }}" class="nav-link d-flex align-items-center {{ request()->routeIs('vendor.pc.*') ? 'active' : '' }}" data-bs-toggle="tooltip" data-bs-placement="right" title="Preliminary Contracts">
+                            <i class="fas fa-file-contract me-2"></i> <span>Contracts (PC)</span>
+                            @if($vendorPendingContractsCount > 0)
+                                <span class="badge bg-warning text-dark rounded-pill ms-auto">{{ $vendorPendingContractsCount }}</span>
+                            @endif
                         </a>
                     </li>
                 </ul>

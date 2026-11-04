@@ -16,7 +16,7 @@ class PcContractLine extends Model
     protected $fillable = [
         'contract_id', 'line_no', 'plm_ref_id', 'plm_id_snapshot', 'plm_article_name_snapshot',
         'fabric_item_id', 'item_number_snapshot', 'item_name_snapshot', 'uom_snapshot',
-        'hs_code_id', 'hs_code_snapshot', 'qty', 'unit_price', 'remarks',
+        'hs_code_id', 'hs_code_snapshot', 'lot_id', 'lot_snapshot', 'qty', 'unit_price', 'remarks',
     ];
 
     protected $casts = [
@@ -56,6 +56,11 @@ class PcContractLine extends Model
         return $this->belongsTo(HsCode::class, 'hs_code_id');
     }
 
+    public function lot()
+    {
+        return $this->belongsTo(Lot::class, 'lot_id');
+    }
+
     public function deliveries()
     {
         return $this->hasMany(PcContractDelivery::class, 'contract_line_id');
@@ -86,5 +91,14 @@ class PcContractLine extends Model
     public function getLineTotalExVatAttribute(): string
     {
         return number_format((float) $this->qty * (float) $this->unit_price_ex_vat, 2, '.', '');
+    }
+
+    public function getFormattedHsCodeAttribute(): ?string
+    {
+        if (! $this->hs_code_snapshot) {
+            return null;
+        }
+
+        return HsCode::formatCode($this->hs_code_snapshot);
     }
 }

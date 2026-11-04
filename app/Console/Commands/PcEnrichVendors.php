@@ -74,15 +74,20 @@ class PcEnrichVendors extends Command
         $now = now();
         $updated = 0;
         foreach ($byCode as $code => $row) {
-            $d365PaymentCode = $row['TermsOfPaymentCode'] ?? null;
+            $d365PaymentCode = $row['DefaultPaymentTermsName'] ?? $row['TermsOfPaymentCode'] ?? null;
             $paymentTermId = $d365PaymentCode
                 ? PaymentTerm::where('d365_code', $d365PaymentCode)->value('id')
                 : null;
 
+            $currCode = $row['CurrencyCode'] ?? null;
+            if ($currCode === 'CNY') {
+                $currCode = 'RMB';
+            }
+
             Vendor::where('vendor_code', $code)->where('type', 'fabric')->update([
                 'country' => $row['AddressCountryRegionId'] ?? null,
                 'contact_person' => $row['PrimaryContactPersonName'] ?? null,
-                'currency_code' => $row['CurrencyCode'] ?? null,
+                'currency_code' => $currCode,
                 'd365_payment_code' => $d365PaymentCode,
                 'payment_term_id' => $paymentTermId,
                 'synced_at' => $now,

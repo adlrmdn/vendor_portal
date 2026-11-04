@@ -135,9 +135,16 @@ class QcDirectorApprovalTest extends TestCase
 
     private function createRpaSchema(): void
     {
+        // Mirrors the real rpa_queues schema, including `source`/`checked`
+        // (migration 2026_08_06_000003_add_source_checked_to_rpa_queues) —
+        // RpaQueueService::upsertJob() always writes `source`, so without it
+        // here every queue attempt in this test throws "no column named
+        // source" and is silently swallowed (best-effort try/catch),
+        // leaving no row behind at all.
         DB::connection('rpa')->statement('CREATE TABLE rpa_queues (
             id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT, entity_id TEXT, rpa_type TEXT,
             status TEXT, payload TEXT, attempts INTEGER DEFAULT 0, error_message TEXT,
+            source TEXT, checked INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
     }
 

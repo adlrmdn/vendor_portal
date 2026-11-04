@@ -150,7 +150,7 @@
                     </tbody>
                 </table>
                 <p class="muted" style="font-size:11px; margin-top:4px;">
-                    Cutt Plan = ROUNDDOWN((Fabric Sent &minus; Retur Kain) &divide; Cons. Plan). Actual Cons. = (Fabric Sent &minus; Retur Kain) &divide; Total Qty Cut.
+                    Cutt Plan = ROUNDDOWN((Fabric Sent &minus; Retur Kain &minus; Shortage) &divide; Cons. Plan). Actual Cons. = (Fabric Sent &minus; Retur Kain &minus; Shortage) &divide; Total Qty Cut.
                     Overconsumption = (Actual Cons. &minus; Cons. Plan) &divide; Cons. Plan. Deduction = MAX(0, Actual Cons. &minus; Cons. Plan &times; 1.03) &times; Total Qty Cut &times; Fabric Price
                     &mdash; charged only when Overconsumption exceeds 3%.
                 </p>

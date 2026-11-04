@@ -48,6 +48,7 @@ class PcContractFreezeService
         return [
             'vendor_name' => $vendor?->name,
             'vendor_code' => $vendor?->vendor_code,
+            'vendor_address' => $vendor?->address,
             'vendor_country' => $vendor?->country,
             'vendor_contact_person' => $vendor?->contact_person,
             'vendor_contact_info' => $vendor?->contact_info,
@@ -67,14 +68,29 @@ class PcContractFreezeService
 
     private function freezeNotes(PcContract $contract): void
     {
-        $contract->notes()->delete(); // a revision re-freezing clears any stale copy first
+        // If the contract already has customized notes from authoring/drafting, retain them as frozen!
+        if ($contract->notes()->count() > 0) {
+            return;
+        }
 
+        $nextClauseNo = 1;
         foreach (NoteTemplate::active()->effectiveOn($contract->contract_date)->orderBy('clause_number')->get() as $template) {
             $contract->notes()->create([
                 'clause_number' => $template->clause_number,
                 'body' => $template->body,
                 'emphasis' => $template->emphasis,
                 'source_note_template_id' => $template->id,
+            ]);
+            $nextClauseNo = max($nextClauseNo, $template->clause_number + 1);
+        }
+
+        // If contract has custom additional notes, append as the next clause(s)
+        if (! empty(trim($contract->additional_notes ?? ''))) {
+            $contract->notes()->create([
+                'clause_number' => $nextClauseNo,
+                'body' => trim($contract->additional_notes),
+                'emphasis' => false,
+                'source_note_template_id' => null,
             ]);
         }
     }
@@ -83,13 +99,28 @@ class PcContractFreezeService
     {
         $contract->tolerances()->delete();
 
-        if (! $contract->fabric_type) {
-            return;
+        $types = [];
+        if ($contract->fabric_type) {
+            $types[] = $contract->fabric_type;
+        } else {
+            // Determine fabric types from contract lines, or default to all active types (both WOVEN and KNIT)
+            $itemTypes = $contract->lines()->with('fabricItem')->get()->pluck('fabricItem.weave')->filter()->unique()->toArray();
+            foreach ($itemTypes as $it) {
+                $upper = strtoupper(trim($it));
+                if (in_array($upper, ['WOVEN', 'KNIT'])) {
+                    $types[] = $upper;
+                }
+            }
+            if (empty($types)) {
+                $types = ['WOVEN', 'KNIT'];
+            }
         }
 
         $templates = ToleranceTemplate::active()
-            ->forFabricType($contract->fabric_type)
+            ->whereIn('fabric_type', $types)
             ->effectiveOn($contract->contract_date)
+            ->orderBy('fabric_type')
+            ->orderBy('sort_order')
             ->get();
 
         foreach ($templates as $template) {

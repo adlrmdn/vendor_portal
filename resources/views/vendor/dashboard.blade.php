@@ -3,273 +3,452 @@
 @section('title', 'Vendor Dashboard')
 
 @section('content')
-    <div class="container-fluid">
-        <h1 class="h3 mb-4">Vendor Dashboard</h1>
-
-        <!-- Welcome Card -->
-        <div class="card mb-4">
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-8">
-                        <h4>Welcome, {{ auth()->user()->name }}!</h4>
-                        <p class="text-muted mb-0">
-                            @if(auth()->user()->vendor)
-                                You are logged in as a vendor for <strong>{{ auth()->user()->vendor->name }}</strong>.
-                                Here you can manage your purchase orders, update roll details, and generate packing slips.
-                            @else
-                                Vendor account information not found. Please contact administrator.
-                            @endif
-                        </p>
-                    </div>
-                    <div class="col-md-4 text-end">
-                        @if(auth()->user()->vendor)
-                            <div class="badge bg-info fs-6 p-2">
-                                <i class="fas fa-id-card me-2"></i>{{ auth()->user()->vendor->vendor_code }}
-                            </div>
-                        @endif
-                    </div>
-                </div>
+<div class="container-fluid apple-po-wrapper px-3 px-md-4 py-3">
+    <!-- Header with Eyebrow -->
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
+        <div>
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="apple-section-eyebrow">Vendor Portal</span>
+                <span class="apple-bullet">&bull;</span>
+                <span class="apple-section-eyebrow text-muted">Supplier Overview</span>
             </div>
+            <h1 class="apple-page-title mb-0">Vendor Dashboard</h1>
         </div>
-
-        <!-- Stats Cards -->
-        <div class="row mb-4">
-            <div class="col-md-3">
-                <div class="card stat-card">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <h6 class="card-subtitle mb-2 text-muted">Active POs</h6>
-                                <h3 class="card-title mb-0">{{ $stats['active_pos'] ?? 0 }}</h3>
-                            </div>
-                            <div class="text-primary">
-                                <i class="fas fa-shopping-cart fa-2x"></i>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-md-3">
-                <a href="{{ route('vendor.purchase-orders', ['status' => 'pending']) }}" class="text-decoration-none">
-                    <div class="card stat-card">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <div>
-                                    <h6 class="card-subtitle mb-2 text-muted">Pending Items</h6>
-                                    <h3 class="card-title mb-0 text-dark">{{ $stats['pending_items'] ?? 0 }}</h3>
-                                </div>
-                                <div class="text-warning">
-                                    <i class="fas fa-clock fa-2x"></i>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </a>
-            </div>
-
-            <div class="col-md-3">
-                <a href="{{ route('vendor.purchase-orders', ['status' => 'processing']) }}" class="text-decoration-none">
-                    <div class="card stat-card">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <div>
-                                    <h6 class="card-subtitle mb-2 text-muted">Processing Items</h6>
-                                    <h3 class="card-title mb-0 text-dark">{{ $stats['processing_items'] ?? 0 }}</h3>
-                                </div>
-                                <div class="text-info">
-                                    <i class="fas fa-cogs fa-2x"></i>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </a>
-            </div>
-
-            <div class="col-md-3">
-                <a href="{{ route('vendor.purchase-orders', ['status' => 'completed']) }}" class="text-decoration-none">
-                    <div class="card stat-card">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <div>
-                                    <h6 class="card-subtitle mb-2 text-muted">Completed POs</h6>
-                                    <h3 class="card-title mb-0 text-dark">{{ $stats['completed_pos'] ?? 0 }}</h3>
-                                </div>
-                                <div class="text-success">
-                                    <i class="fas fa-check-circle fa-2x"></i>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </a>
-            </div>
-        </div>
-
-        <!-- Recent Purchase Orders -->
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Recent Purchase Orders</h5>
-                <a href="{{ route('vendor.purchase-orders') }}" class="btn btn-sm btn-primary">
-                    View All <i class="fas fa-arrow-right ms-1"></i>
-                </a>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>PO Number</th>
-                                <th>Items</th>
-                                <th>Order Date</th>
-                                <th>Delivery Date</th>
-                                <th>Item Status</th>
-                                <th>Amount</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @forelse($recentOrders as $order)
-                                <tr>
-                                    <td>
-                                        <strong>{{ $order->po_number }}</strong>
-                                        @if($order->reference)
-                                            <br><small class="text-muted">PC: {{ $order->reference }}</small>
-                                        @endif
-                                    </td>
-                                    <td>
-                                        <div class="po-items-cell small">
-                                            @forelse($order->items as $item)
-                                                <div class="po-items-row">
-                                                    <span class="fw-semibold">{{ $item->item_number }}</span>
-                                                    @if($item->batch)
-                                                        <div class="text-muted">{{ $item->batch }}</div>
-                                                    @endif
-                                                </div>
-                                            @empty
-                                                <span class="text-muted">&mdash;</span>
-                                            @endforelse
-                                        </div>
-                                    </td>
-                                    <td>{{ $order->order_date->format('M d, Y') }}</td>
-                                    <td>
-                                        @if($order->delivery_date)
-                                            @if($order->delivery_date->isPast() && $order->status !== 'completed')
-                                                <span class="text-danger fw-bold">{{ $order->delivery_date->format('M d, Y') }}</span>
-                                            @else
-                                                {{ $order->delivery_date->format('M d, Y') }}
-                                            @endif
-                                        @else
-                                            <span class="text-muted">Not set</span>
-                                        @endif
-                                    </td>
-                                    <td>
-                                        <div class="small text-nowrap mb-1">
-                                            {{ $order->unique_items_count }} {{ Str::plural('item', $order->unique_items_count) }}
-                                            @if($order->items_count > $order->unique_items_count)
-                                                <br><span class="text-muted">({{ $order->items_count }} Batches)</span>
-                                            @endif
-                                        </div>
-                                        @if($order->pending_unique_items_count > 0)
-                                            <span class="badge bg-warning">{{ $order->pending_unique_items_count }} pending</span>
-                                        @else
-                                            <span class="badge bg-success">All processed</span>
-                                        @endif
-                                    </td>
-                                    <td>{{ $order->currency }} {{ number_format($order->total_amount, 2) }}</td>
-                                    <td>
-                                        <span class="badge badge-{{ $order->status }}">
-                                            {{ ucfirst($order->status) }}
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <div class="btn-group" role="group">
-                                            <a href="{{ route('vendor.purchase-order.view', $order->id) }}"
-                                                class="btn btn-sm btn-info" title="View & Update">
-                                                <i class="fas fa-edit"></i>
-                                            </a>
-                                            @if($order->items->contains('status', 'completed'))
-                                                <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal"
-                                                    data-bs-target="#quickSlipModal{{ $order->id }}" title="Generate Packing Slip">
-                                                    <i class="fas fa-file-pdf"></i>
-                                                </button>
-                                            @endif
-                                        </div>
-                                    </td>
-                                </tr>
-                            @empty
-                                <tr>
-                                    <td colspan="8" class="text-center py-4">
-                                        <div class="text-muted">
-                                            <i class="fas fa-inbox fa-2x mb-3"></i>
-                                            <p>No purchase orders assigned to you</p>
-                                        </div>
-                                    </td>
-                                </tr>
-                            @endforelse
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+        <div>
+            <a href="{{ route('vendor.purchase-orders') }}" class="apple-btn-primary">
+                <span>View All Orders</span>
+                <i class="fas fa-arrow-right ms-2"></i>
+            </a>
         </div>
     </div>
 
-    <!-- Quick Generate Modals -->
-    @foreach($recentOrders as $order)
-        @if($order->items->contains('status', 'completed'))
-            <div class="modal fade" id="quickSlipModal{{ $order->id }}" tabindex="-1">
-                <div class="modal-dialog">
-                    <div class="modal-content">
-                        <form action="{{ route('vendor.quick-packing-slip', $order->id) }}" method="POST" target="_blank">
-                            @csrf
-                            <div class="modal-header">
-                                <h5 class="modal-title">Quick Generate Packing Slip</h5>
-                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                            </div>
-                            <div class="modal-body">
-                                <p>Generate packing slip for PO: <strong>{{ $order->po_number }}</strong></p>
-                                <p class="text-muted small">This will include all processed items under this PO.</p>
-                                <div class="mb-3 mt-4">
-                                    <label class="form-label fw-bold">Delivery Note Number <span class="text-danger">*</span></label>
-                                    <input type="text" name="delivery_note" class="form-control" placeholder="Enter Delivery Note Number" required oninput="this.form.querySelector('button[type=\'submit\']').disabled = this.value.trim() === ''">
-                                    <div class="form-text text-muted">Required before generating the packing slip.</div>
-                                </div>
-                            </div>
-                            <div class="modal-footer">
-                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                                <button type="submit" class="btn btn-success" disabled>Generate Slip</button>
-                            </div>
-                        </form>
+    <!-- Welcome Card (Apple Banner) -->
+    <div class="apple-card p-3 p-md-4 mb-4" style="background: linear-gradient(135deg, #fbfbfd 0%, #f5f7fa 100%);">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+            <div>
+                <h4 class="fw-bold text-dark mb-1" style="letter-spacing: -0.02em;">
+                    Welcome back, {{ auth()->user()->name }}
+                </h4>
+                <p class="text-muted mb-0 small">
+                    @if(auth()->user()->vendor)
+                        Connected supplier account for <strong class="text-dark">{{ auth()->user()->vendor->name }}</strong>. Track your purchase orders, process rolls, and create packing slips.
+                    @else
+                        Vendor account information not found. Please contact your system administrator.
+                    @endif
+                </p>
+            </div>
+            @if(auth()->user()->vendor)
+                <div>
+                    <span class="apple-count-pill" style="background: #ffffff; border: 1px solid rgba(0, 0, 0, 0.08); padding: 6px 14px; font-size: 0.85rem;">
+                        <i class="far fa-id-badge text-primary me-2"></i>
+                        <span class="fw-semibold text-dark">{{ auth()->user()->vendor->vendor_code }}</span>
+                    </span>
+                </div>
+            @endif
+        </div>
+    </div>
+
+    @php
+        $pendingPcContracts = auth()->user()->vendor_id
+            ? \App\Models\PcContract::forVendor(auth()->user()->vendor_id)
+                ->where('status', \App\Models\PcContract::STATUS_SENT_TO_SUPPLIER)
+                ->with(['season', 'currency'])
+                ->withCount('lines')
+                ->latest()
+                ->get()
+            : collect();
+    @endphp
+
+    @if($pendingPcContracts->isNotEmpty())
+        <div class="apple-card p-3 mb-4" style="background: #fffcf0; border-color: rgba(255, 159, 10, 0.3);">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+                <div class="d-flex align-items-center gap-3">
+                    <div class="apple-stat-icon-wrap icon-wrap-amber" style="width: 44px; height: 44px;">
+                        <i class="fas fa-file-signature"></i>
+                    </div>
+                    <div>
+                        <div class="fw-bold text-dark" style="font-size: 0.95rem;">
+                            Preliminary Contracts Awaiting Review ({{ $pendingPcContracts->count() }})
+                        </div>
+                        <div class="small text-muted">
+                            Official fabric contracts have been issued and require your review or confirmation.
+                        </div>
                     </div>
                 </div>
+                <div>
+                    <a href="{{ route('vendor.pc.contracts.index', ['tab' => 'new']) }}" class="apple-btn-primary" style="background: #ff9f0a; color: #ffffff;">
+                        <i class="fas fa-file-contract me-1"></i> Review Contracts
+                    </a>
+                </div>
             </div>
-        @endif
-    @endforeach
+        </div>
+    @endif
 
-    <style>
-        .badge-pending {
-            background-color: #ffc107;
-            color: #000;
-        }
+    <!-- Apple HIG Stat Cards -->
+    <div class="row g-3 mb-4">
+        <div class="col-12 col-sm-6 col-xl-3">
+            <a href="{{ route('vendor.purchase-orders', ['status' => 'active']) }}" class="text-decoration-none">
+                <div class="apple-stat-card">
+                    <div>
+                        <div class="apple-stat-title">Active POs</div>
+                        <div class="apple-stat-value">{{ number_format($stats['active_pos'] ?? 0) }}</div>
+                    </div>
+                    <div class="apple-stat-icon-wrap icon-wrap-blue">
+                        <i class="fas fa-shopping-bag"></i>
+                    </div>
+                </div>
+            </a>
+        </div>
 
-        .badge-processing {
-            background-color: #0dcaf0;
-            color: #000;
-        }
+        <div class="col-12 col-sm-6 col-xl-3">
+            <a href="{{ route('vendor.purchase-orders', ['status' => 'pending']) }}" class="text-decoration-none">
+                <div class="apple-stat-card">
+                    <div>
+                        <div class="apple-stat-title">Pending Items</div>
+                        <div class="apple-stat-value">{{ number_format($stats['pending_items'] ?? 0) }}</div>
+                    </div>
+                    <div class="apple-stat-icon-wrap icon-wrap-amber">
+                        <i class="fas fa-clock"></i>
+                    </div>
+                </div>
+            </a>
+        </div>
 
-        .badge-completed {
-            background-color: #198754;
-        }
+        <div class="col-12 col-sm-6 col-xl-3">
+            <a href="{{ route('vendor.purchase-orders', ['status' => 'processing']) }}" class="text-decoration-none">
+                <div class="apple-stat-card">
+                    <div>
+                        <div class="apple-stat-title">Processing Items</div>
+                        <div class="apple-stat-value">{{ number_format($stats['processing_items'] ?? 0) }}</div>
+                    </div>
+                    <div class="apple-stat-icon-wrap icon-wrap-indigo">
+                        <i class="fas fa-cogs"></i>
+                    </div>
+                </div>
+            </a>
+        </div>
 
-        .po-items-cell {
-            max-height: 130px;
-            overflow-y: auto;
-        }
+        <div class="col-12 col-sm-6 col-xl-3">
+            <a href="{{ route('vendor.purchase-orders', ['status' => 'completed']) }}" class="text-decoration-none">
+                <div class="apple-stat-card">
+                    <div>
+                        <div class="apple-stat-title">Completed POs</div>
+                        <div class="apple-stat-value">{{ number_format($stats['completed_pos'] ?? 0) }}</div>
+                    </div>
+                    <div class="apple-stat-icon-wrap icon-wrap-green">
+                        <i class="fas fa-check-circle"></i>
+                    </div>
+                </div>
+            </a>
+        </div>
+    </div>
 
-        .po-items-row:not(:last-child) {
-            margin-bottom: 0.5rem;
-            padding-bottom: 0.5rem;
-            border-bottom: 1px dashed #e9ecef;
-        }
-    </style>
+    <!-- Recent Purchase Orders Card -->
+    <div class="apple-card apple-table-container">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 p-3 border-bottom" style="border-color: #ebebf0 !important;">
+            <div>
+                <h5 class="mb-0 fw-bold fs-6 text-dark">Recent Purchase Orders</h5>
+                <span class="small text-muted">Your active and recent purchase orders</span>
+            </div>
+            <a href="{{ route('vendor.purchase-orders') }}" class="apple-header-link">
+                <span>View All Orders</span>
+                <i class="fas fa-chevron-right" style="font-size: 0.7rem;"></i>
+            </a>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table apple-table mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 23%;">PO Details</th>
+                        <th style="width: 23%;">Items</th>
+                        <th style="width: 14%;">Timeline</th>
+                        <th style="width: 13%;">Item Fulfillment</th>
+                        <th style="width: 12%; text-align: right;">Amount</th>
+                        <th style="width: 8%; text-align: center;">Status</th>
+                        <th style="width: 7%; text-align: center;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @forelse($recentOrders as $order)
+                        <tr class="apple-table-row">
+                            <!-- PO Details -->
+                            <td>
+                                <div class="d-flex flex-column gap-1">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <a href="{{ route('vendor.purchase-order.view', $order->id) }}"
+                                           class="apple-po-number"
+                                           title="View order {{ $order->po_number }}">
+                                            {{ $order->po_number }}
+                                        </a>
+                                        <button type="button"
+                                                class="apple-copy-btn"
+                                                onclick="copyPoNumber('{{ $order->po_number }}', this)"
+                                                title="Copy PO number">
+                                            <i class="far fa-copy"></i>
+                                        </button>
+                                    </div>
+                                    @if($order->reference)
+                                        <div>
+                                            <span class="apple-sub-tag pc-tag" title="Preliminary Contract Reference">
+                                                <i class="far fa-file-lines me-1 opacity-75"></i>PC: {{ $order->reference }}
+                                            </span>
+                                        </div>
+                                    @endif
+                                </div>
+                            </td>
+
+                            <!-- Items (NO SCROLLBARS! Clean Apple card previews with popover for extras) -->
+                            <td>
+                                @php
+                                    $itemCount = $order->items->count();
+                                @endphp
+                                @if($itemCount === 0)
+                                    <span class="text-muted small">&mdash;</span>
+                                @else
+                                    <div class="apple-items-stack">
+                                        {{-- Render first item --}}
+                                        @php $firstItem = $order->items->first(); @endphp
+                                        <div class="apple-item-chip-box">
+                                            <div class="apple-item-num-row">
+                                                <span class="apple-item-number">{{ $firstItem->item_number }}</span>
+                                                @if($firstItem->status)
+                                                    <span class="apple-micro-status {{ $firstItem->status }}">
+                                                        {{ ucfirst($firstItem->status) }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                            @if($firstItem->batch)
+                                                <div class="apple-item-style text-truncate" title="{{ $firstItem->batch }}">
+                                                    {{ $firstItem->batch }}
+                                                </div>
+                                            @endif
+                                        </div>
+
+                                        {{-- If exactly 2 items, render the second cleanly --}}
+                                        @if($itemCount === 2)
+                                            @php $secondItem = $order->items->get(1); @endphp
+                                            <div class="apple-item-chip-box mt-1">
+                                                <div class="apple-item-num-row">
+                                                    <span class="apple-item-number">{{ $secondItem->item_number }}</span>
+                                                    @if($secondItem->status)
+                                                        <span class="apple-micro-status {{ $secondItem->status }}">
+                                                            {{ ucfirst($secondItem->status) }}
+                                                        </span>
+                                                    @endif
+                                                </div>
+                                                @if($secondItem->batch)
+                                                    <div class="apple-item-style text-truncate" title="{{ $secondItem->batch }}">
+                                                        {{ $secondItem->batch }}
+                                                    </div>
+                                                @endif
+                                            </div>
+                                        {{-- If more than 2 items, show interactive drawer badge --}}
+                                        @elseif($itemCount > 2)
+                                            <div class="mt-1 d-flex align-items-center gap-2">
+                                                <div class="dropdown">
+                                                    <button type="button"
+                                                            class="apple-more-items-pill dropdown-toggle"
+                                                            id="itemsDropdownVendorDash{{ $order->id }}"
+                                                            data-bs-toggle="dropdown"
+                                                            aria-expanded="false">
+                                                        <i class="fas fa-layer-group me-1"></i>
+                                                        +{{ $itemCount - 1 }} more items
+                                                    </button>
+                                                    <div class="dropdown-menu apple-items-dropdown shadow-lg p-2"
+                                                         aria-labelledby="itemsDropdownVendorDash{{ $order->id }}">
+                                                        <div class="apple-dropdown-title px-2 py-1">
+                                                            All Items in {{ $order->po_number }}
+                                                        </div>
+                                                        <div class="apple-dropdown-items-list">
+                                                            @foreach($order->items as $idx => $extraItem)
+                                                                <div class="apple-dropdown-item {{ $idx > 0 ? 'border-top' : '' }} py-2 px-2">
+                                                                    <div class="d-flex justify-content-between align-items-center gap-2">
+                                                                        <span class="fw-semibold text-dark">{{ $extraItem->item_number }}</span>
+                                                                        <span class="apple-micro-status {{ $extraItem->status }}">
+                                                                            {{ ucfirst($extraItem->status) }}
+                                                                        </span>
+                                                                    </div>
+                                                                    @if($extraItem->batch)
+                                                                        <div class="small text-muted text-wrap mt-1">
+                                                                            {{ $extraItem->batch }}
+                                                                        </div>
+                                                                    @endif
+                                                                </div>
+                                                            @endforeach
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <span class="apple-total-badge">{{ $itemCount }} total</span>
+                                            </div>
+                                        @endif
+                                    </div>
+                                @endif
+                            </td>
+
+                            <!-- Dates & Timeline -->
+                            <td>
+                                <div class="apple-timeline-stack">
+                                    <div class="apple-date-line">
+                                        <span class="apple-date-caption">Order:</span>
+                                        <span class="apple-date-val">{{ $order->order_date ? $order->order_date->format('M d, Y') : '—' }}</span>
+                                    </div>
+                                    <div class="apple-date-line mt-1">
+                                        <span class="apple-date-caption">Delivery:</span>
+                                        @if($order->delivery_date)
+                                            @if($order->delivery_date->isPast() && $order->status !== 'completed')
+                                                <span class="apple-date-badge overdue" title="Order delivery is overdue">
+                                                    <i class="fas fa-clock me-1"></i>{{ $order->delivery_date->format('M d, Y') }}
+                                                </span>
+                                            @else
+                                                <span class="apple-date-val">{{ $order->delivery_date->format('M d, Y') }}</span>
+                                            @endif
+                                        @else
+                                            <span class="text-muted small">&mdash;</span>
+                                        @endif
+                                    </div>
+                                </div>
+                            </td>
+
+                            <!-- Item Fulfillment Status -->
+                            <td>
+                                <div class="d-flex flex-column align-items-start gap-1">
+                                    <div class="apple-fulfillment-count">
+                                        {{ $order->unique_items_count }} {{ Str::plural('item', $order->unique_items_count) }}
+                                        @if($order->items_count > $order->unique_items_count)
+                                            <span class="apple-batch-pill" title="Batches split across shipments">
+                                                {{ $order->items_count }} batches
+                                            </span>
+                                        @endif
+                                    </div>
+                                    @if($order->pending_unique_items_count > 0)
+                                        <span class="apple-pill-status pill-warning">
+                                            <span class="status-dot dot-warning"></span>
+                                            {{ $order->pending_unique_items_count }} pending
+                                        </span>
+                                    @else
+                                        <span class="apple-pill-status pill-success">
+                                            <span class="status-dot dot-success"></span>
+                                            All processed
+                                        </span>
+                                    @endif
+                                </div>
+                            </td>
+
+                            <!-- Amount -->
+                            <td class="text-end">
+                                <div class="apple-amount-box">
+                                    <span class="apple-currency">{{ $order->currency }}</span>
+                                    <span class="apple-amount-value">{{ number_format($order->total_amount, 2) }}</span>
+                                </div>
+                            </td>
+
+                            <!-- Status -->
+                            <td class="text-center">
+                                @php
+                                    $st = strtolower($order->status);
+                                @endphp
+                                <span class="apple-status-capsule capsule-{{ $st }}">
+                                    <span class="capsule-dot"></span>
+                                    {{ ucfirst($order->status) }}
+                                </span>
+                            </td>
+
+                            <!-- Actions -->
+                            <td class="text-center">
+                                <div class="d-flex justify-content-center align-items-center gap-1">
+                                    <a href="{{ route('vendor.purchase-order.view', $order->id) }}"
+                                       class="apple-action-btn apple-action-view"
+                                       title="View and process order">
+                                        <i class="fas fa-arrow-right"></i>
+                                    </a>
+                                    @if($order->items->contains('status', 'completed'))
+                                        <button type="button"
+                                                class="apple-action-btn apple-action-slip"
+                                                data-bs-toggle="modal"
+                                                data-bs-target="#quickSlipModalVendorDash{{ $order->id }}"
+                                                title="Generate Packing Slip">
+                                            <i class="fas fa-file-pdf"></i>
+                                        </button>
+                                    @endif
+                                </div>
+                            </td>
+                        </tr>
+                    @empty
+                        <tr>
+                            <td colspan="7" class="py-5 text-center">
+                                <div class="apple-empty-state">
+                                    <div class="apple-empty-icon-circle mb-3">
+                                        <i class="fas fa-inbox fa-2x"></i>
+                                    </div>
+                                    <h4 class="apple-empty-title">No Recent Purchase Orders</h4>
+                                    <p class="apple-empty-desc">
+                                        There are currently no purchase orders assigned to your account.
+                                    </p>
+                                </div>
+                            </td>
+                        </tr>
+                    @endforelse
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Generate Modals -->
+@foreach($recentOrders as $order)
+    @if($order->items->contains('status', 'completed'))
+        <div class="modal fade" id="quickSlipModalVendorDash{{ $order->id }}" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content apple-modal">
+                    <form action="{{ route('vendor.quick-packing-slip', $order->id) }}" method="POST" target="_blank">
+                        @csrf
+                        <div class="modal-header border-0 pb-0">
+                            <div>
+                                <span class="apple-section-eyebrow text-success">Quick Action</span>
+                                <h5 class="apple-modal-title mb-0">Generate Packing Slip</h5>
+                            </div>
+                            <button type="button" class="btn-close apple-btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body py-3">
+                            <div class="apple-modal-order-box mb-3">
+                                <div class="small text-muted">Purchase Order</div>
+                                <div class="fw-bold fs-6 text-dark">{{ $order->po_number }}</div>
+                                <div class="small text-muted mt-1">
+                                    {{ $order->items->where('status', 'completed')->count() }} processed item(s) ready for shipment
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="apple-field-label">Delivery Note Number <span class="text-danger">*</span></label>
+                                <input type="text"
+                                       name="delivery_note"
+                                       class="form-control apple-input"
+                                       placeholder="e.g. DN-2026-0081"
+                                       required
+                                       oninput="this.form.querySelector('.apple-modal-submit').disabled = this.value.trim() === ''">
+                                <div class="form-text text-muted small mt-1">
+                                    Required before generating the official PDF packing slip.
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer border-0 pt-0">
+                            <button type="button" class="apple-btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="submit" class="apple-btn-success apple-modal-submit" disabled>
+                                <i class="fas fa-file-pdf me-1"></i> Generate Slip
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    @endif
+@endforeach
+
+<!-- Apple Toast for Copy Action -->
+<div id="appleToast" class="apple-toast">
+    <i class="fas fa-check-circle me-2 text-success"></i>
+    <span id="appleToastText">PO number copied</span>
+</div>
+
+@include('partials.apple-theme')
 @endsection

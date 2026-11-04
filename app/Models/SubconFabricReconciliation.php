@@ -38,6 +38,7 @@ class SubconFabricReconciliation extends Model
         'sisa_kain',
         'kepala_kain',
         'retur_kain',
+        'shortage',
         // Consumption — filled by the subcon admin at cutting-report approval.
         'fabric_sent',
         'consumption_plan',
@@ -55,6 +56,7 @@ class SubconFabricReconciliation extends Model
         'sisa_kain' => 'decimal:2',
         'kepala_kain' => 'decimal:2',
         'retur_kain' => 'decimal:2',
+        'shortage' => 'decimal:2',
         'fabric_sent' => 'decimal:2',
         'consumption_plan' => 'decimal:4',
         'cutt_plan' => 'integer',

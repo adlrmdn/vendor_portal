@@ -83,45 +83,82 @@
         letter-spacing: -0.02em;
     }
 
-    /* Modern Card Styles with crisp, visible borders */
+    /* Modern Apple Card Styles with crisp, visible borders */
     .pc-card {
         background: #ffffff;
-        border: 1px solid #cbd5e1;
-        border-radius: 0.5rem;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        border: 1px solid #d2d2d7;
+        border-radius: 14px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
         margin-bottom: 1.25rem;
+        overflow: hidden;
     }
     .pc-card > .pc-card-head {
-        padding: 1rem 1.25rem;
-        border-bottom: 1px solid #cbd5e1;
+        padding: 1.1rem 1.35rem;
+        border-bottom: 1px solid #e5e5ea;
         font-weight: 600;
-        font-size: 1rem;
-        color: #0f172a;
+        font-size: 0.98rem;
+        color: #1d1d1f;
         background-color: #ffffff;
-        border-top-left-radius: 0.5rem;
-        border-top-right-radius: 0.5rem;
+        letter-spacing: -0.01em;
     }
     .pc-card > .pc-card-body {
-        padding: 1.25rem;
+        padding: 1.35rem;
     }
 
-    /* Distinct Nested Line Item Card */
-    .line-row.pc-card {
-        background: #f8fafc;
-        border: 1px solid #cbd5e1 !important;
-        border-left: 4px solid #0d6efd !important;
-        border-radius: 0.5rem;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    /* Apple Nested Line Item Card */
+    .line-row.pc-card,
+    .apple-line-item-card {
+        background: #fafafc;
+        border: 1px solid #d2d2d7 !important;
+        border-radius: 12px !important;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
         margin-bottom: 1rem;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    .line-row.pc-card:hover {
-        border-color: #94a3b8 !important;
-        border-left-color: #0b5ed7 !important;
+    .line-row.pc-card:hover,
+    .apple-line-item-card:hover {
+        border-color: #a1a1a6 !important;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+    }
+
+    /* Clause Items */
+    .apple-clause-card {
+        background: #ffffff;
+        border: 1px solid #d2d2d7;
+        border-radius: 10px;
+        padding: 0.85rem 1rem;
+        margin-bottom: 0.75rem;
+        transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .apple-clause-card:hover {
+        border-color: #a1a1a6;
+    }
+    .apple-clause-card.clause-emphasis {
+        border-color: #ff3b30 !important;
+        background-color: #fff9f9 !important;
+    }
+    .clause-num-badge {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: #0071e3;
+        color: #ffffff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.78rem;
+        font-weight: 700;
+        flex-shrink: 0;
+    }
+    .apple-clause-card.clause-emphasis .clause-num-badge {
+        background: #ff3b30;
     }
 
     /* Form Controls & TomSelect Crisp Borders */
     .form-control, .form-select {
-        border: 1px solid #ced4da !important;
+        border: 1px solid #d2d2d7 !important;
+        border-radius: 8px !important;
+        font-size: 0.88rem !important;
     }
     .form-control:focus, .form-select:focus {
         border-color: #86b7fe !important;

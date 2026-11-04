@@ -807,6 +807,7 @@ class QcApprovalController extends Controller
             'fabrics.*.sisa_kain' => 'nullable|numeric|min:0',
             'fabrics.*.kepala_kain' => 'nullable|numeric|min:0',
             'fabrics.*.retur_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.shortage' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
             'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
@@ -1113,6 +1114,7 @@ class QcApprovalController extends Controller
             'fabrics.*.sisa_kain' => 'nullable|numeric|min:0',
             'fabrics.*.kepala_kain' => 'nullable|numeric|min:0',
             'fabrics.*.retur_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.shortage' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
             'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',
@@ -1223,6 +1225,17 @@ class QcApprovalController extends Controller
         if ($subcon && $materialReturnService->isReturnCheckPending($subcon)) {
             return redirect()->route('qc.ho-approve', ['token' => $token])
                 ->with('error', "Your changes were saved. Report Validation can't be sent to the Director yet — Material Flow still needs to check the returned material.");
+        }
+
+        // Delivery Note gate: at least one delivery-note attachment (either
+        // side — vendor or admin) must exist before this can go to the
+        // Director. Same placement/shape as the Material Flow gate above —
+        // blocked here stays on this same form (redirect back, not a
+        // dead-end result page), and the figures above are already saved by
+        // this point.
+        if ($subcon && $materialReturnService->attachmentsFor($subcon)->isEmpty()) {
+            return redirect()->route('qc.ho-approve', ['token' => $token])
+                ->with('error', "Your changes were saved. Report Validation can't be sent to the Director yet — a Delivery Note attachment is required.");
         }
 
         $signature = 'Digitally Signed: '.$actor

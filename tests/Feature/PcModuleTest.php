@@ -79,13 +79,13 @@ class PcModuleTest extends TestCase
         $response->assertSee('PC Master Data');
         $response->assertSee('PC Audit Log');
         $response->assertSee('PC Approver Settings');
-        $response->assertSee('5208599090');
+        $response->assertSee('5208.59.90');
     }
 
     public function test_fabric_admin_can_add_hs_code_and_it_is_audited(): void
     {
         $response = $this->actingAs($this->fabricAdmin)->post(route('admin.pc.master-data.hs-codes.store'), [
-            'code' => '1234567890',
+            'code' => '54076990',
             'description' => 'Test fabric',
         ]);
 
@@ -93,7 +93,7 @@ class PcModuleTest extends TestCase
         $response->assertSessionHas('success');
 
         $this->assertDatabaseHas('hs_codes', [
-            'code' => '1234567890',
+            'code' => '5407.69.90',
             'source' => 'user',
         ]);
 
@@ -104,13 +104,13 @@ class PcModuleTest extends TestCase
 
     public function test_duplicate_hs_code_fails_validation(): void
     {
-        HsCode::create(['code' => '1234567890', 'source' => 'seed']);
+        HsCode::create(['code' => '5407.69.90', 'source' => 'seed']);
 
         $response = $this->actingAs($this->fabricAdmin)->post(route('admin.pc.master-data.hs-codes.store'), [
-            'code' => '1234567890',
+            'code' => '5407.69.90',
         ]);
 
-        $response->assertSessionHasErrors('code');
+        $response->assertSessionHas('error');
     }
 
     public function test_approver_eligibility_is_setting_based_not_a_role(): void
@@ -167,6 +167,25 @@ class PcModuleTest extends TestCase
         $response->assertForbidden();
     }
 
+    public function test_configured_approver_can_reset_own_totp(): void
+    {
+        Setting::updateOrCreate(
+            ['key' => 'pc_approver_emails'],
+            ['value' => $this->fabricAdmin->email]
+        );
+
+        $this->fabricAdmin->totp_secret = 'TESTSECRET123';
+        $this->fabricAdmin->totp_confirmed_at = now();
+        $this->fabricAdmin->save();
+
+        $response = $this->actingAs($this->fabricAdmin->fresh())->post(route('admin.pc.totp.reset-self'));
+
+        $response->assertRedirect(route('admin.pc.data.index').'#approver-settings');
+        $fresh = $this->fabricAdmin->fresh();
+        $this->assertNull($fresh->totp_secret);
+        $this->assertNull($fresh->totp_confirmed_at);
+    }
+
     public function test_sync_poll_endpoint_returns_feed_states(): void
     {
         $response = $this->actingAs($this->fabricAdmin)->get(route('admin.pc.sync.poll'));
@@ -177,5 +196,16 @@ class PcModuleTest extends TestCase
             'fabric-items' => ['running', 'last'],
             'plm-refs' => ['running', 'last'],
         ]);
+    }
+
+    public function test_failed_login_redirects_with_errors_without_500(): void
+    {
+        $response = $this->post('/login', [
+            'email' => 'wrong@example.com',
+            'password' => 'wrongpassword',
+        ]);
+
+        $response->assertStatus(302);
+        $response->assertSessionHasErrors('email');
     }
 }

@@ -11,7 +11,9 @@ use Illuminate\Http\Request;
 
 class LoginController extends Controller
 {
-    use AuthenticatesUsers;
+    use AuthenticatesUsers {
+        sendFailedLoginResponse as traitSendFailedLoginResponse;
+    }
 
     /**
      * Where to redirect users after login. PC has no dedicated role or
@@ -53,7 +55,7 @@ class LoginController extends Controller
             ]);
         }
 
-        return parent::sendFailedLoginResponse($request);
+        return $this->traitSendFailedLoginResponse($request);
     }
 
     private function redirectForRole(string $role): string

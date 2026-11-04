@@ -15,8 +15,8 @@
 
     <style>
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f5f5f7;
         }
 
         .navbar-brand {
@@ -310,6 +310,7 @@
             }
         }
     </style>
+    @include('partials.apple-theme')
     @stack('styles')
 </head>
 
@@ -445,6 +446,13 @@
                                         <i class="fas fa-user me-2"></i> Profile
                                     </a>
                                 </li>
+                                @if(Auth::user()->isAdmin() || Auth::user()->isFabricAdmin())
+                                <li>
+                                    <a class="dropdown-item" href="{{ route('admin.pc.data.index') }}#approver-settings">
+                                        <i class="fas fa-key me-2"></i> Authenticator (TOTP)
+                                    </a>
+                                </li>
+                                @endif
                                 <li>
                                     <hr class="dropdown-divider">
                                 </li>

@@ -946,8 +946,10 @@ class AdminController extends Controller
         $user = Auth::user();
         $isPcApprover = $user && ($user->isAdmin() || \App\Http\Controllers\PcAdminController::isPcApproverUser($user));
 
-        $pcQuery = \App\Models\PcContract::with(['vendor', 'season', 'creator', 'currency', 'lines'])
-            ->where('status', \App\Models\PcContract::STATUS_PENDING_APPROVAL);
+        $pcQuery = \App\Models\PcContract::with([
+            'vendor', 'season', 'creator', 'currency', 'vatTreatment', 'deliveryTerm', 'paymentTerm',
+            'deliveries.lot', 'lines.fabricItem', 'lines.plmRef', 'lines.lot'
+        ])->where('status', \App\Models\PcContract::STATUS_PENDING_APPROVAL);
 
         if ($search !== '') {
             $driver = DB::connection()->getDriverName();
@@ -955,7 +957,14 @@ class AdminController extends Controller
             $pcQuery->where(function ($q) use ($search, $likeOperator) {
                 $q->where('contract_number', $likeOperator, "%{$search}%")
                     ->orWhereHas('vendor', function ($vq) use ($search, $likeOperator) {
-                        $vq->where('name', $likeOperator, "%{$search}%");
+                        $vq->where('name', $likeOperator, "%{$search}%")
+                            ->orWhere('code', $likeOperator, "%{$search}%");
+                    })
+                    ->orWhereHas('lines', function ($lq) use ($search, $likeOperator) {
+                        $lq->where('item_number_snapshot', $likeOperator, "%{$search}%")
+                            ->orWhere('item_name_snapshot', $likeOperator, "%{$search}%")
+                            ->orWhere('plm_id_snapshot', $likeOperator, "%{$search}%")
+                            ->orWhere('plm_article_name_snapshot', $likeOperator, "%{$search}%");
                     });
             });
         }

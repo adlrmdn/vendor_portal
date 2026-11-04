@@ -296,7 +296,8 @@
                         <span class="muted bold">Short Roll:</span> <span style="color: #0F172A;">{{ $f->short_roll !== null ? $n($f->short_roll).$unit : '0' }}</span> &nbsp;
                         <span class="muted bold">Sisa Kain (utuh):</span> <span style="color: #0F172A;">{{ $f->sisa_kain !== null ? $n($f->sisa_kain).$unit : '0' }}</span> &nbsp;
                         <span class="muted bold">Kepala Kain:</span> <span style="color: #0F172A;">{{ $f->kepala_kain !== null ? $n($f->kepala_kain).$unit : '0' }}</span> &nbsp;
-                        <span class="muted bold">Retur Kain:</span> <span style="color: #0F172A;">{{ $f->return_kain !== null ? $n($f->return_kain).$unit : '0' }}</span>
+                        <span class="muted bold">Retur Kain:</span> <span style="color: #0F172A;">{{ $f->return_kain !== null ? $n($f->return_kain).$unit : '0' }}</span> &nbsp;
+                        <span class="muted bold">Selisih/Shortage:</span> <span style="color: #0F172A;">{{ ($f->shortage ?? null) !== null ? $n($f->shortage).$unit : '0' }}</span>
                     </div>
                     <div style="margin-top: 1px; padding-left: 8px;">
                         <span style="display: inline-block; width: 3px; height: 5px; border-left: 0.6px solid #94A3B8; border-bottom: 0.6px solid #94A3B8; margin-right: 3.5px; margin-left: 2px; vertical-align: middle; margin-top: -3.5px;"></span>
@@ -526,7 +527,7 @@
             $unitRawB = \App\Services\SubconProductionService::displayUnit((string) $f->label);
             $unitB = $unitRawB ? ' '.$unitRawB : '';
             $unitPerPcB = $unitRawB ? ' '.$unitRawB.'/pc' : '';
-            $netUsable = ($f->fabric_sent !== null) ? ((float) $f->fabric_sent - (float) ($f->return_kain ?? 0)) : null;
+            $netUsable = ($f->fabric_sent !== null) ? ((float) $f->fabric_sent - (float) ($f->return_kain ?? 0) - (float) ($f->shortage ?? 0)) : null;
             $diffCons = ($f->actual_consumption !== null && $f->consumption_plan !== null)
                 ? ((float) $f->actual_consumption - (float) $f->consumption_plan) : null;
             $budgetCap = $f->consumption_plan !== null ? (float) $f->consumption_plan * 1.03 : null;
@@ -536,9 +537,12 @@
             $sentIsFromIssue = $f->fabric_sent !== null && (float) $f->fabric_sent === 0.0 && $f->issue_proposal !== null && $f->issue_proposal > 0;
             $sentDiff = ($f->issue_proposal !== null && $f->fabric_sent !== null) ? $f->issue_proposal - (float) $f->fabric_sent : null;
             $sentDiffNotable = $sentDiff !== null && abs($sentDiff) > 0.5;
-            // Total waste/retur qty (Step 4) — the four columns, one sum.
-            $returTotal = (float) ($f->short_roll ?? 0) + (float) ($f->sisa_kain ?? 0)
-                + (float) ($f->kepala_kain ?? 0) + (float) ($f->return_kain ?? 0);
+            // Waste/retur qty that actually feeds Step 1 (Retur Kain + Shortage).
+            // NOT short_roll/sisa_kain/kepala_kain too — Retur Kain is already
+            // auto-calculated as their sum on the vendor's cutting-report form
+            // (see fabric-reconciliation.blade.php), so adding them again here
+            // would double-count.
+            $returTotal = (float) ($f->return_kain ?? 0) + (float) ($f->shortage ?? 0);
             // Overconsumption expressed as actual fabric QUANTITY, not just a
             // rate/percentage — two versions: vs. the plan (informational —
             // can be negative, meaning under-consumption) and vs. the budget
@@ -573,8 +577,8 @@
                             <span class="muted" style="font-style: italic;"> (Material Issue: {{ $nSmart($f->issue_proposal).$unitB }}{{ $sentDiffNotable ? ', Δ '.($sentDiff > 0 ? '+' : '').$nSmart($sentDiff) : '' }})</span>
                         @endif
                         <br>
-                        Waste — Short Roll = {{ $nSmart($f->short_roll ?? 0) }}{{ $unitB }}, Sisa Kain = {{ $nSmart($f->sisa_kain ?? 0) }}{{ $unitB }}, Kepala Kain = {{ $nSmart($f->kepala_kain ?? 0) }}{{ $unitB }}, Retur Kain = {{ $nSmart($f->return_kain ?? 0) }}{{ $unitB }}
-                        <span class="muted" style="font-size: 4.6pt;">(total waste {{ $nSmart($returTotal) }}{{ $unitB }}; only Retur Kain feeds Step 1 below)</span><br>
+                        Waste — Short Roll = {{ $nSmart($f->short_roll ?? 0) }}{{ $unitB }}, Sisa Kain = {{ $nSmart($f->sisa_kain ?? 0) }}{{ $unitB }}, Kepala Kain = {{ $nSmart($f->kepala_kain ?? 0) }}{{ $unitB }}, Retur Kain = {{ $nSmart($f->return_kain ?? 0) }}{{ $unitB }}, Selisih/Shortage = {{ $nSmart($f->shortage ?? 0) }}{{ $unitB }}
+                        <span class="muted" style="font-size: 4.6pt;">(Retur Kain is already Short Roll + Sisa Kain + Kepala Kain; net waste feeding Step 1 below is Retur Kain + Shortage = {{ $nSmart($returTotal) }}{{ $unitB }})</span><br>
                         Actual Cutting Qty = {{ $n($totalCuttingQtyForBreakdown) }} pcs <span class="muted" style="font-size: 4.6pt;">(Cutt Plan: {{ $f->cutt_plan !== null ? $n($f->cutt_plan).' pcs' : '—' }})</span><br>
                         Consumption Plan (admin-entered at cutting approval — unlike Accessory's Cons. Plan, NOT sourced from BOM Final/D365) = {{ $f->consumption_plan !== null ? $fmtCons($f->consumption_plan).$unitPerPcB : '—' }}<br>
                         Fabric Price = {{ $f->fabric_price !== null ? $rp($f->fabric_price).'/'.trim($unitB) : '—' }}
@@ -583,8 +587,8 @@
                     {{-- STEP 1 — Net for Consumption. --}}
                     <div style="font-size: 4.9pt; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;">Step 1 — Net for Consumption</div>
                     <div style="font-size: 5.2pt; line-height: 1.6; margin-bottom: 4px; padding-left: 6px;">
-                        <span class="muted" style="font-style: italic;">Net = Fabric Sent &minus; Retur Kain</span><br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $nSmart($f->fabric_sent) }} &minus; {{ $nSmart($f->return_kain ?? 0) }}<br>
+                        <span class="muted" style="font-style: italic;">Net = Fabric Sent &minus; Retur Kain &minus; Shortage</span><br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;= {{ $nSmart($f->fabric_sent) }} &minus; {{ $nSmart($f->return_kain ?? 0) }} &minus; {{ $nSmart($f->shortage ?? 0) }}<br>
                         &nbsp;&nbsp;&nbsp;&nbsp;= <span class="bold">{{ $netUsable !== null ? $nSmart($netUsable).$unitB : '—' }}</span>
                     </div>
 

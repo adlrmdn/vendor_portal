@@ -82,12 +82,12 @@
                 <table class="table table-hover align-middle mb-0">
                     <thead class="table-light">
                         <tr>
-                            <th class="ps-3" style="width: 22%;">Contract</th>
-                            <th style="width: 22%;">Vendor</th>
-                            <th style="width: 14%;">Season / Lines</th>
+                            <th class="ps-3" style="width: 20%;">Contract</th>
+                            <th style="width: 20%;">Vendor</th>
+                            <th style="width: 14%;">Season &amp; Lines</th>
                             <th style="width: 16%;">Commercial Total</th>
                             <th style="width: 14%;">Submitted</th>
-                            <th class="pe-3 text-end" style="width: 12%;">Action</th>
+                            <th class="pe-3 text-end" style="width: 16%;">Action</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -96,49 +96,154 @@
                                 $totalQty = $contract->lines->sum('qty');
                                 $totalVal = $contract->lines->sum('line_total');
                                 $ccy = $contract->currency?->code ?? 'USD';
+                                $mainUom = $contract->lines->first()?->uom_snapshot ?? $contract->lines->first()?->fabricItem?->uom ?? 'units';
                             @endphp
-                            <tr>
+                            <tr class="border-bottom-0">
                                 <td class="ps-3">
-                                    <div class="fw-bold text-dark fs-6">{{ $contract->contract_number }}</div>
-                                    @if($contract->revision_no > 0)
-                                        <span class="badge bg-secondary-subtle text-secondary">REV {{ $contract->revision_no }}</span>
-                                    @endif
-                                    <div class="small text-muted">{{ $contract->fabric_type ?? 'WOVEN' }}</div>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="fw-bold text-primary text-decoration-none fs-6">
+                                            {{ $contract->contract_number }}
+                                        </a>
+                                        @if($contract->revision_no > 0)
+                                            <span class="badge bg-secondary-subtle text-secondary border">REV {{ $contract->revision_no }}</span>
+                                        @endif
+                                    </div>
+                                    <div class="small text-muted mt-1 d-flex gap-1 align-items-center flex-wrap">
+                                        @if($contract->deliveryTerm)
+                                            <span class="badge bg-light text-secondary border">{{ $contract->deliveryTerm->code }}</span>
+                                        @endif
+                                        @if($contract->paymentTerm)
+                                            <span class="badge bg-light text-secondary border">{{ $contract->paymentTerm->code }}</span>
+                                        @endif
+                                    </div>
                                 </td>
                                 <td>
                                     <div class="fw-semibold text-dark">{{ $contract->vendor->name ?? '—' }}</div>
-                                    <div class="small text-muted">{{ $contract->vendor->code ?? '' }}</div>
+                                    <div class="small text-muted mt-1">
+                                        <span class="badge bg-light text-dark border">{{ $contract->vendor->code ?? '—' }}</span>
+                                        @if($contract->vendor?->contact_person)
+                                            <span class="ms-1">&bull; {{ $contract->vendor->contact_person }}</span>
+                                        @endif
+                                    </div>
                                 </td>
                                 <td>
-                                    <div><span class="badge bg-light text-dark border">{{ $contract->season->name ?? $contract->season->code ?? '—' }}</span></div>
-                                    <div class="small text-muted mt-1">{{ $contract->lines->count() }} line items</div>
+                                    <div><span class="badge bg-light text-dark border fw-semibold">{{ $contract->season->name ?? $contract->season->code ?? '—' }}</span></div>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary mt-1 py-0 px-2 d-inline-flex align-items-center gap-1" 
+                                            data-bs-toggle="collapse" data-bs-target="#pc-lines-{{ $contract->id }}">
+                                        <i class="fas fa-layer-group"></i> <span>{{ $contract->lines->count() }} line items</span> <i class="fas fa-chevron-down small"></i>
+                                    </button>
                                 </td>
                                 <td>
-                                    <div class="fw-bold text-success">{{ $ccy }} {{ number_format($totalVal, 2) }}</div>
-                                    <div class="small text-muted">{{ number_format($totalQty, 2) }} units</div>
+                                    <div class="fw-bold text-success fs-6">{{ $ccy }} {{ number_format($totalVal, 2) }}</div>
+                                    <div class="small text-muted">{{ number_format($totalQty, $totalQty == (int)$totalQty ? 0 : 2) }} {{ $mainUom }}</div>
+                                    <div class="mt-1">
+                                        @if($contract->vatTreatment?->code === 'INCLUDE')
+                                            <span class="badge bg-success-subtle text-success border border-success-subtle" style="font-size: 0.72rem;">Inc. PPN {{ $contract->vat_rate ?? 11 }}%</span>
+                                        @else
+                                            <span class="badge bg-secondary-subtle text-secondary border" style="font-size: 0.72rem;">Excl. PPN</span>
+                                        @endif
+                                    </div>
                                 </td>
                                 <td>
-                                    <div class="text-dark small fw-semibold">{{ $contract->creator?->name ?? 'Leon Oscar' }}</div>
-                                    <div class="small text-muted">{{ $contract->submitted_at ? $contract->submitted_at->timezone('Asia/Jakarta')->format('d M Y, H:i') : '—' }} WIB</div>
+                                    <div class="text-dark small fw-semibold">{{ $contract->creator?->name ?? 'Fabric Admin' }}</div>
+                                    <div class="small text-muted">{{ $contract->submitted_at ? $contract->submitted_at->timezone('Asia/Jakarta')->format('d M Y, H:i') : ($contract->created_at ? $contract->created_at->timezone('Asia/Jakarta')->format('d M Y, H:i') : '—') }} WIB</div>
                                 </td>
                                 <td class="pe-3 text-end">
-                                    <div class="d-flex gap-1 justify-content-end">
+                                    <div class="d-flex gap-1 justify-content-end align-items-center">
                                         @if($isPcApprover)
-                                            <button type="button" class="btn btn-sm btn-success" 
+                                            <button type="button" class="btn btn-sm btn-success fw-semibold shadow-sm px-2 py-1" 
                                                     onclick="openApproveModal('{{ $contract->id }}', '{{ $contract->contract_number }}')">
-                                                <i class="fas fa-check"></i> Approve
+                                                <i class="fas fa-check me-1"></i> Approve
                                             </button>
-                                            <button type="button" class="btn btn-sm btn-outline-danger" 
-                                                    onclick="openRejectModal('{{ $contract->id }}', '{{ $contract->contract_number }}')">
-                                                <i class="fas fa-times"></i>
+                                            <button type="button" class="btn btn-sm btn-outline-danger px-2 py-1" 
+                                                    onclick="openRejectModal('{{ $contract->id }}', '{{ $contract->contract_number }}')" title="Reject Contract back to Draft">
+                                                <i class="fas fa-times me-1"></i> Reject
                                             </button>
                                         @endif
-                                        <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="btn btn-sm btn-outline-primary" title="View Contract Details">
+                                        <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="btn btn-sm btn-outline-primary px-2 py-1" title="View Contract Details">
                                             <i class="fas fa-eye"></i>
                                         </a>
-                                        <a href="{{ route('admin.pc.contracts.pdf', $contract) }}" target="_blank" class="btn btn-sm btn-outline-danger" title="Preview PDF">
-                                            <i class="fas fa-file-pdf"></i>
+                                        <a href="{{ route('admin.pc.contracts.pdf', $contract) }}" target="_blank" class="btn btn-sm btn-outline-secondary px-2 py-1" title="Preview PDF">
+                                            <i class="fas fa-file-pdf text-danger"></i>
                                         </a>
+                                    </div>
+                                </td>
+                            </tr>
+                            {{-- Expandable Lines Sub-table --}}
+                            <tr class="collapse show" id="pc-lines-{{ $contract->id }}">
+                                <td colspan="6" class="p-0 border-0">
+                                    <div class="px-3 pb-3 pt-1 bg-light border-bottom">
+                                        <div class="card border shadow-sm">
+                                            <div class="card-header bg-white py-2 px-3 d-flex justify-content-between align-items-center">
+                                                <div class="small fw-bold text-dark">
+                                                    <i class="fas fa-list text-primary me-1"></i> Contract Items Breakdown ({{ $contract->lines->count() }} items)
+                                                </div>
+                                                <div class="small text-muted">
+                                                    Contract: <strong class="text-dark">{{ $contract->contract_number }}</strong>
+                                                </div>
+                                            </div>
+                                            <div class="table-responsive">
+                                                <table class="table table-sm table-bordered table-hover align-middle mb-0 bg-white" style="font-size: 0.82rem;">
+                                                    <thead class="table-light">
+                                                        <tr>
+                                                            <th class="text-center" style="width: 35px;">#</th>
+                                                            <th style="width: 130px;">Item No</th>
+                                                            <th style="width: 150px;">Brand / Article</th>
+                                                            <th>Item Name &amp; Description</th>
+                                                            <th style="width: 140px;">Composition / Construction</th>
+                                                            <th class="text-center" style="width: 70px;">Lot</th>
+                                                            <th class="text-end" style="width: 100px;">Quantity</th>
+                                                            <th class="text-end" style="width: 110px;">Unit Price</th>
+                                                            <th class="text-end" style="width: 120px;">Line Total</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach($contract->lines as $line)
+                                                            @php
+                                                                $lQty = (float) $line->qty;
+                                                                $lPrice = (float) $line->unit_price;
+                                                                $lTotal = $lQty * $lPrice;
+                                                                $lUom = $line->uom_snapshot ?? $line->fabricItem?->uom ?? 'MTR';
+                                                            @endphp
+                                                            <tr>
+                                                                <td class="text-center text-muted fw-bold">{{ $line->line_no }}</td>
+                                                                <td class="font-monospace fw-bold text-primary">{{ $line->item_number_snapshot }}</td>
+                                                                <td>
+                                                                    <div class="fw-semibold text-dark">{{ $line->plmRef?->article_name ?? $line->plm_article_name_snapshot ?? '—' }}</div>
+                                                                    @if($line->plm_id_snapshot)
+                                                                        <div class="text-muted" style="font-size: 0.72rem;">{{ $line->plm_id_snapshot }}</div>
+                                                                    @endif
+                                                                </td>
+                                                                <td>
+                                                                    <div class="text-dark">{{ $line->item_name_snapshot }}</div>
+                                                                    @if($line->remarks)
+                                                                        <div class="mt-1 text-primary small"><i class="fas fa-comment-dots me-1"></i><strong>Remark:</strong> {{ $line->remarks }}</div>
+                                                                    @endif
+                                                                </td>
+                                                                <td>
+                                                                    <div>{{ $line->resolved_composition ?? $line->fabricItem?->composition ?? '—' }}</div>
+                                                                    <div class="text-muted" style="font-size: 0.72rem;">{{ $line->resolved_construction ?? $line->fabricItem?->construction ?? '' }}</div>
+                                                                </td>
+                                                                <td class="text-center">
+                                                                    <span class="badge bg-light text-dark border">
+                                                                        {{ $line->lot_snapshot ? str_replace('Lot ', '', $line->lot_snapshot) : ($line->lot?->label ?? $line->lot?->code ?? ($line->deliveries->first()?->lot?->label ?? $line->deliveries->first()?->lot?->code ?? '—')) }}
+                                                                    </span>
+                                                                </td>
+                                                                <td class="text-end fw-bold text-dark">
+                                                                    {{ number_format($lQty, $lQty == (int)$lQty ? 0 : 2) }} {{ $lUom }}
+                                                                </td>
+                                                                <td class="text-end text-muted">
+                                                                    {{ $ccy }} {{ number_format($lPrice, 2) }}
+                                                                </td>
+                                                                <td class="text-end fw-bold text-success">
+                                                                    {{ $ccy }} {{ number_format($lTotal, 2) }}
+                                                                </td>
+                                                            </tr>
+                                                        @endforeach
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
                                     </div>
                                 </td>
                             </tr>
@@ -161,55 +266,157 @@
                         $totalQty = $contract->lines->sum('qty');
                         $totalVal = $contract->lines->sum('line_total');
                         $ccy = $contract->currency?->code ?? 'USD';
+                        $mainUom = $contract->lines->first()?->uom_snapshot ?? $contract->lines->first()?->fabricItem?->uom ?? 'units';
                     @endphp
-                    <div class="border rounded p-3 mb-3 bg-white shadow-sm">
-                        <div class="d-flex justify-content-between align-items-start mb-2">
-                            <div>
-                                <span class="fw-bold text-dark fs-6">{{ $contract->contract_number }}</span>
-                                @if($contract->revision_no > 0)
-                                    <span class="badge bg-secondary ms-1">REV {{ $contract->revision_no }}</span>
-                                @endif
-                                <div class="small text-muted mt-1">{{ $contract->vendor->name ?? '—' }}</div>
-                            </div>
-                            <span class="badge bg-warning text-dark">Awaiting Approval</span>
-                        </div>
-
-                        <div class="d-flex justify-content-between align-items-center py-2 border-top border-bottom my-2 small">
-                            <div>
-                                <span class="text-muted">Total:</span> 
-                                <strong class="text-success">{{ $ccy }} {{ number_format($totalVal, 2) }}</strong>
-                            </div>
-                            <div>
-                                <span class="text-muted">Season:</span> 
-                                <span class="badge bg-light text-dark border">{{ $contract->season->code ?? '—' }}</span>
-                            </div>
-                        </div>
-
-                        <div class="small text-muted mb-3">
-                            <i class="fas fa-user-edit me-1"></i> Submitted by <strong>{{ $contract->creator?->name ?? 'Leon Oscar' }}</strong> 
-                            ({{ $contract->submitted_at ? $contract->submitted_at->timezone('Asia/Jakarta')->format('d M H:i') : '' }} WIB)
-                        </div>
-
-                        <div class="d-grid gap-2">
-                            @if($isPcApprover)
-                                <div class="d-flex gap-2">
-                                    <button type="button" class="btn btn-success flex-fill py-2 fw-bold" 
-                                            onclick="openApproveModal('{{ $contract->id }}', '{{ $contract->contract_number }}')">
-                                        <i class="fas fa-check-circle me-1"></i> Approve (TOTP)
-                                    </button>
-                                    <button type="button" class="btn btn-outline-danger flex-fill py-2" 
-                                            onclick="openRejectModal('{{ $contract->id }}', '{{ $contract->contract_number }}')">
-                                        <i class="fas fa-times-circle me-1"></i> Reject…
-                                    </button>
+                    <div class="card border rounded-3 mb-3 bg-white shadow-sm overflow-hidden">
+                        {{-- Top Header: Status & Contract Info --}}
+                        <div class="card-header bg-white border-bottom py-2 px-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-1 rounded-pill small fw-semibold">
+                                    <i class="fas fa-clock me-1"></i> Awaiting Approval
+                                </span>
+                                <div class="d-flex align-items-center gap-1">
+                                    @if($contract->revision_no > 0)
+                                        <span class="badge bg-secondary-subtle text-secondary border">REV {{ $contract->revision_no }}</span>
+                                    @endif
+                                    <span class="badge bg-light text-dark border fw-bold">{{ $contract->season->name ?? $contract->season->code ?? '—' }}</span>
                                 </div>
-                            @endif
-                            <div class="d-flex gap-2">
-                                <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="btn btn-outline-primary flex-fill py-2">
-                                    <i class="fas fa-eye me-1"></i> View Details
+                            </div>
+                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-1">
+                                <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="fw-bold text-primary text-decoration-none fs-6">
+                                    {{ $contract->contract_number }}
                                 </a>
-                                <a href="{{ route('admin.pc.contracts.pdf', $contract) }}" target="_blank" class="btn btn-outline-danger flex-fill py-2">
-                                    <i class="fas fa-file-pdf me-1"></i> PDF Preview
-                                </a>
+                                <div class="d-flex gap-1">
+                                    @if($contract->deliveryTerm)
+                                        <span class="badge bg-light text-secondary border" style="font-size: 0.7rem;">{{ $contract->deliveryTerm->code }}</span>
+                                    @endif
+                                    @if($contract->paymentTerm)
+                                        <span class="badge bg-light text-secondary border" style="font-size: 0.7rem;">{{ $contract->paymentTerm->code }}</span>
+                                    @endif
+                                </div>
+                            </div>
+                            <div class="small text-muted mt-1 d-flex align-items-center gap-1">
+                                <i class="fas fa-building text-secondary opacity-75"></i>
+                                <strong class="text-dark">{{ $contract->vendor->name ?? '—' }}</strong>
+                                @if($contract->vendor?->code)
+                                    <span class="badge bg-light text-dark border ms-1" style="font-size: 0.7rem;">{{ $contract->vendor->code }}</span>
+                                @endif
+                            </div>
+                        </div>
+
+                        {{-- KPI Metrics Block: Commercial Total & Submission Meta --}}
+                        <div class="p-3 bg-light bg-opacity-50 border-bottom">
+                            <div class="row g-2 align-items-center">
+                                <div class="col-7">
+                                    <div class="text-uppercase text-muted fw-bold" style="font-size: 0.68rem; letter-spacing: 0.5px;">Commercial Total</div>
+                                    <div class="fw-bold text-success fs-5 lh-1 mt-1">{{ $ccy }} {{ number_format($totalVal, 2) }}</div>
+                                    <div class="small text-muted mt-1 d-flex align-items-center gap-1 flex-wrap">
+                                        <span class="fw-semibold text-dark">{{ number_format($totalQty, $totalQty == (int)$totalQty ? 0 : 2) }} {{ $mainUom }}</span>
+                                        <span>&bull;</span>
+                                        @if($contract->vatTreatment?->code === 'INCLUDE')
+                                            <span class="badge bg-success-subtle text-success border border-success-subtle" style="font-size: 0.68rem;">Inc. PPN {{ $contract->vat_rate ?? 11 }}%</span>
+                                        @else
+                                            <span class="badge bg-secondary-subtle text-secondary border" style="font-size: 0.68rem;">Excl. PPN</span>
+                                        @endif
+                                    </div>
+                                </div>
+                                <div class="col-5 text-end border-start ps-2">
+                                    <div class="text-uppercase text-muted fw-bold" style="font-size: 0.68rem; letter-spacing: 0.5px;">Submitted By</div>
+                                    <div class="text-dark fw-semibold small mt-1 text-truncate">{{ $contract->creator?->name ?? 'Fabric Admin' }}</div>
+                                    <div class="text-muted" style="font-size: 0.72rem;">{{ $contract->submitted_at ? $contract->submitted_at->timezone('Asia/Jakarta')->format('d M, H:i') : ($contract->created_at ? $contract->created_at->timezone('Asia/Jakarta')->format('d M, H:i') : '—') }} WIB</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {{-- Line Items Breakdown --}}
+                        <div class="p-3 border-bottom">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="small fw-bold text-dark d-flex align-items-center gap-1">
+                                    <i class="fas fa-layer-group text-primary"></i> 
+                                    <span>Line Items ({{ $contract->lines->count() }})</span>
+                                </span>
+                                <button class="btn btn-sm btn-link text-decoration-none p-0 small text-secondary" 
+                                        type="button" data-bs-toggle="collapse" data-bs-target="#m-lines-{{ $contract->id }}">
+                                    <span class="small">Toggle View</span> <i class="fas fa-chevron-down ms-0.5 small"></i>
+                                </button>
+                            </div>
+                            <div class="collapse show" id="m-lines-{{ $contract->id }}">
+                                <div class="d-flex flex-column gap-2">
+                                    @foreach($contract->lines as $line)
+                                        @php
+                                            $lQty = (float) $line->qty;
+                                            $lPrice = (float) $line->unit_price;
+                                            $lTotal = $lQty * $lPrice;
+                                            $lUom = $line->uom_snapshot ?? $line->fabricItem?->uom ?? 'MTR';
+                                        @endphp
+                                        <div class="border rounded-2 p-2 bg-white shadow-none">
+                                            <div class="d-flex justify-content-between align-items-start gap-2">
+                                                <div>
+                                                    <span class="badge bg-secondary-subtle text-secondary me-1" style="font-size: 0.7rem;">#{{ $line->line_no }}</span>
+                                                    <span class="font-monospace fw-bold text-primary small">{{ $line->item_number_snapshot }}</span>
+                                                    @if($line->lot_snapshot || $line->lot?->label || $line->lot?->code)
+                                                        <span class="badge bg-light text-secondary border ms-1" style="font-size: 0.68rem;">
+                                                            LOT {{ $line->lot_snapshot ? str_replace('Lot ', '', $line->lot_snapshot) : ($line->lot?->label ?? $line->lot?->code) }}
+                                                        </span>
+                                                    @endif
+                                                </div>
+                                                <strong class="text-success small text-nowrap">{{ $ccy }} {{ number_format($lTotal, 2) }}</strong>
+                                            </div>
+                                            <div class="text-dark small fw-medium mt-1 lh-sm" style="font-size: 0.8rem;">
+                                                {{ $line->item_name_snapshot }}
+                                            </div>
+                                            <div class="d-flex justify-content-between align-items-center text-muted mt-1.5" style="font-size: 0.75rem;">
+                                                <span class="text-truncate me-2">
+                                                    <i class="fas fa-tag me-1 opacity-50"></i>{{ $line->plmRef?->article_name ?? $line->plm_article_name_snapshot ?? '—' }}
+                                                </span>
+                                                <span class="text-nowrap fw-semibold text-dark">
+                                                    {{ number_format($lQty, $lQty == (int)$lQty ? 0 : 2) }} {{ $lUom }} &times; {{ number_format($lPrice, 2) }}
+                                                </span>
+                                            </div>
+                                            @if($line->resolved_construction || $line->resolved_composition)
+                                                <div class="text-muted mt-1 d-flex gap-1 flex-wrap" style="font-size: 0.7rem;">
+                                                    @if($line->resolved_composition ?? $line->fabricItem?->composition)
+                                                        <span class="badge bg-light text-muted border py-0.5 px-1.5">{{ $line->resolved_composition ?? $line->fabricItem?->composition }}</span>
+                                                    @endif
+                                                    @if($line->resolved_construction ?? $line->fabricItem?->construction)
+                                                        <span class="badge bg-light text-muted border py-0.5 px-1.5">{{ $line->resolved_construction ?? $line->fabricItem?->construction }}</span>
+                                                    @endif
+                                                </div>
+                                            @endif
+                                            @if($line->remarks)
+                                                <div class="text-primary mt-1.5 p-1 px-2 rounded bg-info-subtle border border-info-subtle" style="font-size: 0.72rem;">
+                                                    <i class="fas fa-comment-dots me-1"></i><strong>Remark:</strong> {{ $line->remarks }}
+                                                </div>
+                                            @endif
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
+                        </div>
+
+                        {{-- Action Buttons --}}
+                        <div class="p-3 bg-white">
+                            <div class="d-flex flex-column gap-2">
+                                @if($isPcApprover)
+                                    <div class="d-flex gap-2">
+                                        <button type="button" class="btn btn-success flex-fill py-2 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-1.5" 
+                                                onclick="openApproveModal('{{ $contract->id }}', '{{ $contract->contract_number }}')">
+                                            <i class="fas fa-check-circle"></i> <span>Approve</span>
+                                        </button>
+                                        <button type="button" class="btn btn-outline-danger flex-fill py-2 fw-semibold d-flex align-items-center justify-content-center gap-1.5" 
+                                                onclick="openRejectModal('{{ $contract->id }}', '{{ $contract->contract_number }}')">
+                                            <i class="fas fa-times-circle"></i> <span>Reject…</span>
+                                        </button>
+                                    </div>
+                                @endif
+                                <div class="d-flex gap-2">
+                                    <a href="{{ route('admin.pc.contracts.show', $contract) }}" class="btn btn-outline-primary flex-fill py-1.5 small fw-medium d-flex align-items-center justify-content-center gap-1.5">
+                                        <i class="fas fa-eye"></i> <span>View Details</span>
+                                    </a>
+                                    <a href="{{ route('admin.pc.contracts.pdf', $contract) }}" target="_blank" class="btn btn-outline-secondary flex-fill py-1.5 small fw-medium d-flex align-items-center justify-content-center gap-1.5">
+                                        <i class="fas fa-file-pdf text-danger"></i> <span>PDF Preview</span>
+                                    </a>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -375,12 +582,7 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="mb-2 text-dark">Enter your 6-digit Authenticator code to finalize approval and generate the frozen PDF contract:</p>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">6-digit Code</label>
-                        <input type="text" name="code" class="form-control form-control-lg text-center fw-bold font-monospace" 
-                               maxlength="6" pattern="[0-9]{6}" inputmode="numeric" placeholder="123456" required autofocus>
-                    </div>
+                    <p class="mb-2 text-dark">Confirm your internal approval to finalize the contract, freeze clauses &amp; tolerances, and generate the official PDF:</p>
                     <div class="small text-muted">
                         Approval locks the contract, creates an immutable PDF, and readies it for transmission to the supplier.
                     </div>
@@ -407,11 +609,6 @@
                     <div class="mb-3">
                         <label class="form-label fw-bold">Reason for Rejection (required)</label>
                         <textarea name="reason" class="form-control" rows="3" minlength="10" placeholder="State clearly what needs to be changed…" required></textarea>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">6-digit Authenticator Code</label>
-                        <input type="text" name="code" class="form-control text-center fw-bold font-monospace" 
-                               maxlength="6" pattern="[0-9]{6}" inputmode="numeric" placeholder="123456" required>
                     </div>
                 </div>
                 <div class="modal-footer">

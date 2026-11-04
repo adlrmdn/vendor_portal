@@ -188,4 +188,12 @@ class PcVendorContractController extends Controller
             'Content-Disposition' => 'inline; filename="'.$filename.'"',
         ]);
     }
+
+    public function guidebookPdf()
+    {
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('vendor.pc.pdf.guidebook')
+            ->setPaper('a4');
+
+        return $pdf->download('PT_Mega_Perintis_PC_Supplier_Guidebook.pdf');
+    }
 }

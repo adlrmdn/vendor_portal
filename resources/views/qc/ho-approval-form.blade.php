@@ -15,6 +15,17 @@
     // show this exact banner/button as clear ("Validate & Send Approval")
     // while the actual submit was still silently blocked server-side.
     $materialFlowPending = $validateMode && ($materialReturnPending ?? false);
+    // Delivery Note is required before Validate & Send — same gate shape and
+    // placement as Material Flow above, see QcApprovalController::hoSendApproval().
+    $deliveryNoteMissing = $validateMode && ($materialReturns ?? collect())->isEmpty();
+    $sendBlocked = $materialFlowPending || $deliveryNoteMissing;
+    // Shared by the confirm-dialog text (form, below) and the blocked-state
+    // caption next to the submit button — kept in one place so both always
+    // agree on why sending is blocked.
+    $blockedReasons = array_filter([
+        $materialFlowPending ? 'Material Flow to check the returned material' : null,
+        $deliveryNoteMissing ? 'a Delivery Note attachment' : null,
+    ]);
 @endphp
 
 @section('title', 'Final Approval'.($styleName ? ' - '.$styleName : ''))
@@ -121,8 +132,8 @@
                                  (so they can sit visually after Material Flow) but still
                                  submit with it via form="approval-form". --}}
                             <form id="approval-form" method="POST"
-                                  data-confirm-message="{{ $materialFlowPending
-                                      ? 'Save your entered figures now? This cannot be sent to the Director yet — Material Flow still needs to check the returned material.'
+                                  data-confirm-message="{{ $sendBlocked
+                                      ? 'Save your entered figures now? This cannot be sent to the Director yet — waiting on '.implode(' and ', $blockedReasons).'.'
                                       : ($validateMode
                                           ? 'Send this approval to the Director for final authorization? Any revised figures will be recalculated and saved first.'
                                           : 'Approve and sign this inspection? The entered consumption will be recalculated and saved, and the RAF production run queued. The Director is notified only after the separate Validate & Send step.') }}"
@@ -223,7 +234,8 @@
                                                      Approve/Send confirmation dialog. --}}
                                                 <button type="submit" id="qc-qty-save-btn" data-role="qty-save"
                                                         formaction="{{ route('qc.ho-approve.qty-correction', array_filter(['token' => $token, 'as' => request('as')])) }}"
-                                                        formmethod="POST"
+                                                        formmethod="POST" formnovalidate
+                                                        title="Saves the qty correction above only — skips the remarks/consumption fields entirely, so you can correct figures before writing your remarks."
                                                         class="btn btn-sm btn-outline-primary">
                                                     <i class="fas fa-save me-1"></i> Save &amp; re-queue RAF
                                                 </button>
@@ -309,6 +321,12 @@
                                 <textarea name="ho_remarks" id="ho_remarks" form="approval-form" rows="2" class="form-control form-control-sm" required placeholder="Explain your review — findings, concerns, or justification for this approval.">{{ old('ho_remarks', $row->ho_remarks ?? null) }}</textarea>
                             </div>
 
+                            @if($deliveryNoteMissing)
+                                <div class="alert alert-warning small mb-0 mt-3 d-flex align-items-center gap-2">
+                                    <i class="fas fa-paperclip"></i>
+                                    <div>A Delivery Note attachment is required before this can be sent to the Director — attach one above. You can still press the button below to save your entered figures; it will save without sending.</div>
+                                </div>
+                            @endif
                             @if($materialFlowPending)
                                 <div class="alert alert-warning small mb-0 mt-3 d-flex align-items-center gap-2">
                                     <i class="fas fa-hourglass-half"></i>
@@ -325,13 +343,25 @@
                                 @if($validateMode)
                                     {{-- Deliberately never `disabled`: a submit always saves the
                                          entered figures first (see hoSendApproval), even when the
-                                         Material Flow gate below blocks the actual send to the
-                                         Director — disabling this button used to be the only signal
-                                         of that block, with no way to save while waiting. --}}
-                                    <button type="submit" form="approval-form" class="btn btn-primary px-4 fw-semibold shadow-sm"
-                                            title="{{ $materialFlowPending ? 'Waiting on Material Flow to check the returned material — this will save your entries but not send yet' : '' }}">
-                                        <i class="fas fa-{{ $materialFlowPending ? 'floppy-disk' : 'paper-plane' }} me-1"></i>
-                                        {{ $materialFlowPending ? 'Save' : 'Validate & Send Approval' }}
+                                         gates below block the actual send to the Director —
+                                         disabling this button used to be the only signal of that
+                                         block, with no way to save while waiting. The label always
+                                         reads "Validate & Send Approval" (it used to swap to bare
+                                         "Save" when blocked, which read as a different, weaker
+                                         action and confused users into thinking Send had vanished);
+                                         the blocked state is instead shown by the outline style +
+                                         lock icon + caption below, so what the button is called
+                                         never changes, only how ready it looks. --}}
+                                    @if($sendBlocked)
+                                        <span class="text-muted small text-end" style="max-width:220px;">
+                                            Will save only — blocked on {{ implode(' and ', $blockedReasons) }}.
+                                        </span>
+                                    @endif
+                                    <button type="submit" form="approval-form"
+                                            class="btn px-4 fw-semibold shadow-sm {{ $sendBlocked ? 'btn-outline-primary' : 'btn-primary' }}"
+                                            title="{{ $sendBlocked ? 'Waiting on '.implode(' and ', $blockedReasons).' — this will save your entries but not send yet' : '' }}">
+                                        <i class="fas fa-{{ $sendBlocked ? 'lock' : 'paper-plane' }} me-1"></i>
+                                        Validate &amp; Send Approval
                                     </button>
                                 @else
                                     <a href="{{ route('qc.ho-decline', array_filter(['token' => $token, 'as' => request('as')])) }}"

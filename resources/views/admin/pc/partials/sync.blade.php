@@ -1,38 +1,40 @@
-{{-- PC D365 Sync tab-pane content. Data from PcController::index(). --}}
-<div class="mb-4">
-    <h1 class="pc-h1 mb-0"><i class="fas fa-rotate me-2"></i>D365 / VSM Sync</h1>
-    <small class="text-muted">Fabric vendor enrichment and fabric items refresh every 4 hours; PLM refs refresh hourly. Use "Refresh now" for anything more urgent.</small>
-</div>
-
-<div class="pc-card">
-    <div class="pc-card-body">
-        <table class="pc-table mb-0" id="pcSyncTable">
+{{-- PC D365 Sync tab-pane content --}}
+<div class="apple-card mb-4">
+    <div class="apple-card-header">
+        <div class="apple-card-title">
+            <i class="fas fa-rotate text-success"></i>
+            <span>D365 / VSM Synchronization</span>
+        </div>
+        <span class="small text-muted">Enrichment refreshes every 4h; PLM refs refresh hourly</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table apple-table mb-0" id="pcSyncTable">
             <thead>
                 <tr>
-                    <th>Feed</th>
+                    <th class="ps-3">Feed</th>
                     <th>Status</th>
                     <th>Last Result</th>
                     <th>Finished At</th>
-                    <th class="text-end">Action</th>
+                    <th class="pe-3 text-end">Action</th>
                 </tr>
             </thead>
             <tbody>
                 @foreach (['vendor-enrichment' => 'Fabric Vendors (D365 VendorsV2 enrichment)', 'fabric-items' => 'Fabric Items (D365 ReleasedProductsV2)', 'plm-refs' => 'PLM Refs (VSM plm_activity)'] as $feed => $label)
                     @php $state = $feeds[$feed] ?? ['running' => false, 'last' => null]; @endphp
-                    <tr data-feed="{{ $feed }}">
-                        <td>{{ $label }}</td>
+                    <tr class="apple-table-row" data-feed="{{ $feed }}">
+                        <td class="ps-3 fw-semibold">{{ $label }}</td>
                         <td class="feed-status">
                             @if ($state['running'])
-                                <span class="pc-pill pc-pill-waiting">Running…</span>
+                                <span class="apple-pill-status pill-warning"><span class="status-dot dot-warning"></span>Running…</span>
                             @else
-                                <span class="pc-pill pc-pill-neutral">Idle</span>
+                                <span class="apple-pill-status pill-success"><span class="status-dot dot-success"></span>Idle</span>
                             @endif
                         </td>
-                        <td class="feed-last-result">{{ $state['last']['result'] ?? '—' }}</td>
-                        <td class="feed-finished-at">{{ $state['last']['finished_at'] ?? '—' }}</td>
-                        <td class="text-end">
-                            <button type="button" class="btn btn-sm btn-outline-primary feed-refresh-btn" data-feed="{{ $feed }}" {{ $state['running'] ? 'disabled' : '' }}>
-                                Refresh now
+                        <td class="feed-last-result text-muted">{{ $state['last']['result'] ?? '—' }}</td>
+                        <td class="feed-finished-at text-muted">{{ $state['last']['finished_at'] ?? '—' }}</td>
+                        <td class="pe-3 text-end">
+                            <button type="button" class="apple-btn-secondary feed-refresh-btn" data-feed="{{ $feed }}" {{ $state['running'] ? 'disabled' : '' }}>
+                                <i class="fas fa-sync-alt me-1"></i> Refresh now
                             </button>
                         </td>
                     </tr>

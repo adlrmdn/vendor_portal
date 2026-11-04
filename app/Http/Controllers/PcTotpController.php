@@ -92,4 +92,30 @@ class PcTotpController extends Controller
 
         return redirect(route('admin.pc.data.index').'#approver-settings')->with('success', "Authenticator code reset for \"{$user->name}\" — they'll need to set it up again.");
     }
+
+    /**
+     * Resets the logged-in user's OWN authenticator code so they can reconfigure
+     * or change their TOTP device/secret. Available to any configured Approver or admin.
+     */
+    public function resetSelf(Request $request)
+    {
+        $this->ensureIsApprover();
+
+        $user = Auth::user();
+        $user->totp_secret = null;
+        $user->totp_confirmed_at = null;
+        $user->save();
+
+        PcAuditLog::record([
+            'actor' => $user->email,
+            'actor_role' => $user->role,
+            'event_type' => 'totp_reset_self',
+            'entity_type' => 'user',
+            'entity_id' => $user->id,
+            'entity_label' => $user->name,
+            'note' => 'User reset their own TOTP authenticator key to reconfigure',
+        ]);
+
+        return redirect(route('admin.pc.data.index').'#approver-settings')->with('success', 'Your authenticator key was reset. Scan the new QR code or enter the key to reconfigure your authenticator app.');
+    }
 }

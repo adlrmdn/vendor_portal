@@ -1068,6 +1068,59 @@ class SubconAdminController extends Controller
     }
 
     /**
+     * Manual admin override for a stuck/failed job_trans_raf RPA run — the
+     * same action an admin would otherwise ask ops to do by hand against the
+     * remote `rpa` queue directly. Exists because the automaton
+     * (automaton/pw_service/reg_raf) can legitimately fail or hang against a
+     * production D365 quirk (e.g. an "Over Qty" validation on a merged
+     * order's second group — see RpaQueueService::queueJobTransRaf()) with
+     * no portal-side retry path other than re-approving the whole gate.
+     *
+     * Updates EVERY row for this project_id + rpa_type=job_trans_raf,
+     * regardless of current status (pending/processing/failed) — a merged
+     * project can have more than one (one per linked production group, see
+     * queueJobTransRaf()'s docblock), and an admin resolving "the RAF for
+     * this order" means all of them, not just whichever one the UI happened
+     * to read status from.
+     */
+    public function setRafStatus(Request $request, string $projectId)
+    {
+        $data = $request->validate([
+            'status' => 'required|in:completed,failed',
+        ]);
+
+        try {
+            $updated = DB::connection('rpa')->table('rpa_queues')
+                ->where('entity_id', $projectId)->where('rpa_type', 'job_trans_raf')
+                ->update(['status' => $data['status'], 'updated_at' => now()]);
+        } catch (\Throwable $e) {
+            Log::error('Manual RAF status override failed', ['project' => $projectId, 'error' => $e->getMessage()]);
+
+            return back()->with('error', 'Could not reach the RPA queue: '.$e->getMessage());
+        }
+
+        if ($updated === 0) {
+            return back()->with('error', "No job_trans_raf queue entry found for project {$projectId}.");
+        }
+
+        Log::warning('RAF status manually overridden by admin', [
+            'project' => $projectId, 'status' => $data['status'], 'rows_updated' => $updated,
+            'actor' => Auth::user()->name ?? Auth::user()->email ?? 'unknown',
+        ]);
+
+        \App\Models\SubconApprovalLog::record([
+            'order_number' => $projectId,
+            'gate' => 'final',
+            'decision' => 'adjusted',
+            'actor' => Auth::user()->name ?? Auth::user()->email ?? 'unknown',
+            'source' => 'portal',
+            'note' => "RAF status manually set to '{$data['status']}' for {$updated} queue row(s).",
+        ]);
+
+        return back()->with('success', "RAF marked {$data['status']} ({$updated} queue row(s)).");
+    }
+
+    /**
      * List-display-only cache around RpaQueueService::deductionBreakdown()
      * (profiled at ~160ms/row regardless of warm/cold — see the callers'
      * comments). Deliberately NOT used by the actual approval/RPA-queuing
@@ -1246,6 +1299,7 @@ class SubconAdminController extends Controller
 
                 return [
                     'token' => $s->approval_token,
+                    'project_id' => $s->project_id,
                     'order_id' => $order->id ?? null,
                     'order_number' => $order->order_number ?? $project->po_info ?? ($s->project_id ?? '—'),
                     'style' => $order->title ?? $project->article_name ?? null,
@@ -1614,6 +1668,7 @@ class SubconAdminController extends Controller
 
                 return [
                     'token' => $s->approval_token,
+                    'project_id' => $s->project_id,
                     'order_id' => $order->id ?? null,
                     'order_number' => $order->order_number ?? ($s->project_id ?? '—'),
                     'style' => $order->title ?? null,
@@ -1848,7 +1903,11 @@ class SubconAdminController extends Controller
             return back()->with('error', $order->order_number.' is an Add Process PO ('.$order->add_process_operation.') with no production group, so there is no Add Process page to show for it.');
         }
 
-        $productionGroups = array_merge($production->forPo($order->order_number), $production->extraGroupsForOrder($order));
+        // forPo() already merges in any extra production group pinned onto this
+        // order — see SubconProductionService::forPo()'s extraGroupsForPoNumber()
+        // call. Don't merge extraGroupsForOrder() again here, it would
+        // double-count the extra group.
+        $productionGroups = $production->forPo($order->order_number);
         $summary = $production->summarize($productionGroups);
 
         // Read-only: a genuinely separate commercial PO/vendor from this CMT
@@ -2001,6 +2060,7 @@ class SubconAdminController extends Controller
             'fabrics.*.sisa_kain' => 'nullable|numeric|min:0',
             'fabrics.*.kepala_kain' => 'nullable|numeric|min:0',
             'fabrics.*.retur_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.shortage' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
             'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',

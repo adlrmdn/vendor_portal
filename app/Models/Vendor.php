@@ -43,6 +43,19 @@ class Vendor extends Model
         'synced_at' => 'datetime',
     ];
 
+    public function getCodeAttribute(): ?string
+    {
+        return $this->vendor_code;
+    }
+
+    public function getAddressAttribute(): ?string
+    {
+        if (is_array($this->contact_info) && !empty($this->contact_info['address'])) {
+            return (string) $this->contact_info['address'];
+        }
+        return null;
+    }
+
     public function users()
     {
         return $this->hasMany(User::class);
@@ -81,5 +94,16 @@ class Vendor extends Model
     public function isSubcon()
     {
         return $this->type === 'subcon';
+    }
+
+    public function isLocal(): bool
+    {
+        if ($this->group === 'Local') {
+            return true;
+        }
+        if (!empty($this->country)) {
+            return strtoupper($this->country) === 'IDN';
+        }
+        return false;
     }
 }

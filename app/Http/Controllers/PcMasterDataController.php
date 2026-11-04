@@ -29,10 +29,16 @@ class PcMasterDataController extends Controller
     public function storeHsCode(Request $request)
     {
         $data = $request->validate([
-            'code' => 'required|string|size:10|unique:hs_codes,code',
+            'code' => 'required|string|min:8|max:15',
             'description' => 'nullable|string|max:255',
         ]);
 
+        $formatted = HsCode::formatCode($data['code']);
+        if (HsCode::where('code', $formatted)->orWhere('code', $data['code'])->exists()) {
+            return $this->backToTab()->with('error', "HS Code \"{$formatted}\" already exists.");
+        }
+
+        $data['code'] = $formatted;
         HsCode::addedByUser($data, Auth::user());
 
         return $this->backToTab()->with('success', "HS Code \"{$data['code']}\" added.");

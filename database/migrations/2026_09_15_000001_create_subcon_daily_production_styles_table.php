@@ -12,6 +12,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::connection('vsm')->hasTable('subcon_daily_production_styles')) {
+            return;
+        }
+
         Schema::connection('vsm')->create('subcon_daily_production_styles', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->uuid('order_id')->unique();

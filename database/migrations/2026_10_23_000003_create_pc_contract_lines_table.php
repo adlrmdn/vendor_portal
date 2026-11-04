@@ -30,7 +30,7 @@ return new class extends Migration
             $table->string('item_name_snapshot')->nullable();
             $table->string('uom_snapshot', 10)->nullable();
 
-            $table->uuid('hs_code_id')->index();
+            $table->uuid('hs_code_id')->nullable()->index();
             $table->string('hs_code_snapshot', 10)->nullable();
 
             $table->decimal('qty', 14, 3);

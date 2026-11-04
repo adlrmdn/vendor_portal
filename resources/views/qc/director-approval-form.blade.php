@@ -163,8 +163,8 @@
                                         'editable' => false,
                                     ])
                                     <div class="form-text mb-4" style="font-size:.72rem;">
-                                        Cutt Plan = ROUNDDOWN((Fabric Sent − Retur Kain) ÷ Cons. Plan).
-                                        Actual Cons. = (Fabric Sent − Retur Kain) ÷ Total Qty Cut ({{ $n($totalCut ?? 0) }}).
+                                        Cutt Plan = ROUNDDOWN((Fabric Sent − Retur Kain − Shortage) ÷ Cons. Plan).
+                                        Actual Cons. = (Fabric Sent − Retur Kain − Shortage) ÷ Total Qty Cut ({{ $n($totalCut ?? 0) }}).
                                         Overconsumption = (Actual Cons. − Cons. Plan) ÷ Cons. Plan.
                                         Deduction = MAX(0, Actual Cons. − Cons. Plan × 1.03) × Total Qty Cut × Fabric Price — charged only when Overconsumption exceeds 3%.
                                     </div>
