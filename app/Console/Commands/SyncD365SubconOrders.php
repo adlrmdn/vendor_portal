@@ -80,7 +80,14 @@ class SyncD365SubconOrders extends Command
         $localActivePos = SubconOrder::whereNotIn('status', ['completed', 'cancelled'])->pluck('order_number')->toArray();
 
         $this->info('Fetching PO headers...');
-        $headers = $this->fetchRecords('PurchaseOrderHeadersV2', $filters);
+        try {
+            $headers = $this->fetchRecords('PurchaseOrderHeadersV2', $filters);
+        } catch (\Throwable $e) {
+            $this->error('Failed to fetch PO headers from D365: '.$e->getMessage());
+            Log::error('Subcon sync: main PO header fetch failed', ['error' => $e->getMessage()]);
+
+            return Command::FAILURE;
+        }
         $this->info('Fetched '.count($headers).' header records.');
 
         $fetchedPoNumbers = [];
@@ -97,8 +104,20 @@ class SyncD365SubconOrders extends Command
                 if (! empty($company)) {
                     $missingFilters[] = "dataAreaId eq '$company'";
                 }
-                $missingHeaders = $this->fetchRecords('PurchaseOrderHeadersV2', $missingFilters);
-                $headers = array_merge($headers, $missingHeaders);
+                try {
+                    $missingHeaders = $this->fetchRecords('PurchaseOrderHeadersV2', $missingFilters);
+                    $headers = array_merge($headers, $missingHeaders);
+                } catch (\Throwable $e) {
+                    // One slow/unreachable chunk of stragglers must never
+                    // abort the whole run — the POs already matched within
+                    // the normal cutoff window above are still worth
+                    // syncing. Skip this chunk; it's retried next hour.
+                    $this->warn('Skipping one chunk of missing-active PO headers (D365 fetch failed): '.$e->getMessage());
+                    Log::warning('Subcon sync: missing-active PO header chunk fetch failed', [
+                        'pos' => $chunk,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
 
@@ -133,8 +152,26 @@ class SyncD365SubconOrders extends Command
             if (! empty($company)) {
                 $lineFilters[] = "dataAreaId eq '$company'";
             }
-            $batch = $this->fetchRecords('PurchaseOrderLinesV2', $lineFilters);
-            $allLines = array_merge($allLines, $batch);
+            try {
+                $batch = $this->fetchRecords('PurchaseOrderLinesV2', $lineFilters);
+                $allLines = array_merge($allLines, $batch);
+            } catch (\Throwable $e) {
+                // Same reasoning as the header chunk above: one failed
+                // line-item fetch must not abort every other PO already
+                // matched this run. Without lines we can't classify CMT vs.
+                // Add Process or create order items, so drop just this
+                // chunk's POs — they're picked up again via the
+                // missing-active-POs path (or the normal cutoff window) on
+                // the next run.
+                $this->warn('Skipping '.count($chunk).' PO(s) — D365 line fetch failed: '.$e->getMessage());
+                Log::warning('Subcon sync: PO line-item chunk fetch failed', [
+                    'pos' => $chunk,
+                    'error' => $e->getMessage(),
+                ]);
+                foreach ($chunk as $po) {
+                    unset($poMap[$po], $poHeaders[$po]);
+                }
+            }
         }
         $this->info('Fetched '.count($allLines).' line records.');
 
@@ -707,7 +744,14 @@ class SyncD365SubconOrders extends Command
 
         while ($nextLink) {
             $token = $this->getD365Token();
-            $response = Http::withToken($token)->acceptJson()->get($nextLink);
+            // timeout/retry: D365's OData endpoint occasionally takes longer
+            // than the default 30s, especially on the OR-heavy chunked
+            // filters used throughout this command. Without this, a single
+            // slow response threw an uncaught ConnectionException that used
+            // to crash the entire hourly run before anything got written —
+            // confirmed live via ~7 weeks of consecutive "exit code 1"
+            // scheduler failures with no other change on this path.
+            $response = Http::withToken($token)->acceptJson()->timeout(60)->retry(3, 2000)->get($nextLink);
 
             if (! $response->successful()) {
                 $this->error('D365 Fetch Error: '.$response->status().' '.$response->body());
