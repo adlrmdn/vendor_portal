@@ -1848,7 +1848,11 @@ class SubconAdminController extends Controller
             return back()->with('error', $order->order_number.' is an Add Process PO ('.$order->add_process_operation.') with no production group, so there is no Add Process page to show for it.');
         }
 
-        $productionGroups = array_merge($production->forPo($order->order_number), $production->extraGroupsForOrder($order));
+        // forPo() already merges in any extra production group pinned onto this
+        // order — see SubconProductionService::forPo()'s extraGroupsForPoNumber()
+        // call. Don't merge extraGroupsForOrder() again here, it would
+        // double-count the extra group.
+        $productionGroups = $production->forPo($order->order_number);
         $summary = $production->summarize($productionGroups);
 
         // Read-only: a genuinely separate commercial PO/vendor from this CMT
@@ -2001,6 +2005,7 @@ class SubconAdminController extends Controller
             'fabrics.*.sisa_kain' => 'nullable|numeric|min:0',
             'fabrics.*.kepala_kain' => 'nullable|numeric|min:0',
             'fabrics.*.retur_kain' => 'nullable|numeric|min:0',
+            'fabrics.*.shortage' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_sent' => 'nullable|numeric|min:0',
             'fabrics.*.consumption_plan' => 'nullable|numeric|min:0',
             'fabrics.*.fabric_price' => 'nullable|numeric|min:0',

@@ -102,10 +102,12 @@ class SubconVendorController extends Controller
             ->forVendor($vendorId)
             ->findOrFail($id);
 
-        // Garment production detail backing this CMT PO (best-effort; [] if unlinked),
-        // plus any extra production group an admin has manually pinned onto this
-        // order (see SubconOrderExtraProductionGroup's docblock).
-        $productionGroups = array_merge($production->forPo($order->order_number), $production->extraGroupsForOrder($order));
+        // Garment production detail backing this CMT PO (best-effort; [] if unlinked).
+        // forPo() already merges in any extra production group an admin has
+        // manually pinned onto this order (see SubconProductionService::forPo()'s
+        // extraGroupsForPoNumber() call) — don't merge extraGroupsForOrder() again
+        // here, it would double-count the extra group.
+        $productionGroups = $production->forPo($order->order_number);
         $summary = $production->summarize($productionGroups);
 
         $cuttingReports = SubconCuttingReport::where('order_id', $order->id)

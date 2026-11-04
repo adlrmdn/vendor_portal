@@ -3,7 +3,9 @@
 namespace App\Services;
 
 use App\Models\SubconOrder;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -72,6 +74,8 @@ class QcProjectValidator
             if ($sessionId !== null && $sessionId !== '') {
                 $this->checkSizes($projectId, $sessionId, $group, $result['warnings']);
             }
+
+            $this->healCuttingBaseline($projectId, $group, $result['healed'], $result['warnings']);
 
             if ($updates) {
                 $updates['updated_at'] = now();
@@ -178,5 +182,202 @@ class QcProjectValidator
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * Backfills a merged project's missing Cut Qty baseline row(s)
+     * (`packaging_project_reports`, `session_id IS NULL`) straight from
+     * D365. QcReportPdfService::context()'s $baseGoodQtyBySize and
+     * QcApprovalController::resolveQcCutQtyBySize() already correctly SUM
+     * every baseline row per size — that aggregation was never the bug. The
+     * data underneath it was incomplete: the QC Console's own "Sync D365"
+     * can silently fail to refresh ONE linked group (no retry, no visible
+     * error on a transient D365 timeout) and leave that group's cut job's
+     * baseline row missing forever, permanently understating Cut Qty for
+     * every size the groups share. Confirmed live on MPG/PO/2608/00649: the
+     * console showed the correct combined 10,215 right after a successful
+     * Sync D365, but the portal's own report kept showing 6,215 (one
+     * group's worth) because the OTHER group's refresh never wrote
+     * anything that time — and the next Sync D365 attempt could fail the
+     * same way again. This heals it from the portal's own D365 access
+     * every time the project is touched (print, Verify/Send, HO/Director
+     * approval), instead of depending on the console's refresh succeeding.
+     *
+     * Only ever INSERTs — never touches a job that already has a baseline
+     * row, so it can't clobber anything the console or an inspector has
+     * written. Best-effort: any failure is reported as a warning and never
+     * blocks the report.
+     */
+    private function healCuttingBaseline(string $projectId, string $primaryGroup, array &$healed, array &$warnings): void
+    {
+        try {
+            $qms = DB::connection('qms');
+
+            $groups = [$primaryGroup];
+            try {
+                $groups = array_merge($groups, $qms->table('packaging_project_group_links')
+                    ->where('primary_production_group', $primaryGroup)->pluck('production_group')->all());
+            } catch (\Throwable $e) {
+                // link table missing/unreachable — heal just the primary group.
+            }
+
+            $token = $this->d365Token();
+            if (! $token) {
+                return;
+            }
+
+            $backfilled = [];
+            foreach (array_unique($groups) as $group) {
+                $cutJobId = $this->resolveCutJobId($group, $token);
+                if (! $cutJobId) {
+                    continue;
+                }
+
+                $alreadyPresent = $qms->table('packaging_project_reports')
+                    ->where('project_id', $projectId)->whereNull('session_id')
+                    ->where('job_transaction_id', $cutJobId)->exists();
+                if ($alreadyPresent) {
+                    continue;
+                }
+
+                $lines = $this->fetchJobLines($cutJobId, $token);
+                $rows = $this->buildBaselineRows($projectId, $cutJobId, $lines);
+                if (empty($rows)) {
+                    continue;
+                }
+
+                $qms->table('packaging_project_reports')->insertOrIgnore($rows);
+                $backfilled[] = "{$group} ({$cutJobId}, ".count($rows).' sizes)';
+            }
+
+            if ($backfilled) {
+                $healed['cutting_baseline'] = [null, implode('; ', $backfilled)];
+                Log::warning('QC project validation: backfilled missing Cut Qty baseline row(s)', [
+                    'project' => $projectId, 'backfilled' => $backfilled,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            $warnings[] = 'Cut Qty baseline backfill failed: '.$e->getMessage();
+        }
+    }
+
+    private function d365Token(): ?string
+    {
+        $cacheKey = 'd365_access_token';
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        $tenantId = config('services.d365.tenant_id');
+        $resource = config('services.d365.resource');
+        $response = Http::asForm()->post("https://login.microsoftonline.com/{$tenantId}/oauth2/v2.0/token", [
+            'grant_type' => 'client_credentials',
+            'client_id' => config('services.d365.client_id'),
+            'client_secret' => config('services.d365.client_secret'),
+            'scope' => "{$resource}/.default",
+        ]);
+        if (! $response->successful()) {
+            return null;
+        }
+
+        $data = $response->json();
+        Cache::put($cacheKey, $data['access_token'], $data['expires_in'] - 300);
+
+        return $data['access_token'];
+    }
+
+    private function resolveCutJobId(string $productionGroup, string $token): ?string
+    {
+        $resource = config('services.d365.resource');
+        $url = $resource.'/data/JobTransactionHeaders?$filter='.rawurlencode("ProductionGroup eq '{$productionGroup}'").'&cross-company=true';
+        $resp = Http::withToken($token)->acceptJson()->timeout(30)->get($url);
+        if (! $resp->successful()) {
+            return null;
+        }
+        foreach ($resp->json('value') ?? [] as $h) {
+            if (strcasecmp((string) ($h['Operation'] ?? ''), 'CMT-Cut') === 0) {
+                return $h['JobTransactionId'] ?? null;
+            }
+        }
+
+        return null;
+    }
+
+    private function fetchJobLines(string $jobId, string $token): array
+    {
+        $resource = config('services.d365.resource');
+        $url = $resource.'/data/JobTransactionLinesDetails?$filter='.rawurlencode("JobTransactionId eq '{$jobId}'").'&cross-company=true';
+        $resp = Http::withToken($token)->acceptJson()->timeout(30)->get($url);
+
+        return $resp->successful() ? ($resp->json('value') ?? []) : [];
+    }
+
+    /**
+     * Same shape as forge's own fetch_and_store_lines() insert (db.rs) —
+     * summed per size across every raw D365 line sharing that size, reject
+     * categories summed the same way, other metadata taken from the last
+     * line seen. session_id left NULL: this IS the baseline row.
+     */
+    private function buildBaselineRows(string $projectId, string $jobId, array $lines): array
+    {
+        $bySize = [];
+        foreach ($lines as $rec) {
+            $size = trim((string) ($rec['Size'] ?? ''));
+            if ($size === '') {
+                continue;
+            }
+            $bySize[$size] ??= ['good' => 0, 'reject' => 0, 'produksi' => 0, 'finishing' => 0, 'embro' => 0,
+                'cutting' => 0, 'printing' => 0, 'sewing' => 0, 'washing' => 0, 'bahan' => 0, 'sample' => 0, 'hilang' => 0];
+            $bySize[$size]['good'] += (int) ($rec['TotalGoodQty'] ?? 0);
+            $bySize[$size]['reject'] += (int) ($rec['TotalRejectQty'] ?? 0);
+            $bySize[$size]['produksi'] += (int) ($rec['RejectProduksi'] ?? 0);
+            $bySize[$size]['finishing'] += (int) ($rec['RejectFinishing'] ?? 0);
+            $bySize[$size]['embro'] += (int) ($rec['RejectEmbro'] ?? 0);
+            $bySize[$size]['cutting'] += (int) ($rec['RejectCutting'] ?? 0);
+            $bySize[$size]['printing'] += (int) ($rec['RejectPrinting'] ?? 0);
+            $bySize[$size]['sewing'] += (int) ($rec['RejectSewing'] ?? 0);
+            $bySize[$size]['washing'] += (int) ($rec['RejectWashing'] ?? 0);
+            $bySize[$size]['bahan'] += (int) ($rec['RejectBahan'] ?? 0);
+            $bySize[$size]['sample'] += (int) ($rec['TotalQtySample'] ?? 0);
+            $bySize[$size]['hilang'] += (int) ($rec['BarangHilang'] ?? 0);
+            $bySize[$size]['last'] = $rec;
+        }
+
+        $rows = [];
+        foreach ($bySize as $size => $agg) {
+            $rec = $agg['last'] ?? [];
+            $rows[] = [
+                'report_id' => "{$projectId}_{$jobId}_{$size}",
+                'session_id' => null,
+                'project_id' => $projectId,
+                'data_area_id' => $rec['dataAreaId'] ?? null,
+                'line_no' => isset($rec['No']) ? (int) $rec['No'] : null,
+                'job_transaction_id' => $jobId,
+                'item_id' => $rec['ItemId'] ?? null,
+                'size_val' => $size,
+                'global_display_order' => isset($rec['GlobalDisplayOrder']) ? (int) $rec['GlobalDisplayOrder'] : null,
+                'reject_produksi' => $agg['produksi'],
+                'reject_finishing' => $agg['finishing'],
+                'reject_embro' => $agg['embro'],
+                'qty_order' => isset($rec['QtyOrder']) ? (int) $rec['QtyOrder'] : null,
+                'total_qty_sample' => $agg['sample'],
+                'barang_hilang' => $agg['hilang'],
+                'reject_cutting' => $agg['cutting'],
+                'total_reject_qty' => $agg['reject'],
+                'reject_printing' => $agg['printing'],
+                'ref_rec_id' => isset($rec['RefRecId']) ? (int) $rec['RefRecId'] : null,
+                'total_good_qty' => $agg['good'],
+                'reject_sewing' => $agg['sewing'],
+                'reject_washing' => $agg['washing'],
+                'gramasi' => isset($rec['Gramasi']) ? (float) $rec['Gramasi'] : null,
+                'btj' => isset($rec['BTJ']) ? (int) $rec['BTJ'] : null,
+                'reject_bahan' => $agg['bahan'],
+                'session_qty' => 0.0,
+                'session_version' => 'v1.0',
+                'created_at' => now(),
+            ];
+        }
+
+        return $rows;
     }
 }

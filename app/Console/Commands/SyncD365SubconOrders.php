@@ -110,7 +110,14 @@ class SyncD365SubconOrders extends Command
         $localActivePos = SubconOrder::whereNotIn('status', ['completed', 'cancelled'])->pluck('order_number')->toArray();
 
         $this->info('Fetching PO headers...');
-        $headers = $this->fetchRecords('PurchaseOrderHeadersV2', $filters);
+        try {
+            $headers = $this->fetchRecords('PurchaseOrderHeadersV2', $filters);
+        } catch (\Throwable $e) {
+            $this->error('Failed to fetch PO headers from D365: '.$e->getMessage());
+            Log::error('Subcon sync: main PO header fetch failed', ['error' => $e->getMessage()]);
+
+            return Command::FAILURE;
+        }
         $this->info('Fetched '.count($headers).' header records.');
 
         $fetchedPoNumbers = [];
@@ -127,8 +134,20 @@ class SyncD365SubconOrders extends Command
                 if (! empty($company)) {
                     $missingFilters[] = "dataAreaId eq '$company'";
                 }
-                $missingHeaders = $this->fetchRecords('PurchaseOrderHeadersV2', $missingFilters);
-                $headers = array_merge($headers, $missingHeaders);
+                try {
+                    $missingHeaders = $this->fetchRecords('PurchaseOrderHeadersV2', $missingFilters);
+                    $headers = array_merge($headers, $missingHeaders);
+                } catch (\Throwable $e) {
+                    // One slow/unreachable chunk of stragglers must never
+                    // abort the whole run — the POs already matched within
+                    // the normal cutoff window above are still worth
+                    // syncing. Skip this chunk; it's retried next hour.
+                    $this->warn('Skipping one chunk of missing-active PO headers (D365 fetch failed): '.$e->getMessage());
+                    Log::warning('Subcon sync: missing-active PO header chunk fetch failed', [
+                        'pos' => $chunk,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
 
@@ -163,8 +182,26 @@ class SyncD365SubconOrders extends Command
             if (! empty($company)) {
                 $lineFilters[] = "dataAreaId eq '$company'";
             }
-            $batch = $this->fetchRecords('PurchaseOrderLinesV2', $lineFilters);
-            $allLines = array_merge($allLines, $batch);
+            try {
+                $batch = $this->fetchRecords('PurchaseOrderLinesV2', $lineFilters);
+                $allLines = array_merge($allLines, $batch);
+            } catch (\Throwable $e) {
+                // Same reasoning as the header chunk above: one failed
+                // line-item fetch must not abort every other PO already
+                // matched this run. Without lines we can't classify CMT vs.
+                // Add Process or create order items, so drop just this
+                // chunk's POs — they're picked up again via the
+                // missing-active-POs path (or the normal cutoff window) on
+                // the next run.
+                $this->warn('Skipping '.count($chunk).' PO(s) — D365 line fetch failed: '.$e->getMessage());
+                Log::warning('Subcon sync: PO line-item chunk fetch failed', [
+                    'pos' => $chunk,
+                    'error' => $e->getMessage(),
+                ]);
+                foreach ($chunk as $po) {
+                    unset($poMap[$po], $poHeaders[$po]);
+                }
+            }
         }
         $this->info('Fetched '.count($allLines).' line records.');
 
@@ -302,7 +339,12 @@ class SyncD365SubconOrders extends Command
             $reassigned = 0;
 
             foreach ($poMap as $poNumber => $vendorId) {
-                $h = $poHeaders[$poNumber];
+                try {
+                    DB::transaction(function () use (
+                        $poNumber, $vendorId, $poHeaders, $linesByPo, $poDstMap, $styles, $production,
+                        &$createdOrders, &$createdItems, &$retitled, &$deletedOrders, &$reassigned
+                    ) {
+                        $h = $poHeaders[$poNumber];
 
                 // --- 1. Check if Finished ---
                 $isFinished = false;
@@ -436,7 +478,7 @@ class SyncD365SubconOrders extends Command
                         $this->info("PO {$poNumber} is finished on D365. Skipping creation.");
                     }
 
-                    continue; // Skip creating or syncing this order further
+                    return; // Skip creating or syncing this order further (exits this PO's closure only)
                 }
 
                 // --- 2. Create/Update SubconOrder ---
@@ -580,14 +622,28 @@ class SyncD365SubconOrders extends Command
                             if (isset($erpDetails['cutting'][$size])) {
                                 $qty = $erpDetails['cutting'][$size];
 
-                                // Match on size, not prod_id: D365 can reissue a
-                                // size's ProdId mid-order, and keying on the old
-                                // prod_id would leave it in place and insert a
-                                // duplicate row for the same size.
+                                // Match on (order_id, prod_id) — the model's own
+                                // unique key — not bare size. forPo() now merges
+                                // in any manually-pinned extra production group
+                                // (see SubconProductionService::forPo()), so $groups
+                                // can hold two groups sharing the same size label;
+                                // matching by size alone let the second group's
+                                // row overwrite the first's every run, collapsing a
+                                // multi-batch order's combined cutting data down to
+                                // one group's — confirmed live on MPG/PO/2608/00649
+                                // (two groups, both using L/M/S/XL/XXL). A single
+                                // group's own ProdId can still be reissued by D365
+                                // for the same size over time, in which case this
+                                // creates a new row alongside the stale one rather
+                                // than updating it in place — an accepted tradeoff,
+                                // since the table has no production_group column to
+                                // safely scope a reissue cleanup to only this
+                                // group's own stale row without risking deleting a
+                                // sibling group's legitimate same-size row instead.
                                 \App\Models\SubconCuttingReport::updateOrCreate(
-                                    ['order_id' => $order->id, 'size' => $size],
+                                    ['order_id' => $order->id, 'prod_id' => $line->ProdId],
                                     [
-                                        'prod_id' => $line->ProdId,
+                                        'size' => $size,
                                         'cutting_qty' => $qty,
                                     ]
                                 );
@@ -603,10 +659,11 @@ class SyncD365SubconOrders extends Command
                                 // Convert kg from D365 to grams locally (multiply by 1000)
                                 $grams = (float) $erpDetails['gramasi'][$size] * 1000;
 
+                                // Same (order_id, prod_id) match key as cutting above.
                                 \App\Models\SubconCuttingReport::updateOrCreate(
-                                    ['order_id' => $order->id, 'size' => $size],
+                                    ['order_id' => $order->id, 'prod_id' => $line->ProdId],
                                     [
-                                        'prod_id' => $line->ProdId,
+                                        'size' => $size,
                                         'gramasi' => $grams,
                                     ]
                                 );
@@ -628,6 +685,22 @@ class SyncD365SubconOrders extends Command
                 // very next sync run would silently bounce it right back into
                 // cutting_review with the same stale data, without the vendor ever
                 // touching it. See [[subcon-approval-silent-spawn]].
+                    });
+                } catch (\Throwable $e) {
+                    // One bad order (e.g. a duplicate-key collision in
+                    // subcon_cutting_reports — see memory
+                    // subcon-sync-single-txn-landmine.md, which recurred
+                    // live via MPG/PRD/2610/000969) must never roll back
+                    // every other PO in this run. DB::transaction() above
+                    // nests as a SAVEPOINT inside the outer transaction, so
+                    // an exception here only undoes this PO's own writes —
+                    // the outer transaction still commits everything else.
+                    $this->warn("Skipping {$poNumber} — processing failed: ".$e->getMessage());
+                    Log::warning('Subcon sync: per-order processing failed, skipped (other POs unaffected)', [
+                        'order_number' => $poNumber,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             DB::commit();
@@ -641,9 +714,20 @@ class SyncD365SubconOrders extends Command
             $this->info('Synced: '.($changes ? implode(', ', $changes).'.' : 'no changes.'));
 
             return Command::SUCCESS;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::rollBack();
             $this->error('Error during insertion: '.$e->getMessage());
+            // The scheduler redirects this command's own stdout/stderr to
+            // /dev/null (see routes/console.php), so $this->error() above is
+            // invisible for every scheduled run — Log::error() is the only
+            // way a transaction-rollback failure here is ever actually
+            // diagnosable after the fact. Previously caught \Exception only,
+            // so a bare \Error (TypeError etc.) would have skipped the
+            // rollback entirely and crashed uncaught.
+            Log::error('Subcon sync: transaction rolled back', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             if (app()->runningUnitTests()) {
                 throw $e;
             }
@@ -764,7 +848,14 @@ class SyncD365SubconOrders extends Command
 
         while ($nextLink) {
             $token = $this->getD365Token();
-            $response = Http::withToken($token)->acceptJson()->get($nextLink);
+            // timeout/retry: D365's OData endpoint occasionally takes longer
+            // than the default 30s, especially on the OR-heavy chunked
+            // filters used throughout this command. Without this, a single
+            // slow response threw an uncaught ConnectionException that used
+            // to crash the entire hourly run before anything got written —
+            // confirmed live via ~7 weeks of consecutive "exit code 1"
+            // scheduler failures with no other change on this path.
+            $response = Http::withToken($token)->acceptJson()->timeout(60)->retry(3, 2000)->get($nextLink);
 
             if (! $response->successful()) {
                 $this->error('D365 Fetch Error: '.$response->status().' '.$response->body());

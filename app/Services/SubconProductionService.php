@@ -113,7 +113,7 @@ class SubconProductionService
                         ])
                         ->groupBy('ProductionGroup');
 
-                return $activities->map(function ($a) use ($linesByGroup) {
+                return array_merge($activities->map(function ($a) use ($linesByGroup) {
                     $lines = $linesByGroup->get($a->ProductionGroup, collect());
 
                     $sortedLines = $lines->sortBy(function ($line) {
@@ -145,7 +145,7 @@ class SubconProductionService
                         'total_qty' => (float) $sortedLines->sum('Qty'),
                         'lines' => $sortedLines->all(),
                     ];
-                })->all();
+                })->all(), $this->extraGroupsForPoNumber($poNumber));
             }
 
             // Fallback: look up the production_group from subcon_orders locally
@@ -156,16 +156,35 @@ class SubconProductionService
             if ($fallbackGroup) {
                 $group = $this->forProductionGroup($fallbackGroup);
                 if (! empty($group)) {
-                    return $group;
+                    return array_merge($group, $this->extraGroupsForPoNumber($poNumber));
                 }
             }
 
-            return [];
+            return $this->extraGroupsForPoNumber($poNumber);
         } catch (\Throwable $e) {
             report($e);
 
             return [];
         }
+    }
+
+    /**
+     * extraGroupsForOrder(), resolved from a PO number instead of an already-
+     * loaded SubconOrder — lets forPo() (the shared resolution point used by
+     * ~12 call sites: the D365 cutting/gramasi mirror sync, QcReportPdfService,
+     * label generation, the cutting plan, Daily Production, approval emails,
+     * etc.) include any manually-pinned extra production group automatically,
+     * without every caller having to remember the array_merge(forPo(),
+     * extraGroupsForOrder()) pattern that only two call sites (the admin/vendor
+     * order-show pages) actually did. Those two now call forPo() alone — see
+     * their own call sites — since merging extraGroupsForOrder() there too
+     * would double-count the extra group.
+     */
+    private function extraGroupsForPoNumber(string $poNumber): array
+    {
+        $order = \App\Models\SubconOrder::where('order_number', $poNumber)->first();
+
+        return $order ? $this->extraGroupsForOrder($order) : [];
     }
 
     /**
@@ -1596,6 +1615,11 @@ class SubconProductionService
                 // The real fabric name, preferred over the PO's own (possibly
                 // stale/wrong) LineDescription-derived $label — see fabricLinesForPo().
                 'display_label' => $vsm[$label]['display_label'] ?? $label,
+                // false only for a manually-added fabric with no PO/VSM link (the
+                // "Add fabric" row) — the one case with no Goods Receive to pull,
+                // so SubconConsumptionService::persist() and the consumption-input
+                // view fall back to a typed fabric_sent for it.
+                'vsm_linked' => isset($vsm[$label]),
                 'unit' => self::displayUnit($label),
                 'item_number' => $vsm[$label]['item_number'] ?? null,
                 'inventory_group' => $vsm[$label]['inventory_group'] ?? null,
@@ -1606,6 +1630,7 @@ class SubconProductionService
                 'sisa_kain' => $r ? (float) $r->sisa_kain : 0,
                 'kepala_kain' => $r ? (float) $r->kepala_kain : 0,
                 'retur_kain' => $r ? (float) $r->retur_kain : 0,
+                'shortage' => $r ? (float) $r->shortage : 0,
                 'fabric_sent' => $r && $r->fabric_sent !== null ? (float) $r->fabric_sent : null,
                 'consumption_plan' => $r && $r->consumption_plan !== null ? (float) $r->consumption_plan : null,
                 'cutt_plan' => $r && $r->cutt_plan !== null ? (int) $r->cutt_plan : null,
@@ -1689,12 +1714,35 @@ class SubconProductionService
     {
         // D365 can reissue a size's ProdId mid-order, which leaves the old
         // row in place alongside the new one (rows are keyed by prod_id, not
-        // size). Dedupe to one row per size — the most recently updated —
-        // instead of summing every historical prod_id, or the qty doubles.
+        // size) — a plain dedupe-by-size would double the qty if both were
+        // summed. But a merged order (see SubconOrder::extraProductionGroups())
+        // can ALSO legitimately have two different groups' rows sharing the
+        // same size label, and those genuinely must both be counted — a plain
+        // dedupe-by-size silently dropped one of them, understating the total
+        // by whichever group's rows were less recently touched (confirmed live
+        // on MPG/PO/2608/00649: 6,215 reported instead of the true 10,215).
+        //
+        // Disambiguate using forPo()'s current group/line snapshot (no schema
+        // change needed — VSM already knows which ProdId belongs to which
+        // group): dedupe to the latest-updated row per (group, size), THEN sum
+        // across groups. A ProdId forPo() can't currently map to a group
+        // (stale data, or a group since detached) is kept standalone under its
+        // own ProdId rather than merged into any size bucket, so it's never
+        // silently dropped nor wrongly summed against an unrelated row.
+        $prodIdToGroup = [];
+        foreach ($this->forPo($order->order_number) as $g) {
+            foreach ($g['lines'] as $line) {
+                if (! empty($line->ProdId)) {
+                    $prodIdToGroup[$line->ProdId] = $g['production_group'] ?? '';
+                }
+            }
+        }
+
         return (int) \App\Models\SubconCuttingReport::where('order_id', $order->id)
             ->orderByDesc('updated_at')
-            ->get(['size', 'cutting_qty'])
-            ->unique('size')
+            ->get(['prod_id', 'size', 'cutting_qty'])
+            ->groupBy(fn ($r) => ($prodIdToGroup[$r->prod_id] ?? $r->prod_id).'|'.$r->size)
+            ->map(fn ($rows) => $rows->first()) // already ordered desc by updated_at
             ->sum('cutting_qty');
     }
 
