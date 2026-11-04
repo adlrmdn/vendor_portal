@@ -113,6 +113,9 @@
                                         @else
                                             <span class="badge bg-secondary-subtle text-secondary border border-secondary border-opacity-25">RAF Unknown</span>
                                         @endif
+                                        @if($raf !== 'completed' && !empty($p['project_id']))
+                                            @include('subcon.partials.raf-status-override', ['projectId' => $p['project_id']])
+                                        @endif
                                     </div>
                                     <div class="mt-1">
                                         @if(($p['material_return_status'] ?? null) === 'pending')

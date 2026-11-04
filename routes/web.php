@@ -145,6 +145,7 @@ Route::middleware(['auth', 'role:admin,fabric_admin'])->prefix('admin')->name('a
         // the controller (defense-in-depth, same shape as
         // authorizeAdmin()/isDirectorUser() elsewhere in this app).
         Route::post('/totp/confirm', [PcTotpController::class, 'confirmSetup'])->name('totp.confirm');
+        Route::post('/totp/reset-self', [PcTotpController::class, 'resetSelf'])->name('totp.reset-self');
         Route::post('/totp/{user}/disable', [PcTotpController::class, 'disable'])->name('totp.disable');
 
         // PC Phase 2 — contract creation & vendor review (see the PC Phase 2
@@ -161,9 +162,12 @@ Route::middleware(['auth', 'role:admin,fabric_admin'])->prefix('admin')->name('a
         Route::post('/contracts/{contract}/approve', [PcContractController::class, 'approve'])->name('contracts.approve');
         Route::post('/contracts/{contract}/reject', [PcContractController::class, 'reject'])->name('contracts.reject');
         Route::post('/contracts/{contract}/send-to-supplier', [PcContractController::class, 'sendToSupplier'])->name('contracts.send-to-supplier');
+        Route::post('/contracts/{contract}/resend-email', [PcContractController::class, 'resendEmail'])->name('contracts.resend-email');
         Route::post('/contracts/{contract}/cancel', [PcContractController::class, 'cancel'])->name('contracts.cancel');
         Route::post('/contracts/{contract}/revise', [PcContractController::class, 'revise'])->name('contracts.revise');
         Route::get('/contracts/{contract}/pdf', [PcContractController::class, 'pdf'])->name('contracts.pdf');
+        Route::post('/contracts/{contract}/regenerate-pdf', [PcContractController::class, 'regeneratePdf'])->name('contracts.regenerate-pdf');
+        Route::get('/guidebook/pdf', [PcContractController::class, 'guidebookPdf'])->name('guidebook.pdf');
 
         Route::get('/search/fabric-items', [PcContractSearchController::class, 'searchFabricItems'])->name('search.fabric-items');
         Route::get('/search/item-details', [PcContractSearchController::class, 'itemDetails'])->name('search.item-details');
@@ -227,6 +231,7 @@ Route::middleware(['auth', 'role:fabric_vendor'])->prefix('vendor')->name('vendo
         Route::post('/contracts/{contract}/accept', [PcVendorContractController::class, 'accept'])->name('contracts.accept');
         Route::post('/contracts/{contract}/query', [PcVendorContractController::class, 'query'])->name('contracts.query');
         Route::get('/contracts/{contract}/pdf', [PcVendorContractController::class, 'pdf'])->name('contracts.pdf');
+        Route::get('/guidebook/pdf', [PcVendorContractController::class, 'guidebookPdf'])->name('guidebook.pdf');
     });
 });
 
@@ -267,6 +272,7 @@ Route::middleware(['auth', 'role:admin,subcon_admin'])->prefix('subcon/admin')->
     Route::get('/approvals', [SubconAdminController::class, 'approvals'])->name('approvals');
     Route::get('/report-validations', [SubconAdminController::class, 'reportValidations'])->name('report-validations');
     Route::post('/report-validations/deductions', [SubconAdminController::class, 'reportValidationDeductions'])->name('report-validations.deductions');
+    Route::post('/raf-status/{projectId}', [SubconAdminController::class, 'setRafStatus'])->name('raf-status.set');
     Route::get('/director-approvals', [SubconAdminController::class, 'directorApprovals'])->name('director-approvals');
     Route::post('/director-approvals/{token}/recall', [SubconAdminController::class, 'recallToReportValidation'])->name('director-approvals.recall');
     Route::get('/approval-logs', [SubconAdminController::class, 'approvalLogs'])->name('approval-logs');

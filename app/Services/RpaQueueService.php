@@ -88,54 +88,48 @@ class RpaQueueService
     public function queueJobTransRaf(string $projectId): bool
     {
         try {
-            $hasActiveGroup = Schema::connection('qms')->hasColumn('packaging_projects', 'active_production_group');
             $project = DB::connection('qms')->table('packaging_projects')
                 ->where('project_id', $projectId)
-                ->first(array_filter(['production_group', $hasActiveGroup ? 'active_production_group' : null, 'cmt_pak_job_id', 'po_info']));
+                ->first(['production_group', 'cmt_pak_job_id', 'po_info']);
             if (! $project) {
                 Log::warning('RPA raf: project not found', ['project' => $projectId]);
 
                 return false;
             }
 
-            // active_production_group tracks the LITERAL group most recently
-            // downloaded/refreshed in the console — unlike production_group,
-            // which (once an extra-production-group link exists — see
-            // SubconOrderExtraProductionGroup / packaging_project_group_links)
-            // is pinned to the merge's primary group regardless of which batch
-            // this specific approval is actually for. Preferring it here means
-            // "the final just approved" queues RAF against "the group just
-            // downloaded for it", not always the primary group. Falls back to
-            // production_group on an older/un-migrated QMS schema or an empty value.
-            $productionGroup = (string) ($project->active_production_group ?? '') !== ''
-                ? (string) $project->active_production_group
-                : (string) ($project->production_group ?? '');
+            $primaryGroup = (string) ($project->production_group ?? '');
 
-            // The stored cmt_pak_job_id is a snapshot from whenever the console
-            // first downloaded the project — D365 can reissue job transaction
-            // ids for a production group later (the same event that renumbers
-            // production_group_lines.ProdId in VSM), which silently stales it
-            // and makes the RPA bot fail against a job id that no longer
-            // exists. Re-resolve from D365 every time and self-heal the column
-            // when it drifts; best-effort — fall back to the stored value if
-            // D365 is unreachable rather than blocking the queue.
-            $pakJobId = $project->cmt_pak_job_id;
-            if ($productionGroup !== '') {
-                $resolved = $this->d365->resolveJobTransactionIds($productionGroup);
-                if (! empty($resolved['pak']) && $resolved['pak'] !== $pakJobId) {
-                    Log::warning('RPA raf: cmt_pak_job_id drifted from D365, self-healing', [
-                        'project' => $projectId,
-                        'stored' => $pakJobId,
-                        'resolved' => $resolved['pak'],
-                    ]);
-                    DB::connection('qms')->table('packaging_projects')
-                        ->where('project_id', $projectId)
-                        ->update(['cmt_pak_job_id' => $resolved['pak']]);
-                    $pakJobId = $resolved['pak'];
-                }
+            // Every production group actually feeding this project — the
+            // primary plus any manually-pinned extra group (same PO, e.g. a
+            // second cutting batch — SubconOrderExtraProductionGroup /
+            // packaging_project_group_links). Queuing against only ONE
+            // group's job_transaction_id (formerly via active_production_group
+            // — "whichever was downloaded most recently") and then dumping
+            // EVERY cycle's data onto it as sequential "lines" silently
+            // treated a merged order's second group's inspection data as more
+            // lines on the FIRST group's own D365 job — which has no spare
+            // order-qty capacity for it. D365 rejects the line with an "Over
+            // Qty" validation and the whole job lands 'failed' (confirmed
+            // live: rpa_queues id 1551, MPG/PO/2608/00649 — line 2 carried
+            // the extra group's 6,215 pcs onto the primary group's own PAK
+            // job, which only has room for its own ~4,000). Each group now
+            // gets its OWN RAF job, built only from the cycles whose report
+            // rows actually carry THAT group's job_transaction_id.
+            $groups = [$primaryGroup];
+            try {
+                $groups = array_merge($groups, DB::connection('qms')->table('packaging_project_group_links')
+                    ->where('primary_production_group', $primaryGroup)->pluck('production_group')->all());
+            } catch (\Throwable $e) {
+                // link table missing/unreachable — queue just the primary group.
+            }
+            $groups = array_values(array_unique(array_filter($groups)));
+            if (empty($groups)) {
+                Log::warning('RPA raf: no production group on project', ['project' => $projectId]);
+
+                return false;
             }
 
-            // Unique sizes in display order.
+            // Unique sizes in display order (project-wide — shared across groups).
             $sizeRows = DB::connection('qms')->table('packaging_project_reports')
                 ->where('project_id', $projectId)
                 ->orderBy('line_no')->orderBy('global_display_order')
@@ -148,7 +142,10 @@ class RpaQueueService
                 }
             }
 
-            // Inspection sessions (excluding the cycle-0 baseline) + their lines.
+            // Inspection sessions (excluding the cycle-0 baseline) + their
+            // lines, INCLUDING job_transaction_id — the column that ties each
+            // line to the group it actually belongs to, previously selected
+            // but never used for routing.
             $sessions = DB::connection('qms')->table('packaging_project_sessions')
                 ->where('project_id', $projectId)->where('cycle_number', '>=', 1)
                 ->orderBy('cycle_number')
@@ -162,150 +159,327 @@ class RpaQueueService
                     ->get([
                         'size_val', 'session_qty', 'reject_produksi', 'reject_finishing',
                         'reject_embro', 'barang_hilang', 'reject_cutting', 'reject_printing',
-                        'reject_sewing', 'reject_washing', 'btj', 'reject_bahan',
+                        'reject_sewing', 'reject_washing', 'btj', 'reject_bahan', 'job_transaction_id',
                     ]);
                 $sessionsList[] = ['cycle' => (int) $s->cycle_number, 'date' => $s->inspection_date, 'lines' => $lines];
                 $maxCycle = max($maxCycle, (int) $s->cycle_number);
             }
 
-            // Version-label groups: final_1 = cycles 1+2, final_2 = 3, final_3 = 4,
-            // then final_(c-1) for each further cycle — identical to the console.
-            $groupDefs = [
-                ['label' => 'final_1', 'cycles' => [1, 2]],
-                ['label' => 'final_2', 'cycles' => [3]],
-                ['label' => 'final_3', 'cycles' => [4]],
-            ];
-            for ($c = 5; $c <= $maxCycle; $c++) {
-                $groupDefs[] = ['label' => 'final_'.($c - 1), 'cycles' => [$c]];
-            }
-
-            $sessionsPayload = [];
-            $lineNo = 0;
-            foreach ($groupDefs as $g) {
-                // Counted against every group def (not just ones we end up sending)
-                // so a group skipped below for being empty doesn't shift later
-                // groups' line numbers — those must stay pinned to their D365
-                // job-transaction line via the explicit line_no below, since
-                // "Add line" always appends after the current max line and the
-                // automaton has no other way to target a specific line.
-                $lineNo++;
-
-                $groupSessions = array_values(array_filter($sessionsList, fn ($s) => in_array($s['cycle'], $g['cycles'], true)));
-                if (empty($groupSessions)) {
-                    continue;
-                }
-
-                $inspectionDate = '';
-                foreach ($groupSessions as $gs) {
-                    if (! empty($gs['date'])) {
-                        $inspectionDate = substr((string) $gs['date'], 0, 10);
-                    }
-                }
-
-                // Aggregate good qty + each reject metric per size across the group.
-                $sizeMap = [];
-                foreach ($groupSessions as $gs) {
-                    foreach ($gs['lines'] as $l) {
-                        $sz = trim((string) ($l->size_val ?? ''));
-                        if ($sz === '') {
-                            continue;
-                        }
-                        $m = $sizeMap[$sz] ?? array_fill_keys([
-                            'good_qty', 'reject_qty', 'reject_produksi', 'reject_finishing',
-                            'reject_embro', 'barang_hilang', 'reject_cutting', 'reject_printing',
-                            'reject_sewing', 'reject_washing', 'btj', 'reject_bahan',
-                        ], 0);
-                        $rejBah = (int) ($l->reject_bahan ?? 0);
-                        $rejCut = (int) ($l->reject_cutting ?? 0);
-                        $rejSew = (int) ($l->reject_sewing ?? 0);
-                        $rejFin = (int) ($l->reject_finishing ?? 0);
-                        $rejPrt = (int) ($l->reject_printing ?? 0);
-                        $rejEmb = (int) ($l->reject_embro ?? 0);
-                        $rejWas = (int) ($l->reject_washing ?? 0);
-                        $btj = (int) ($l->btj ?? 0);
-                        $barHil = (int) ($l->barang_hilang ?? 0);
-
-                        $m['good_qty'] += (float) ($l->session_qty ?? 0);
-                        $m['reject_qty'] += $rejBah + $rejCut + $rejSew + $rejFin + $rejPrt + $rejEmb + $rejWas + $btj + $barHil;
-                        $m['reject_produksi'] += (int) ($l->reject_produksi ?? 0);
-                        $m['reject_finishing'] += $rejFin;
-                        $m['reject_embro'] += $rejEmb;
-                        $m['barang_hilang'] += $barHil;
-                        $m['reject_cutting'] += $rejCut;
-                        $m['reject_printing'] += $rejPrt;
-                        $m['reject_sewing'] += $rejSew;
-                        $m['reject_washing'] += $rejWas;
-                        $m['btj'] += $btj;
-                        $m['reject_bahan'] += $rejBah;
-                        $sizeMap[$sz] = $m;
-                    }
-                }
-
-                $sizesJson = [];
-                $hasQty = false;
-                foreach ($orderedSizes as $sz) {
-                    if (isset($sizeMap[$sz])) {
-                        $sizesJson[] = array_merge(['size' => $sz], $sizeMap[$sz]);
-                        if ($sizeMap[$sz]['good_qty'] > 0 || $sizeMap[$sz]['reject_qty'] > 0) {
-                            $hasQty = true;
-                        }
-                    }
-                }
-
-                // A QC cycle that recorded literally nothing (no good qty, no
-                // reject of any kind, on every size) has nothing to report as
-                // finished — skip it rather than asking the RPA bot to "Add
-                // line" a brand-new, all-zero D365 job-transaction line. D365
-                // rejects that: the Add-line button never becomes enabled for
-                // it, which burns all 3 retry attempts and lands the job as
-                // 'failed' (e.g. rpa_queues id 390, project
-                // PRJ-MPG-PRG-2606-000274-1786780150937, cycles 1+2 both
-                // recorded zero — 2026-09-21). Existing groups already filled
-                // in D365 (e.g. final_2 -> line 2) are unaffected: line_no is
-                // pinned explicitly below so a skipped earlier group can't
-                // shift them.
-                if (! $hasQty) {
-                    continue;
-                }
-
-                $sessionsPayload[] = [
-                    'line_no' => $lineNo,
-                    'version_label' => $g['label'],
-                    'inspection_date' => $inspectionDate,
-                    'sizes' => $sizesJson,
-                ];
-            }
-
-            $payload = [
-                'project_id' => $projectId,
-                'production_group' => $productionGroup,
-                'job_transaction_id' => (string) ($pakJobId ?? ''),
-                'po_info' => (string) ($project->po_info ?? ''),
-                'sessions' => $sessionsPayload,
-            ];
-
-            $queuedPayload = $this->offloadToS3('job_trans_raf', $projectId, $payload);
-            if (isset($queuedPayload['s3_key'])) {
-                $queuedPayload['job_transaction_id'] = $payload['job_transaction_id'];
-            }
-
-            // A previously failed attempt (e.g. against a since-reissued job id)
-            // must not block this retry from landing as a fresh 'pending' row —
-            // upsertJob() only refreshes 'pending'/'processing' jobs in place, so
-            // a stale 'failed' row would otherwise sit next to a new one forever.
+            // Delete every stale 'failed' row for this project up front — a
+            // previous attempt's failure (e.g. against a since-reissued job
+            // id, or the old single-job-for-everything shape) must never
+            // block a fresh retry from landing as 'pending'.
             DB::connection('rpa')->table('rpa_queues')
                 ->where('entity_id', $projectId)->where('rpa_type', 'job_trans_raf')
                 ->where('status', 'failed')
                 ->delete();
 
-            $this->upsertJob($projectId, 'job_trans_raf', 'pending', $queuedPayload, updatableStatus: 'pending', activeStatuses: ['pending', 'processing']);
+            // Resolve every linked group's own cut+pak job up front — routing
+            // below needs all of them at once to pick the BEST match per
+            // session, not just one at a time. Both ids are kept: the PAK id
+            // is what RAF actually posts against (unchanged from before),
+            // but the CUT id is what the Cut Qty baseline rows
+            // (packaging_project_reports, session_id IS NULL) are keyed by —
+            // forge's own fetch_and_store_lines() stores the baseline under
+            // the CUT job, the pak job only ever gets the separate
+            // INITIAL_PAK-sentinel session. Matching a session's quantities
+            // against the PAK id here would find no baseline for ANY group
+            // and silently default to the primary every time.
+            $groupJobs = [];
+            foreach ($groups as $group) {
+                $resolved = $this->d365->resolveJobTransactionIds($group);
+                if (! empty($resolved['pak'])) {
+                    $groupJobs[$group] = ['pak' => $resolved['pak'], 'cut' => $resolved['cut'] ?? null];
+                }
+            }
+            if (empty($groupJobs)) {
+                Log::warning('RPA raf: no resolvable pak job for any linked group', ['project' => $projectId, 'groups' => $groups]);
 
-            return true;
+                return false;
+            }
+
+            // Route each session (cycle) to the group whose own Cut Qty
+            // baseline (packaging_project_reports, session_id IS NULL — kept
+            // correct per group by QcProjectValidator::healCuttingBaseline())
+            // its per-size quantities best match. The report row's own
+            // job_transaction_id column is NOT a reliable signal here: it's
+            // stale/inherited from whichever job was "current" when the
+            // session row was first created, not updated to reflect which
+            // group the session's DATA is actually about — confirmed live on
+            // MPG/PO/2608/00649's cycle 3, whose session_qty (287/1578/2222/
+            // 1216/912, the EXTRA group's true numbers) still carried the
+            // PRIMARY group's job_transaction_id on every row.
+            $baselineByJob = [];
+            foreach (DB::connection('qms')->table('packaging_project_reports')
+                ->where('project_id', $projectId)->whereNull('session_id')
+                ->get(['job_transaction_id', 'size_val', 'total_good_qty']) as $r) {
+                $jid = (string) ($r->job_transaction_id ?? '');
+                $sz = trim((string) ($r->size_val ?? ''));
+                if ($jid !== '' && $sz !== '') {
+                    $baselineByJob[$jid][$sz] = (float) ($r->total_good_qty ?? 0);
+                }
+            }
+
+            $defaultGroup = isset($groupJobs[$primaryGroup]) ? $primaryGroup : array_key_first($groupJobs);
+            $sessionGroup = [];
+            foreach ($sessionsList as $sl) {
+                $vector = [];
+                $hasNonZero = false;
+                foreach ($sl['lines'] as $l) {
+                    $sz = trim((string) ($l->size_val ?? ''));
+                    if ($sz === '') {
+                        continue;
+                    }
+                    $qty = (float) ($l->session_qty ?? 0);
+                    $vector[$sz] = $qty;
+                    $hasNonZero = $hasNonZero || $qty > 0;
+                }
+                // Nothing recorded this cycle — the all-zero-group skip in
+                // buildRafSessionsPayload() drops it regardless, so which
+                // group it's nominally assigned to doesn't matter.
+                if (! $hasNonZero) {
+                    $sessionGroup[$sl['cycle']] = $defaultGroup;
+
+                    continue;
+                }
+
+                $bestGroup = $defaultGroup;
+                $bestScore = null;
+                foreach ($groupJobs as $group => $ids) {
+                    $baseline = $ids['cut'] ? ($baselineByJob[$ids['cut']] ?? []) : [];
+                    $score = 0.0;
+                    foreach ($vector as $sz => $qty) {
+                        $score += abs($qty - ($baseline[$sz] ?? 0.0));
+                    }
+                    if ($bestScore === null || $score < $bestScore) {
+                        $bestScore = $score;
+                        $bestGroup = $group;
+                    }
+                }
+                $sessionGroup[$sl['cycle']] = $bestGroup;
+            }
+
+            $anyQueued = false;
+            foreach ($groupJobs as $group => $ids) {
+                $jobId = $ids['pak'];
+                // Self-heal the single-column cmt_pak_job_id snapshot, scoped
+                // to the primary group only — that column's semantics (one
+                // value) predate the merge feature and other readers still
+                // expect it to mean "the primary group's own pak job".
+                if ($group === $primaryGroup && $jobId !== $project->cmt_pak_job_id) {
+                    Log::warning('RPA raf: cmt_pak_job_id drifted from D365, self-healing', [
+                        'project' => $projectId, 'stored' => $project->cmt_pak_job_id, 'resolved' => $jobId,
+                    ]);
+                    DB::connection('qms')->table('packaging_projects')
+                        ->where('project_id', $projectId)->update(['cmt_pak_job_id' => $jobId]);
+                }
+
+                $groupSessionsList = array_values(array_filter(
+                    $sessionsList,
+                    fn ($sl) => ($sessionGroup[$sl['cycle']] ?? null) === $group
+                ));
+                if (empty($groupSessionsList)) {
+                    continue;
+                }
+
+                $sessionsPayload = $this->buildRafSessionsPayload($groupSessionsList, $orderedSizes, $maxCycle);
+                if (empty($sessionsPayload)) {
+                    continue;
+                }
+
+                $payload = [
+                    'project_id' => $projectId,
+                    'production_group' => $group,
+                    'job_transaction_id' => $jobId,
+                    'po_info' => (string) ($project->po_info ?? ''),
+                    'sessions' => $sessionsPayload,
+                ];
+
+                // S3 key must be unique per job target, or a second group's
+                // payload would overwrite the first's object — but the
+                // queued DB row's own project_id field must stay the REAL
+                // project id (the documented pointer contract), so it's
+                // corrected back below.
+                $queuedPayload = $this->offloadToS3('job_trans_raf', $projectId.'_'.str_replace('/', '-', $jobId), $payload);
+                if (isset($queuedPayload['s3_key'])) {
+                    $queuedPayload['project_id'] = $projectId;
+                    $queuedPayload['job_transaction_id'] = $jobId;
+                }
+
+                $this->upsertRafJobForTarget($projectId, $jobId, $queuedPayload);
+                $anyQueued = true;
+            }
+
+            return $anyQueued;
         } catch (\Throwable $e) {
             Log::error('RPA raf queue failed', ['project' => $projectId, 'error' => $e->getMessage()]);
 
             return false;
         }
+    }
+
+    /**
+     * Version-label grouping (final_1 = cycles 1+2, final_2 = 3, final_3 = 4,
+     * then final_(c-1) per further cycle) + per-size good/reject aggregation —
+     * extracted from queueJobTransRaf() so it can run once per production
+     * group on a merged project, each with only that group's own session
+     * lines (pre-filtered by the caller).
+     *
+     * @param  array<int,array{cycle:int,date:mixed,lines:\Illuminate\Support\Collection}>  $sessionsList
+     * @return list<array{line_no:int,version_label:string,inspection_date:string,sizes:list<array<string,mixed>>}>
+     */
+    private function buildRafSessionsPayload(array $sessionsList, array $orderedSizes, int $maxCycle): array
+    {
+        $groupDefs = [
+            ['label' => 'final_1', 'cycles' => [1, 2]],
+            ['label' => 'final_2', 'cycles' => [3]],
+            ['label' => 'final_3', 'cycles' => [4]],
+        ];
+        for ($c = 5; $c <= $maxCycle; $c++) {
+            $groupDefs[] = ['label' => 'final_'.($c - 1), 'cycles' => [$c]];
+        }
+
+        $sessionsPayload = [];
+        $lineNo = 0;
+        foreach ($groupDefs as $g) {
+            // Counted against every group def (not just ones we end up sending)
+            // so a group skipped below for being empty doesn't shift later
+            // groups' line numbers — those must stay pinned to their D365
+            // job-transaction line via the explicit line_no below, since
+            // "Add line" always appends after the current max line and the
+            // automaton has no other way to target a specific line.
+            $lineNo++;
+
+            $groupSessions = array_values(array_filter($sessionsList, fn ($s) => in_array($s['cycle'], $g['cycles'], true)));
+            if (empty($groupSessions)) {
+                continue;
+            }
+
+            $inspectionDate = '';
+            foreach ($groupSessions as $gs) {
+                if (! empty($gs['date'])) {
+                    $inspectionDate = substr((string) $gs['date'], 0, 10);
+                }
+            }
+
+            // Aggregate good qty + each reject metric per size across the group.
+            $sizeMap = [];
+            foreach ($groupSessions as $gs) {
+                foreach ($gs['lines'] as $l) {
+                    $sz = trim((string) ($l->size_val ?? ''));
+                    if ($sz === '') {
+                        continue;
+                    }
+                    $m = $sizeMap[$sz] ?? array_fill_keys([
+                        'good_qty', 'reject_qty', 'reject_produksi', 'reject_finishing',
+                        'reject_embro', 'barang_hilang', 'reject_cutting', 'reject_printing',
+                        'reject_sewing', 'reject_washing', 'btj', 'reject_bahan',
+                    ], 0);
+                    $rejBah = (int) ($l->reject_bahan ?? 0);
+                    $rejCut = (int) ($l->reject_cutting ?? 0);
+                    $rejSew = (int) ($l->reject_sewing ?? 0);
+                    $rejFin = (int) ($l->reject_finishing ?? 0);
+                    $rejPrt = (int) ($l->reject_printing ?? 0);
+                    $rejEmb = (int) ($l->reject_embro ?? 0);
+                    $rejWas = (int) ($l->reject_washing ?? 0);
+                    $btj = (int) ($l->btj ?? 0);
+                    $barHil = (int) ($l->barang_hilang ?? 0);
+
+                    $m['good_qty'] += (float) ($l->session_qty ?? 0);
+                    $m['reject_qty'] += $rejBah + $rejCut + $rejSew + $rejFin + $rejPrt + $rejEmb + $rejWas + $btj + $barHil;
+                    $m['reject_produksi'] += (int) ($l->reject_produksi ?? 0);
+                    $m['reject_finishing'] += $rejFin;
+                    $m['reject_embro'] += $rejEmb;
+                    $m['barang_hilang'] += $barHil;
+                    $m['reject_cutting'] += $rejCut;
+                    $m['reject_printing'] += $rejPrt;
+                    $m['reject_sewing'] += $rejSew;
+                    $m['reject_washing'] += $rejWas;
+                    $m['btj'] += $btj;
+                    $m['reject_bahan'] += $rejBah;
+                    $sizeMap[$sz] = $m;
+                }
+            }
+
+            $sizesJson = [];
+            $hasQty = false;
+            foreach ($orderedSizes as $sz) {
+                if (isset($sizeMap[$sz])) {
+                    $sizesJson[] = array_merge(['size' => $sz], $sizeMap[$sz]);
+                    if ($sizeMap[$sz]['good_qty'] > 0 || $sizeMap[$sz]['reject_qty'] > 0) {
+                        $hasQty = true;
+                    }
+                }
+            }
+
+            // A QC cycle that recorded literally nothing (no good qty, no
+            // reject of any kind, on every size) has nothing to report as
+            // finished — skip it rather than asking the RPA bot to "Add
+            // line" a brand-new, all-zero D365 job-transaction line. D365
+            // rejects that: the Add-line button never becomes enabled for
+            // it, which burns all 3 retry attempts and lands the job as
+            // 'failed' (e.g. rpa_queues id 390, project
+            // PRJ-MPG-PRG-2606-000274-1786780150937, cycles 1+2 both
+            // recorded zero — 2026-09-21). Existing groups already filled
+            // in D365 (e.g. final_2 -> line 2) are unaffected: line_no is
+            // pinned explicitly below so a skipped earlier group can't
+            // shift them.
+            if (! $hasQty) {
+                continue;
+            }
+
+            $sessionsPayload[] = [
+                'line_no' => $lineNo,
+                'version_label' => $g['label'],
+                'inspection_date' => $inspectionDate,
+                'sizes' => $sizesJson,
+            ];
+        }
+
+        return $sessionsPayload;
+    }
+
+    /**
+     * upsertJob() assumes at most one active row per (entity_id, rpa_type) —
+     * true before a merged project could need more than one job_trans_raf
+     * target. Scopes the "already active" check to the specific
+     * job_transaction_id this payload targets (decoded from each candidate
+     * row's own payload, cheap: at most a couple of rows per project) so two
+     * groups' jobs can coexist as separate rows under the same entity_id,
+     * each independently updatable in place on retry.
+     */
+    private function upsertRafJobForTarget(string $projectId, string $jobId, array $payload): void
+    {
+        $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        $candidates = DB::connection('rpa')->table('rpa_queues')
+            ->where('entity_id', $projectId)->where('rpa_type', 'job_trans_raf')
+            ->whereIn('status', ['pending', 'processing'])
+            ->get(['id', 'payload']);
+
+        foreach ($candidates as $row) {
+            $decoded = json_decode((string) $row->payload, true);
+            if (($decoded['job_transaction_id'] ?? null) === $jobId) {
+                DB::connection('rpa')->table('rpa_queues')->where('id', $row->id)
+                    ->where('status', 'pending')
+                    ->update(['payload' => $json, 'updated_at' => now()]);
+
+                Log::info('RPA job queued', ['entity' => $projectId, 'type' => 'job_trans_raf', 'job_transaction_id' => $jobId]);
+
+                return;
+            }
+        }
+
+        DB::connection('rpa')->table('rpa_queues')->insert([
+            'entity_type' => 'packaging_project',
+            'entity_id' => $projectId,
+            'rpa_type' => 'job_trans_raf',
+            'status' => 'pending',
+            'payload' => $json,
+            'source' => self::SOURCE,
+        ]);
+
+        Log::info('RPA job queued', ['entity' => $projectId, 'type' => 'job_trans_raf', 'job_transaction_id' => $jobId]);
     }
 
     /**
