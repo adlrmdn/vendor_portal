@@ -34,6 +34,31 @@ class SyncD365SubconOrders extends Command
 
     protected $description = 'Fetch subcon vendors\' POs from D365 and sync them into subcon work orders';
 
+    /**
+     * Orders manually pinned to a production group that D365/VSM don't (yet)
+     * agree with — e.g. MPG/PO/2607/01366 was repointed from MPG/PRG/2604/000311
+     * to MPG/PRG/2609/000390 (a later production run of the same style under
+     * this PO), but D365's TOC_ProductionGroup header and VSM's PLM link both
+     * still resolve the PO to 311, so the normal resolution below would
+     * silently revert the pin on every hourly run. Remove an entry once the
+     * upstream source actually reflects the pinned group.
+     */
+    private const PINNED_PRODUCTION_GROUPS = [
+        'MPG/PO/2607/01366' => 'MPG/PRG/2609/000390',
+    ];
+
+    /**
+     * The core CMT service item ("Item Jasa CMT") — the only line item that
+     * makes a PO an actual cutting work order. Confirmed live against VSM's
+     * po_lines for every ItemNumber in the 2312000100NNN "Jasa Subkon"
+     * family: 2312000100000 = CMT, 2312000100001-4 = the Add Process variants
+     * (Sablon/Embro/Pleating/Washing — see CLAUDE.md "Official Report"
+     * ADD-* list). Matches SyncD365SubconVendors::CMT_CORE_ITEM's strict
+     * classifier — kept as its own constant here since the two commands
+     * don't share a base class.
+     */
+    private const CMT_CORE_ITEM = '2312000100000';
+
     public function handle(SubconProductionService $production)
     {
         $this->info('Starting D365 subcon ETL pipeline...');
@@ -65,6 +90,11 @@ class SyncD365SubconOrders extends Command
             fn ($code) => "OrderVendorAccountNumber eq '$code'",
             array_keys($vendors)
         )).')';
+        // NOTE: deliberately NOT filtering on PurchPoolId here — confirmed live
+        // that it's not a reliable CMT/AddPro signal (some genuine "Item Jasa
+        // CMT" POs have PurchPoolId blank, or even 'AddPro'; at least one real
+        // Add Process PO was seen tagged 'CMT'). The line item number, checked
+        // below once lines are fetched, is the authoritative classifier.
         $filters = [
             $vendorClause,
             "DocumentApprovalStatus eq Microsoft.Dynamics.DataEntities.VersioningDocumentState'Confirmed'",
@@ -181,6 +211,33 @@ class SyncD365SubconOrders extends Command
             $linesByPo[$l['PurchaseOrderNumber']][] = $l;
         }
 
+        // CMT cutting POs only. An Add Process PO (Sablon/Embro/Pleating/
+        // Washing) can share a production group with the real CMT PO for the
+        // same style, and must never be ingested here as a second CMT work
+        // order — it would get the full cutting/gramasi vendor workflow run
+        // against it instead of (or in addition to) the real one. AddPro POs
+        // belong only to the separate Official Report (Berita Acara) Add
+        // Process flow. See memory subcon-addpro-po-ingested-as-cmt-order.md
+        // for the live incident (MPG/PRG/2607/000255) this guards against.
+        foreach (array_keys($poMap) as $poNumber) {
+            $hasCmtLine = false;
+            foreach ($linesByPo[$poNumber] ?? [] as $l) {
+                if ((string) ($l['ItemNumber'] ?? '') === self::CMT_CORE_ITEM) {
+                    $hasCmtLine = true;
+                    break;
+                }
+            }
+            if (! $hasCmtLine) {
+                $this->warn("Skipping {$poNumber}: no \"Item Jasa CMT\" line (likely an Add Process PO) — not a cutting work order.");
+                unset($poMap[$poNumber], $poHeaders[$poNumber], $linesByPo[$poNumber]);
+            }
+        }
+        if (empty($poMap)) {
+            $this->info('No CMT subcon orders to sync after Add Process exclusion.');
+
+            return Command::SUCCESS;
+        }
+
         if ($this->option('dry-run')) {
             foreach ($poMap as $poNumber => $vendorId) {
                 $this->line(sprintf(
@@ -282,7 +339,12 @@ class SyncD365SubconOrders extends Command
             $reassigned = 0;
 
             foreach ($poMap as $poNumber => $vendorId) {
-                $h = $poHeaders[$poNumber];
+                try {
+                    DB::transaction(function () use (
+                        $poNumber, $vendorId, $poHeaders, $linesByPo, $poDstMap, $styles, $production,
+                        &$createdOrders, &$createdItems, &$retitled, &$deletedOrders, &$reassigned
+                    ) {
+                        $h = $poHeaders[$poNumber];
 
                 // --- 1. Check if Finished ---
                 $isFinished = false;
@@ -416,7 +478,7 @@ class SyncD365SubconOrders extends Command
                         $this->info("PO {$poNumber} is finished on D365. Skipping creation.");
                     }
 
-                    continue; // Skip creating or syncing this order further
+                    return; // Skip creating or syncing this order further (exits this PO's closure only)
                 }
 
                 // --- 2. Create/Update SubconOrder ---
@@ -511,7 +573,7 @@ class SyncD365SubconOrders extends Command
                     if ($distributionId && $order->distribution_id !== $distributionId) {
                         $updates['distribution_id'] = $distributionId;
                     }
-                    if ($tocPrg && $order->production_group !== $tocPrg) {
+                    if ($tocPrg && $order->production_group !== $tocPrg && ! isset(self::PINNED_PRODUCTION_GROUPS[$poNumber])) {
                         $updates['production_group'] = $tocPrg;
                     }
                     if ($sizesCount !== $order->sizes_count) {
@@ -608,6 +670,22 @@ class SyncD365SubconOrders extends Command
                 // very next sync run would silently bounce it right back into
                 // cutting_review with the same stale data, without the vendor ever
                 // touching it. See [[subcon-approval-silent-spawn]].
+                    });
+                } catch (\Throwable $e) {
+                    // One bad order (e.g. a duplicate-key collision in
+                    // subcon_cutting_reports — see memory
+                    // subcon-sync-single-txn-landmine.md, which recurred
+                    // live via MPG/PRD/2610/000969) must never roll back
+                    // every other PO in this run. DB::transaction() above
+                    // nests as a SAVEPOINT inside the outer transaction, so
+                    // an exception here only undoes this PO's own writes —
+                    // the outer transaction still commits everything else.
+                    $this->warn("Skipping {$poNumber} — processing failed: ".$e->getMessage());
+                    Log::warning('Subcon sync: per-order processing failed, skipped (other POs unaffected)', [
+                        'order_number' => $poNumber,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             DB::commit();
@@ -621,9 +699,20 @@ class SyncD365SubconOrders extends Command
             $this->info('Synced: '.($changes ? implode(', ', $changes).'.' : 'no changes.'));
 
             return Command::SUCCESS;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::rollBack();
             $this->error('Error during insertion: '.$e->getMessage());
+            // The scheduler redirects this command's own stdout/stderr to
+            // /dev/null (see routes/console.php), so $this->error() above is
+            // invisible for every scheduled run — Log::error() is the only
+            // way a transaction-rollback failure here is ever actually
+            // diagnosable after the fact. Previously caught \Exception only,
+            // so a bare \Error (TypeError etc.) would have skipped the
+            // rollback entirely and crashed uncaught.
+            Log::error('Subcon sync: transaction rolled back', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             if (app()->runningUnitTests()) {
                 throw $e;
             }
