@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\SubconOfficialReport;
 use App\Models\Vendor;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -70,10 +71,16 @@ class RpaQueueReadService
         }
 
         $portals = $this->resolvePortals($rows->pluck('vendor_name')->all());
+        $officialReportEntities = $this->officialReportEntityIds($rows->pluck('entity_id')->all());
 
-        return $rows->map(function ($row) use ($styleByEntity, $portals) {
+        return $rows->map(function ($row) use ($styleByEntity, $portals, $officialReportEntities) {
             $row->style = $styleByEntity[$row->entity_id] ?? null;
-            $row->portal = $portals[strtolower($row->vendor_name)] ?? 'Fabric';
+            // A vendor with no local Vendor row at all (an Add Process vendor
+            // need not have a portal account) can't be classified by name —
+            // but a job queued by a subcon Official Report is Subcon by
+            // construction, so it must not fall through to 'Fabric'.
+            $row->portal = $portals[strtolower($row->vendor_name)]
+                ?? (isset($officialReportEntities[(string) $row->entity_id]) ? 'Subcon' : 'Fabric');
 
             return $row;
         });
@@ -135,6 +142,44 @@ class RpaQueueReadService
         } catch (\Throwable $e) {
             return '';
         }
+    }
+
+    /**
+     * Whether an rpa_queues entity_id belongs to a subcon Official Report
+     * (Berita Acara) — RpaQueueService::queueOfficialReportInvoice()/
+     * queueOfficialReportDeduction() key those jobs
+     * "{production_group}:{operation}" rather than by a qms project id.
+     */
+    public function isOfficialReportEntity(?string $entityId): bool
+    {
+        return isset($this->officialReportEntityIds([(string) $entityId])[(string) $entityId]);
+    }
+
+    /**
+     * Batched form of isOfficialReportEntity(): the subset of $entityIds that
+     * match an actual subcon_official_reports row (not just the "x:y" shape).
+     *
+     * @param  list<string|null>  $entityIds
+     * @return array<string,true> matching entity_id => true
+     */
+    private function officialReportEntityIds(array $entityIds): array
+    {
+        $candidates = collect($entityIds)
+            ->map(fn ($id) => (string) $id)
+            ->filter(fn ($id) => str_contains($id, ':'))
+            ->unique()->values();
+        if ($candidates->isEmpty()) {
+            return [];
+        }
+
+        $groups = $candidates->map(fn ($id) => substr($id, 0, strrpos($id, ':')))->unique()->values()->all();
+
+        $known = SubconOfficialReport::whereIn('production_group', $groups)
+            ->get(['production_group', 'operation'])
+            ->mapWithKeys(fn ($r) => ["{$r->production_group}:{$r->operation}" => true]);
+
+        return $candidates->filter(fn ($id) => $known->has($id))
+            ->mapWithKeys(fn ($id) => [$id => true])->all();
     }
 
     /**

@@ -165,7 +165,7 @@ class SubconAdminController extends Controller
     {
         $row = DB::connection('rpa')->table('rpa_queues')
             ->where('id', $id)->where('rpa_type', 'invoice')
-            ->first(['id', 'payload']);
+            ->first(['id', 'entity_id', 'payload']);
 
         if (! $row) {
             abort(404);
@@ -175,7 +175,12 @@ class SubconAdminController extends Controller
         $vendorName = (string) ($payload['vendor_name'] ?? '');
         $vendorType = Vendor::where('name', 'ILIKE', $vendorName)->value('type');
 
-        if ($vendorType !== 'subcon') {
+        // No Vendor row at all + queued by a subcon Official Report is still a
+        // subcon job (RpaQueueReadService::rows() lists it under Subcon).
+        $isSubcon = $vendorType === 'subcon'
+            || ($vendorType === null && $this->rpaQueueReader->isOfficialReportEntity($row->entity_id));
+
+        if (! $isSubcon) {
             abort(404);
         }
 
@@ -257,7 +262,7 @@ class SubconAdminController extends Controller
     {
         $row = DB::connection('rpa')->table('rpa_queues')
             ->where('id', $id)->where('rpa_type', 'deduction')
-            ->first(['id', 'payload']);
+            ->first(['id', 'entity_id', 'payload']);
 
         if (! $row) {
             abort(404);
@@ -267,7 +272,12 @@ class SubconAdminController extends Controller
         $vendorName = (string) ($payload['vendor_name'] ?? '');
         $vendorType = Vendor::where('name', 'ILIKE', $vendorName)->value('type');
 
-        if ($vendorType !== 'subcon') {
+        // No Vendor row at all + queued by a subcon Official Report is still a
+        // subcon job (RpaQueueReadService::rows() lists it under Subcon).
+        $isSubcon = $vendorType === 'subcon'
+            || ($vendorType === null && $this->rpaQueueReader->isOfficialReportEntity($row->entity_id));
+
+        if (! $isSubcon) {
             abort(404);
         }
 
