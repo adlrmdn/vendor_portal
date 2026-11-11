@@ -51,6 +51,27 @@ php artisan d365:sync-subcon-orders --dry-run --vendor=V0246  # Report only, sin
 ```
 `--company` is effectively required for subcon: vendor account codes are company-scoped in D365 (the same code maps to different legal vendors across `mpg`/`mpr`).
 
+## Git Workflow
+
+**This directory (`/home/ubuntu/webservice/vendor_portal`) is the live app** — it is bind-mounted into the `vendor_portal_app` and `vendor_portal-worker-1` containers, so whatever is checked out and saved here is what users are served. It stays on **`main`**. Do not switch this directory to a feature branch.
+
+Feature work lives in sibling worktrees, one branch each:
+
+| Worktree | Branch | Scope |
+|---|---|---|
+| `/home/ubuntu/webservice/vendor_portal` | `main` | Live/integration. Hotfixes and small fixes for any domain are committed here. |
+| `/home/ubuntu/webservice/vendor_portal-fabric-pc-module` | `fabric-pc-module` | Fabric Preliminary Contract module development only. |
+| `/home/ubuntu/webservice/vendor_portal-subcon-main-module` | `subcon-main-module` | Subcon module development. |
+
+Rules:
+- **Commit to the branch that matches the domain.** Subcon or finance work never goes on `fabric-pc-module`; PC work never goes on a subcon branch. A fix needed live right now goes on `main`.
+- **New feature branch** → `git worktree add ../vendor_portal-<branch> -b <branch> main`, not `git switch` in this directory. A fresh worktree has no `vendor/`, `node_modules/` or `.env`, and no container serves it.
+- **Going live** means merging the feature branch into `main` here. Merge feature → `main`; bring `main` into a feature branch with `git merge main` when it needs newer fixes.
+- **Stage explicit paths**, never `git add -A`/`git add .` — this tree routinely holds other people's uncommitted work and untracked scratch files (`scratch/`, spreadsheets, one-off scripts).
+- **Commit subjects** carry a domain prefix: `Subcon: …`, `Fabric: …`, `feat(pc): …`, `Finance: …`, `QC: …`.
+- **Never push, force-push, rebase, or delete a branch/worktree unless asked.** Local `main` is far ahead of `origin/main`; pushing it is the owner's decision.
+- Worktrees under `~/.gemini/antigravity/worktrees/` and `.claude/worktrees/` belong to other tools/agents — leave them alone.
+
 ## Architecture
 
 ### Stack
